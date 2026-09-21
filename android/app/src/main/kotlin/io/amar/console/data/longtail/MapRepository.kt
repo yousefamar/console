@@ -39,6 +39,44 @@ data class OtFix(
     val batt: Int? = null,
 )
 
+/** Per-fence evaluation state from the hub (`FenceState` in server/src/location/geofence.ts). */
+data class FenceState(
+    val inside: Boolean,
+    val since: Long, // epoch ms the current state began
+    val tst: Long, // unix seconds of the fix that last evaluated it
+)
+
+/** A hub geofence as the Map shows it (mirror of `MapFence` in src/store/map.ts). */
+data class MapFence(
+    val id: String,
+    val name: String,
+    val lat: Double,
+    val lon: Double,
+    val radius: Double, // metres
+    val private: Boolean,
+    val note: String?,
+    val wake: List<String>,
+    val expiresAt: Long?,
+    val state: FenceState?, // null = no fix has evaluated it yet
+)
+
+/** Health of the hub's OwnTracks Recorder WebSocket (`LiveStatus` in server/src/location/watcher.ts). */
+data class LocationFeed(
+    /** connected = frames flow; connecting = between attempts; polling = no feed configured; stopped = watcher down */
+    val state: String,
+    val since: Long?,
+    val lastFrameAt: Long?,
+    val reconnects: Int,
+    val lastError: String?,
+)
+
+/** What `GET /location/map` returns — also the shape cached in Room meta for offline boots. */
+data class LocationSnapshot(
+    val fix: OtFix?,
+    val fences: List<MapFence>,
+    val live: LocationFeed?,
+)
+
 data class GcAttribute(val slug: String, val label: String, val enabled: Boolean)
 data class GcLog(val id: String, val type: String, val text: String, val date: String, val author: String)
 data class GcDetail(
@@ -125,7 +163,9 @@ data class MapLayerMeta(
     val updatedBy: String?,
 )
 
-enum class BuiltinLayer { LOCATION, GEOCACHES, MEETUP }
+enum class BuiltinLayer(val prefKey: String) {
+    LOCATION("location"), FENCES("fences"), GEOCACHES("geocaches"), MEETUP("meetup");
+}
 
 /**
  * Full map state: OwnTracks history + geocache/meetup pins with lazy detail +
@@ -143,6 +183,12 @@ data class MapUiState(
     val rangeFrom: Long = System.currentTimeMillis() - DAY_MS,
     val rangeTo: Long = System.currentTimeMillis(),
     val loadingHistory: Boolean = false,
+
+    // Live location (hub SyncBus 'location'): fences with inside/outside state,
+    // the Recorder WebSocket's health, the fence a tap selected.
+    val fences: List<MapFence> = emptyList(),
+    val locationFeed: LocationFeed? = null, // null = not yet heard from the hub
+    val selectedFenceId: String? = null,
 
     // Geocaches
     val pins: List<MapCache> = emptyList(),
@@ -165,11 +211,7 @@ data class MapUiState(
     val unreviewedListings: Int = 0,
 
     // Built-in visibility (default all-on)
-    val builtinVisible: Map<BuiltinLayer, Boolean> = mapOf(
-        BuiltinLayer.LOCATION to true,
-        BuiltinLayer.GEOCACHES to true,
-        BuiltinLayer.MEETUP to true,
-    ),
+    val builtinVisible: Map<BuiltinLayer, Boolean> = BuiltinLayer.entries.associateWith { true },
 
     // Google Maps search + directions (ephemeral — never persisted; mirrors
     // the gmaps slice of src/store/map.ts). null configured = not yet probed.
@@ -199,6 +241,8 @@ private const val LAYER_INDEX_KEY = "console:mapLayerIndex:v1"
 private const val LAYER_DATA_PREFIX = "console:mapLayer:"
 private const val BUILTIN_VIS_KEY = "console:map:builtinVisible"
 private const val LAYER_VIS_KEY = "console:map:layerVisible"
+/** Last `/location/map` fences + fix, so the fences layer draws before the WS connects. */
+private const val LOCATION_SNAPSHOT_KEY = "console:map:location:v1"
 
 class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
     private val _state = MutableStateFlow(MapUiState())
@@ -213,6 +257,7 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         hydratePinsFromDb()
         hydrateEventsFromDb()
         hydrateLayersFromDb()
+        hydrateLocationFromDb()
     }
 
     private suspend fun loadPrefs() {
@@ -222,9 +267,7 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
             db.meta().get(BUILTIN_VIS_KEY)?.let { raw ->
                 val o = json.parseToJsonElement(raw).jsonObject
                 val bv = _state.value.builtinVisible.toMutableMap()
-                o["location"]?.jsonPrimitive?.booleanOrNull?.let { bv[BuiltinLayer.LOCATION] = it }
-                o["geocaches"]?.jsonPrimitive?.booleanOrNull?.let { bv[BuiltinLayer.GEOCACHES] = it }
-                o["meetup"]?.jsonPrimitive?.booleanOrNull?.let { bv[BuiltinLayer.MEETUP] = it }
+                for (id in BuiltinLayer.entries) o[id.prefKey]?.jsonPrimitive?.booleanOrNull?.let { bv[id] = it }
                 _state.value = _state.value.copy(builtinVisible = bv)
             }
         }
@@ -260,10 +303,21 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         }
     }
 
+    /** Cached fences + last fix. The feed health is deliberately NOT restored:
+     *  it describes the hub's live socket, which we know nothing about offline. */
+    private suspend fun hydrateLocationFromDb() {
+        val raw = runCatching { db.meta().get(LOCATION_SNAPSHOT_KEY) }.getOrNull() ?: return
+        val snap = parseLocationSnapshot(raw) ?: return
+        val cur = _state.value
+        val seeded = if (cur.current.isEmpty() && snap.fix != null) mergeLiveFix(cur, snap.fix) else cur
+        _state.value = seeded.copy(fences = if (cur.fences.isEmpty()) snap.fences else cur.fences)
+    }
+
     // --- combined status + snapshot refresh (owntracks + gc + meetup) ------- //
 
     /** Wired into SyncEngine's "map" domain (runs on every hub connect) AND
-     *  called by the screen on mount. Mirrors src/store/map.ts refresh(). */
+     *  called by the screen on mount. Mirrors src/store/map.ts refresh() +
+     *  loadLocation(). */
     suspend fun reconcile() {
         val last = runCatching { hub.get("/owntracks/last") }.getOrNull()?.let { parseFixes(it) } ?: emptyList()
         val gc = runCatching { hub.get("/geocaching/status") }.getOrNull()?.let { parseGcStatus(it) }
@@ -280,9 +334,53 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
             meetupStatus = mu ?: cur.meetupStatus,
             gmapsConfigured = gm ?: cur.gmapsConfigured,
         )
+        loadLocation()
         loadPins()
         loadEvents()
         loadLayers()
+    }
+
+    // --- live location: fences + feed + fixes (SyncBus 'location') ---------- //
+
+    /** `GET /location/map` — the initial load the SPA does on every connect. */
+    suspend fun loadLocation() {
+        val raw = runCatching { hub.get("/location/map") }.getOrNull() ?: return
+        val snap = parseLocationSnapshot(raw) ?: return
+        val cur = _state.value
+        // The hub's lastFix is usually the same point /owntracks/last just gave
+        // us; only fold it in when it is genuinely newer (a stale hub fix must
+        // not roll the pin back).
+        val newest = cur.current.maxOfOrNull { it.tst } ?: 0L
+        val withFix = if (snap.fix != null && snap.fix.tst > newest) mergeLiveFix(cur, snap.fix) else cur
+        _state.value = withFix.copy(
+            fences = snap.fences,
+            locationFeed = snap.live ?: cur.locationFeed,
+            selectedFenceId = cur.selectedFenceId?.takeIf { id -> snap.fences.any { it.id == id } },
+        )
+        persistLocationSnapshot()
+    }
+
+    fun applyLiveFix(fix: OtFix) {
+        _state.value = mergeLiveFix(_state.value, fix)
+    }
+
+    fun setFences(fences: List<MapFence>) {
+        val cur = _state.value
+        _state.value = cur.copy(
+            fences = fences,
+            selectedFenceId = cur.selectedFenceId?.takeIf { id -> fences.any { it.id == id } },
+        )
+    }
+
+    fun setLocationFeed(feed: LocationFeed) { _state.value = _state.value.copy(locationFeed = feed) }
+
+    fun selectFence(id: String?) { _state.value = _state.value.copy(selectedFenceId = id) }
+
+    private suspend fun persistLocationSnapshot() {
+        val s = _state.value
+        runCatching {
+            db.meta().put(MetaRow(LOCATION_SNAPSHOT_KEY, locationSnapshotJson(LocationSnapshot(s.current.firstOrNull(), s.fences, null))))
+        }
     }
 
     /**
@@ -311,6 +409,23 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         syncBus.on("map-layers", "delta") { data ->
             val metas = (data as? JsonObject)?.let { parseLayerIndex(it.toString()) } ?: return@on
             scope.launch { applyLayerIndex(metas) }
+        }
+        // Hub-held OwnTracks live feed + server-side geofences (SPA
+        // map/location-subscribe.ts): the pin/track follow every fix, fence
+        // tints flip on transitions, the my-location dot shows the feed health.
+        syncBus.on("location", "fix") { data ->
+            val fix = ((data as? JsonObject)?.get("fix") as? JsonObject)?.let { parseFix(it) } ?: return@on
+            applyLiveFix(fix)
+            scope.launch { persistLocationSnapshot() }
+        }
+        syncBus.on("location", "fences") { data ->
+            val fences = ((data as? JsonObject)?.get("fences") as? JsonArray)?.let { parseFences(it) } ?: return@on
+            setFences(fences)
+            scope.launch { persistLocationSnapshot() }
+        }
+        syncBus.on("location", "feed") { data ->
+            val feed = ((data as? JsonObject)?.get("live") as? JsonObject)?.let { parseLocationFeed(it) } ?: return@on
+            setLocationFeed(feed)
         }
     }
 
@@ -682,9 +797,7 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         _state.value = _state.value.copy(builtinVisible = bv)
         runCatching {
             db.meta().put(MetaRow(BUILTIN_VIS_KEY, buildJsonObject {
-                put("location", bv[BuiltinLayer.LOCATION] ?: true)
-                put("geocaches", bv[BuiltinLayer.GEOCACHES] ?: true)
-                put("meetup", bv[BuiltinLayer.MEETUP] ?: true)
+                for (id in BuiltinLayer.entries) put(id.prefKey, bv[id] ?: true)
             }.toString()))
         }
     }
@@ -798,21 +911,126 @@ fun parseMeetupStatus(raw: String): MeetupStatus? = runCatching {
 fun parseFixes(raw: String): List<OtFix> {
     val el = runCatching { json.parseToJsonElement(raw) }.getOrNull() ?: return emptyList()
     val arr = (el as? JsonArray) ?: (el as? JsonObject)?.get("data") as? JsonArray ?: return emptyList()
-    return arr.mapNotNull { it as? JsonObject }.mapNotNull { o ->
-        val lat = o["lat"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
-        val lon = o["lon"]?.jsonPrimitive?.doubleOrNull ?: return@mapNotNull null
-        OtFix(
-            lat = lat,
-            lon = lon,
-            tst = o["tst"]?.jsonPrimitive?.longOrNull ?: 0L,
-            device = o["device"]?.jsonPrimitive?.contentOrNullSafe()
-                ?: o["tid"]?.jsonPrimitive?.contentOrNullSafe()
-                ?: (o["topic"]?.jsonPrimitive?.contentOrNullSafe()?.substringAfterLast('/')),
-            acc = o["acc"]?.jsonPrimitive?.doubleOrNull,
-            batt = o["batt"]?.jsonPrimitive?.intOrNull,
-        )
-    }
+    return arr.mapNotNull { it as? JsonObject }.mapNotNull { parseFix(it) }
 }
+
+fun parseFix(o: JsonObject): OtFix? {
+    val lat = o["lat"]?.jsonPrimitive?.doubleOrNull ?: return null
+    val lon = o["lon"]?.jsonPrimitive?.doubleOrNull ?: return null
+    return OtFix(
+        lat = lat,
+        lon = lon,
+        tst = o["tst"]?.jsonPrimitive?.longOrNull ?: 0L,
+        device = o["device"]?.jsonPrimitive?.contentOrNullSafe()
+            ?: o["tid"]?.jsonPrimitive?.contentOrNullSafe()
+            ?: (o["topic"]?.jsonPrimitive?.contentOrNullSafe()?.substringAfterLast('/')),
+        acc = o["acc"]?.jsonPrimitive?.doubleOrNull,
+        batt = o["batt"]?.jsonPrimitive?.intOrNull,
+    )
+}
+
+// --- live location (src/store/map.ts applyLiveFix / MapFence / LocationFeed) --- //
+
+/**
+ * Fold one live fix into the state — the port of `applyLiveFix` in
+ * src/store/map.ts. Replaces that device's entry in `current` (newest first),
+ * and extends the drawn track when its range reaches "now" so the polyline
+ * follows him live; a fix older than the track's last point is not appended.
+ */
+fun mergeLiveFix(s: MapUiState, fix: OtFix): MapUiState {
+    val dev = fix.device ?: s.current.firstOrNull()?.device
+    val stamped = fix.copy(device = dev)
+    val cur = (s.current.filter { it.device != dev } + stamped).sortedByDescending { it.tst }
+    val devices = cur.mapNotNull { it.device }.distinct()
+    val last = s.track.lastOrNull()
+    val extend = last != null &&
+        s.rangeTo >= last.tst * 1000 - 60_000 &&
+        (s.device == null || s.device == dev) &&
+        fix.tst > last.tst
+    val track = if (extend) s.track + stamped else s.track
+    return s.copy(current = cur, devices = devices, device = s.device ?: devices.firstOrNull(), track = track)
+}
+
+fun parseFenceState(el: kotlinx.serialization.json.JsonElement?): FenceState? {
+    val o = el as? JsonObject ?: return null
+    return FenceState(
+        inside = o["inside"]?.jsonPrimitive?.booleanOrNull ?: return null,
+        since = o["since"]?.jsonPrimitive?.longOrNull ?: 0L,
+        tst = o["tst"]?.jsonPrimitive?.longOrNull ?: 0L,
+    )
+}
+
+fun parseFence(o: JsonObject): MapFence? {
+    val id = o["id"]?.jsonPrimitive?.contentOrNullSafe() ?: return null
+    val lat = o["lat"]?.jsonPrimitive?.doubleOrNull ?: return null
+    val lon = o["lon"]?.jsonPrimitive?.doubleOrNull ?: return null
+    return MapFence(
+        id = id,
+        name = o["name"]?.jsonPrimitive?.contentOrNullSafe() ?: id,
+        lat = lat,
+        lon = lon,
+        radius = o["radius"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
+        private = o["private"]?.jsonPrimitive?.booleanOrNull ?: false,
+        note = o["note"]?.jsonPrimitive?.contentOrNullSafe(),
+        wake = (o["wake"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNullSafe() } ?: emptyList(),
+        expiresAt = o["expiresAt"]?.jsonPrimitive?.longOrNull,
+        state = parseFenceState(o["state"]),
+    )
+}
+
+fun parseFences(arr: JsonArray): List<MapFence> = arr.mapNotNull { it as? JsonObject }.mapNotNull { parseFence(it) }
+
+fun parseLocationFeed(o: JsonObject): LocationFeed? {
+    val state = o["state"]?.jsonPrimitive?.contentOrNullSafe() ?: return null
+    return LocationFeed(
+        state = state,
+        since = o["since"]?.jsonPrimitive?.longOrNull,
+        lastFrameAt = o["lastFrameAt"]?.jsonPrimitive?.longOrNull,
+        reconnects = o["reconnects"]?.jsonPrimitive?.intOrNull ?: 0,
+        lastError = o["lastError"]?.jsonPrimitive?.contentOrNullSafe(),
+    )
+}
+
+/** `GET /location/map` (also the `location.snapshot` RPC and our Room cache). */
+fun parseLocationSnapshot(raw: String): LocationSnapshot? {
+    val o = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull() ?: return null
+    return LocationSnapshot(
+        fix = (o["fix"] as? JsonObject)?.let { parseFix(it) },
+        fences = (o["fences"] as? JsonArray)?.let { parseFences(it) } ?: emptyList(),
+        live = (o["live"] as? JsonObject)?.let { parseLocationFeed(it) },
+    )
+}
+
+/** Inverse of [parseLocationSnapshot] — the Room meta cache row. */
+fun locationSnapshotJson(snap: LocationSnapshot): String = buildJsonObject {
+    snap.fix?.let { f ->
+        put("fix", buildJsonObject {
+            put("lat", f.lat); put("lon", f.lon); put("tst", f.tst)
+            f.device?.let { put("device", it) }
+            f.acc?.let { put("acc", it) }
+            f.batt?.let { put("batt", it) }
+        })
+    }
+    put("fences", kotlinx.serialization.json.buildJsonArray {
+        for (f in snap.fences) add(buildJsonObject {
+            put("id", f.id); put("name", f.name); put("lat", f.lat); put("lon", f.lon); put("radius", f.radius)
+            put("private", f.private)
+            f.note?.let { put("note", it) }
+            put("wake", kotlinx.serialization.json.buildJsonArray { for (w in f.wake) add(kotlinx.serialization.json.JsonPrimitive(w)) })
+            f.expiresAt?.let { put("expiresAt", it) }
+            f.state?.let { st -> put("state", buildJsonObject { put("inside", st.inside); put("since", st.since); put("tst", st.tst) }) }
+        })
+    })
+    snap.live?.let { l ->
+        put("live", buildJsonObject {
+            put("state", l.state)
+            l.since?.let { put("since", it) }
+            l.lastFrameAt?.let { put("lastFrameAt", it) }
+            put("reconnects", l.reconnects)
+            l.lastError?.let { put("lastError", it) }
+        })
+    }
+}.toString()
 
 fun parseCaches(raw: String): List<MapCache> {
     val el = runCatching { json.parseToJsonElement(raw) }.getOrNull() ?: return emptyList()

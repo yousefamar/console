@@ -178,6 +178,11 @@ while the app is foregrounded (plus short background borrows), so a remote
   `Frontmatter.kt`, `AgentLabels.kt` are the precedents).
 - Same wire shape ≠ same rendering: check `ui/<domain>/*.kt`, not just the
   React component — e.g. map features live in `MapScreen.kt`/`MapRenderer.kt`.
+- MapLibre Native's paint properties are not all data-driven the way GL JS's
+  are: `line-dasharray` (and `line-pattern`, `fill-pattern`) take no
+  per-feature expression natively. A `case`/`match` the SPA uses there must
+  become filtered sibling layers on the phone (`geo-fences-line` solid +
+  `geo-fences-line-unknown` dashed, ^wavy-newt).
 
 **Theme (light + dark since ^plum-lark)**
 - Never hardcode a status/link colour (`Color(0xFF4ADE80)` etc.) in `ui/` —

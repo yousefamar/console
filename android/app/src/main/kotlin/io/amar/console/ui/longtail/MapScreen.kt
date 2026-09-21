@@ -1,7 +1,13 @@
 package io.amar.console.ui.longtail
 
 import android.graphics.PointF
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -80,7 +86,9 @@ import io.amar.console.data.longtail.fmtDuration
 import io.amar.console.data.longtail.fmtRating
 import io.amar.console.data.longtail.gmapsDirUrl
 import io.amar.console.data.longtail.placeTypeLabels
+import io.amar.console.data.longtail.LocationFeed
 import io.amar.console.data.longtail.MapCache
+import io.amar.console.data.longtail.MapFence
 import io.amar.console.data.longtail.MapRepository
 import io.amar.console.data.longtail.MapUiState
 import io.amar.console.data.longtail.MeetupEvent
@@ -176,6 +184,8 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}, onOpenDeck: () -> Un
                 val gc = map.queryRenderedFeatures(pt, "gc-pins")
                 val mu = map.queryRenderedFeatures(pt, "meetup-pins")
                 val route = if (repo.state.value.gmapsRoutes.size > 1) map.queryRenderedFeatures(pt, "gmaps-routes") else emptyList()
+                // A pin tap supersedes an open fence sheet (the panels below are an if/else chain).
+                if (gm.isNotEmpty() || gc.isNotEmpty() || mu.isNotEmpty() || route.isNotEmpty()) repo.selectFence(null)
                 when {
                     gm.isNotEmpty() -> {
                         gm[0].getStringProperty("id")?.let { repo.selectPlace(it) }
@@ -198,6 +208,7 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}, onOpenDeck: () -> Un
                         // opens an info panel from the feature's properties
                         // (the SPA popup, driven by the layer's popup[] list).
                         val st = repo.state.value
+                        var hit = false
                         outer@ for (l in st.layers) {
                             if (st.layerVisible[l.slug] == false) continue
                             val ids = listOf("layer:${l.slug}:circle", "layer:${l.slug}:symbol", "layer:${l.slug}:label", "layer:${l.slug}:fill")
@@ -205,9 +216,23 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}, onOpenDeck: () -> Un
                                 val fs = runCatching { map.queryRenderedFeatures(pt, layerId) }.getOrDefault(emptyList())
                                 if (fs.isNotEmpty()) {
                                     featureInfo = agentFeatureInfo(l, fs[0], latLng.latitude, latLng.longitude)
+                                    repo.selectFence(null)
+                                    hit = true
                                     break@outer
                                 }
                             }
+                        }
+                        // Geofences sit under everything, so they are the last
+                        // fallback: a tap inside a disc opens its state sheet
+                        // (the SPA's geo-fences-fill popup); a tap on bare map
+                        // closes it.
+                        if (!hit) {
+                            val fence = if (st.builtinVisible[BuiltinLayer.FENCES] != false) {
+                                runCatching { map.queryRenderedFeatures(pt, "geo-fences-fill") }.getOrDefault(emptyList())
+                            } else emptyList()
+                            val id = fence.firstOrNull()?.getStringProperty("id")
+                            if (id != null) featureInfo = null
+                            repo.selectFence(id)
                         }
                     }
                 }
@@ -383,6 +408,7 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}, onOpenDeck: () -> Un
 
         val selectedCache = state.pins.find { it.code == state.selectedCode }
         val selectedEvent = state.events.find { it.id == state.selectedEventId }
+        val selectedFence = state.fences.find { it.id == state.selectedFenceId }
         val selectedPlace = state.gmapsResults.find { it.id == state.gmapsSelectedPlaceId }
         if (selectedPlace != null) {
             PlaceDetailPanel(
@@ -406,6 +432,8 @@ fun MapScreen(repo: MapRepository, onGrid: () -> Unit = {}, onOpenDeck: () -> Un
             CacheDetailPanel(selectedCache, onClose = { scope.launch { repo.selectCache(null) } }, modifier = Modifier.align(Alignment.TopEnd))
         } else if (selectedEvent != null) {
             MeetupEventPanel(selectedEvent, onClose = { scope.launch { repo.selectEvent(null) } }, modifier = Modifier.align(Alignment.TopEnd))
+        } else if (selectedFence != null) {
+            FenceDetailPanel(selectedFence, onClose = { repo.selectFence(null) }, modifier = Modifier.align(Alignment.TopEnd))
         } else featureInfo?.let { info ->
             AgentFeaturePanel(
                 info,
@@ -493,10 +521,10 @@ private fun MapToolbar(
                 )
             }
 
-            // Layers button — total count = agent layers + 3 built-ins.
+            // Layers button — total count = agent layers + the built-ins.
             ToolbarChip(onClick = onToggleLayers) {
                 Icon(Icons.Filled.Layers, "Map layers", modifier = Modifier.size(15.dp))
-                Text("${state.layers.size + 3}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("${state.layers.size + BuiltinLayer.entries.size}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             // Light/dark basemap (sunlight readability).
@@ -511,8 +539,14 @@ private fun MapToolbar(
             // Location cluster (only while the Location built-in is on).
             if (state.builtinVisible[BuiltinLayer.LOCATION] != false) {
                 LocationRangeChip(state, onRangeDays, onCustomRange, onDevice)
+                // The dot on the corner is the hub's Recorder WebSocket health
+                // (SPA `feedDotClass`): green live, amber pulsing reconnecting,
+                // grey no feed / unknown.
                 ToolbarChip(onClick = onFlyToMe) {
-                    Icon(Icons.Filled.MyLocation, "Centre on my location", modifier = Modifier.size(15.dp))
+                    Box {
+                        Icon(Icons.Filled.MyLocation, "Centre on my location · ${feedTitle(state.locationFeed)}", modifier = Modifier.size(15.dp))
+                        FeedDot(state.locationFeed, Modifier.align(Alignment.TopEnd))
+                    }
                 }
             }
 
@@ -699,6 +733,7 @@ private fun LayersPanel(
             Spacer(Modifier.size(4.dp))
             // built-ins
             BuiltinRow("🔵 Location history", state.builtinVisible[BuiltinLayer.LOCATION] != false, null) { onToggleBuiltin(BuiltinLayer.LOCATION) }
+            BuiltinRow("🟢 Geofences", state.builtinVisible[BuiltinLayer.FENCES] != false, state.fences.size) { onToggleBuiltin(BuiltinLayer.FENCES) }
             BuiltinRow("📦 Geocaches", state.builtinVisible[BuiltinLayer.GEOCACHES] != false, geocacheCount) { onToggleBuiltin(BuiltinLayer.GEOCACHES) }
             BuiltinRow("📅 Meetup events", state.builtinVisible[BuiltinLayer.MEETUP] != false, meetupCount) { onToggleBuiltin(BuiltinLayer.MEETUP) }
 
@@ -948,6 +983,111 @@ private fun MeetupEventPanel(event: MeetupEvent, onClose: () -> Unit, modifier: 
         }
     }
 }
+
+// ---------------------------------------------------------------------- //
+// Geofences (SPA geo-fences-fill popup + feedDotClass parity)
+
+/** Tapped fence → its hub state: INSIDE/outside for how long, radius, wake targets, private, note, expiry. */
+@Composable
+private fun FenceDetailPanel(fence: MapFence, onClose: () -> Unit, modifier: Modifier = Modifier) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val st = fence.state
+    Surface(
+        modifier = modifier.padding(top = 8.dp, end = 8.dp).widthIn(max = 320.dp).heightIn(max = 420.dp),
+        shape = RoundedCornerShape(8.dp),
+        tonalElevation = 4.dp,
+        shadowElevation = 8.dp,
+    ) {
+        Column(Modifier.padding(12.dp).verticalScroll(rememberScrollState())) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(fence.name, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) { Icon(Icons.Filled.Close, "Close", modifier = Modifier.size(16.dp)) }
+            }
+            val stateText = when {
+                st == null -> "unknown (no fix yet)"
+                st.inside -> "INSIDE for ${fmtSince(st.since)}"
+                else -> "outside for ${fmtSince(st.since)}"
+            }
+            val stateColor = when {
+                st == null -> MaterialTheme.colorScheme.onSurfaceVariant
+                st.inside -> MaterialTheme.accents.green
+                else -> MaterialTheme.colorScheme.onSurface
+            }
+            FenceRow("State", stateText, stateColor)
+            FenceRow("Radius", "${fence.radius.toInt()} m")
+            if (fence.wake.isNotEmpty()) FenceRow("Wakes", fence.wake.joinToString(", "))
+            if (fence.private) FenceRow("Private", "yes", MaterialTheme.accents.amber)
+            fence.note?.takeIf { it.isNotBlank() }?.let { FenceRow("Note", it) }
+            fence.expiresAt?.takeIf { it > 0 }?.let { FenceRow("Expires", formatEpochMs(it)) }
+            TextButton(onClick = { openInMaps(ctx, fence.lat, fence.lon, fence.name) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                Icon(Icons.Filled.Directions, null, modifier = Modifier.size(14.dp), tint = MaterialTheme.accents.blue)
+                Spacer(Modifier.size(4.dp))
+                Text("navigate", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FenceRow(label: String, value: String, valueColor: Color = MaterialTheme.colorScheme.onSurface) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.widthIn(min = 52.dp))
+        Text(value, style = MaterialTheme.typography.bodySmall, color = valueColor, modifier = Modifier.weight(1f))
+    }
+}
+
+/** The live-feed health dot on the my-location chip (SPA `feedDotClass`). */
+@Composable
+private fun FeedDot(feed: LocationFeed?, modifier: Modifier = Modifier) {
+    val pulsing = feed?.state == "connecting"
+    val alpha = if (pulsing) {
+        rememberInfiniteTransition(label = "feed-pulse").animateFloat(
+            initialValue = 1f, targetValue = 0.25f,
+            animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+            label = "feed-alpha",
+        ).value
+    } else 1f
+    val color = when (feed?.state) {
+        "connected" -> MaterialTheme.accents.green
+        "connecting" -> MaterialTheme.accents.amber
+        "polling" -> MaterialTheme.colorScheme.onSurfaceVariant
+        else -> MaterialTheme.colorScheme.outline
+    }
+    Box(
+        modifier
+            .size(6.dp)
+            .clip(CircleShape)
+            .background(color.copy(alpha = alpha)),
+    )
+}
+
+/** Tooltip/content-description twin of the SPA `feedTitle`. */
+fun feedTitle(feed: LocationFeed?): String {
+    if (feed == null) return "live feed: unknown"
+    return when (feed.state) {
+        "connected" -> "live feed connected" +
+            (feed.lastFrameAt?.let { ", last fix ${fmtSince(it)} ago" } ?: "") +
+            (if (feed.reconnects > 0) ", ${feed.reconnects} reconnects" else "")
+        "connecting" -> "live feed reconnecting" + (feed.lastError?.let { " ($it)" } ?: "")
+        "polling" -> "no live feed" + (feed.lastError?.let { " — $it" } ?: "")
+        else -> "live feed stopped"
+    }
+}
+
+/** "42 s" / "5 min" / "1.5 h" / "3 d" since an epoch-ms instant (SPA `fmtSince`). */
+fun fmtSince(ms: Long, nowMs: Long = System.currentTimeMillis()): String {
+    val s = ((nowMs - ms) / 1000).coerceAtLeast(0)
+    return when {
+        s < 60 -> "$s s"
+        s < 3600 -> "${Math.round(s / 60.0)} min"
+        s < 86400 -> "%.1f h".format(java.util.Locale.ENGLISH, s / 3600.0)
+        else -> "${Math.round(s / 86400.0)} d"
+    }
+}
+
+private fun formatEpochMs(ms: Long): String =
+    java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneId.systemDefault())
+        .format(java.time.format.DateTimeFormatter.ofPattern("d MMM HH:mm", java.util.Locale.ENGLISH))
 
 // ---------------------------------------------------------------------- //
 // Google Maps search + place detail (SPA GmapsPanel / PlaceDetailPanel parity)

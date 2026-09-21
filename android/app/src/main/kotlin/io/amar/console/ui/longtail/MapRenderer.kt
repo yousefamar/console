@@ -7,6 +7,7 @@ import io.amar.console.data.longtail.BuiltinLayer
 import io.amar.console.data.longtail.GPlace
 import io.amar.console.data.longtail.GRoute
 import io.amar.console.data.longtail.MapCache
+import io.amar.console.data.longtail.MapFence
 import io.amar.console.data.longtail.MapLayerMeta
 import io.amar.console.data.longtail.MapUiState
 import io.amar.console.data.longtail.MeetupEvent
@@ -31,8 +32,9 @@ import org.maplibre.android.style.sources.GeoJsonSource
  * so the Compose layer stays declarative (it just calls `apply(state)`).
  *
  * Layer stack (bottom→top), mirroring the SPA ids:
- *   ot-track (line) · ot-current (circle) · agent layers ·
- *   gc-selected (ring) · gc-pins (emoji) · meetup-selected (ring) · meetup-pins
+ *   geo-fences-fill/-line/-line-unknown · geo-fence-labels · ot-track (line) ·
+ *   ot-current (circle) · agent layers · gc-selected (ring) · gc-pins (emoji) ·
+ *   meetup-selected (ring) · meetup-pins
  */
 class MapRenderer {
     private var style: Style? = null
@@ -90,6 +92,57 @@ class MapRenderer {
     // --- base overlay sources + layers -------------------------------------- //
 
     private fun addBaseOverlays(s: Style) {
+        // Geofences sit under everything else: a translucent disc tinted by
+        // state (green inside, neutral outside; amber outline when private),
+        // dashed while the hub has not evaluated it yet, name label just above
+        // the north edge. MapTab.tsx geo-fences parity. Data arrives live over
+        // SyncBus 'location'. Unlike GL JS, native `line-dasharray` is not
+        // data-driven, so the unknown-state dash is its own filtered layer.
+        if (s.getSource("geo-fences") == null) {
+            s.addSource(GeoJsonSource("geo-fences", emptyFc()))
+            val inside = Expression.eq(Expression.get("inside"), Expression.literal(1L))
+            val isPrivate = Expression.eq(Expression.get("private"), Expression.literal(1L))
+            val known = Expression.eq(Expression.get("known"), Expression.literal(1L))
+            s.addLayer(
+                FillLayer("geo-fences-fill", "geo-fences").withProperties(
+                    PropertyFactory.fillColor(Expression.switchCase(inside, Expression.literal(FENCE_INSIDE), Expression.literal(FENCE_OUTSIDE))),
+                    PropertyFactory.fillOpacity(Expression.switchCase(inside, Expression.literal(0.22f), Expression.literal(0.1f))),
+                ),
+            )
+            val lineColor = PropertyFactory.lineColor(
+                Expression.switchCase(
+                    inside, Expression.literal(FENCE_INSIDE),
+                    isPrivate, Expression.literal(FENCE_PRIVATE),
+                    Expression.literal(FENCE_OUTSIDE),
+                ),
+            )
+            val lineWidth = PropertyFactory.lineWidth(Expression.switchCase(inside, Expression.literal(2.5f), Expression.literal(1.5f)))
+            s.addLayer(
+                LineLayer("geo-fences-line", "geo-fences").apply { setFilter(known) }.withProperties(
+                    lineColor, lineWidth, PropertyFactory.lineOpacity(0.9f),
+                ),
+            )
+            s.addLayer(
+                LineLayer("geo-fences-line-unknown", "geo-fences").apply { setFilter(Expression.not(known)) }.withProperties(
+                    lineColor, lineWidth, PropertyFactory.lineOpacity(0.9f),
+                    PropertyFactory.lineDasharray(arrayOf(2f, 2f)),
+                ),
+            )
+            s.addSource(GeoJsonSource("geo-fence-labels", emptyFc()))
+            s.addLayer(
+                SymbolLayer("geo-fence-labels", "geo-fence-labels").apply { minZoom = 10f }.withProperties(
+                    PropertyFactory.textField(Expression.get("name")),
+                    PropertyFactory.textFont(arrayOf("Noto Sans Regular")),
+                    PropertyFactory.textSize(11f),
+                    PropertyFactory.textOffset(arrayOf(0f, -0.4f)),
+                    PropertyFactory.textAnchor(Property.TEXT_ANCHOR_BOTTOM),
+                    PropertyFactory.textAllowOverlap(false),
+                    PropertyFactory.textColor(Expression.switchCase(inside, Expression.literal("#4ade80"), Expression.literal("#cbd5e1"))),
+                    PropertyFactory.textHaloColor("#0a0a0a"),
+                    PropertyFactory.textHaloWidth(1.2f),
+                ),
+            )
+        }
         if (s.getSource("ot-track") == null) {
             s.addSource(GeoJsonSource("ot-track", emptyFc()))
             s.addLayer(
@@ -230,6 +283,8 @@ class MapRenderer {
         (s.getSourceAs<GeoJsonSource>("meetup-pins"))?.setGeoJson(eventsFc(state.events))
         (s.getSourceAs<GeoJsonSource>("ot-track"))?.setGeoJson(trackFc(state.track))
         (s.getSourceAs<GeoJsonSource>("ot-current"))?.setGeoJson(currentFc(state.current))
+        (s.getSourceAs<GeoJsonSource>("geo-fences"))?.setGeoJson(fencesFc(state.fences))
+        (s.getSourceAs<GeoJsonSource>("geo-fence-labels"))?.setGeoJson(fenceLabelsFc(state.fences))
         (s.getLayer("gc-selected"))?.setFilter(
             Expression.eq(Expression.get("code"), Expression.literal(state.selectedCode ?: "")),
         )
@@ -259,6 +314,7 @@ class MapRenderer {
 
     private val builtinSublayers = mapOf(
         BuiltinLayer.LOCATION to listOf("ot-track", "ot-current"),
+        BuiltinLayer.FENCES to listOf("geo-fences-fill", "geo-fences-line", "geo-fences-line-unknown", "geo-fence-labels"),
         BuiltinLayer.GEOCACHES to listOf("gc-selected", "gc-pins"),
         BuiltinLayer.MEETUP to listOf("meetup-selected", "meetup-pins"),
     )
@@ -418,6 +474,11 @@ class MapRenderer {
 
     companion object {
         const val GMAPS_EMOJI = "📍"
+        // Fence tints (MapTab.tsx geo-fences paint): green-500 inside, slate-400
+        // outside, amber-500 outline for a privacy zone.
+        const val FENCE_INSIDE = "#22c55e"
+        const val FENCE_OUTSIDE = "#94a3b8"
+        const val FENCE_PRIVATE = "#f59e0b"
         fun emptyFc(): String = """{"type":"FeatureCollection","features":[]}"""
     }
 }
@@ -481,6 +542,47 @@ fun routeBbox(route: GRoute): List<Double>? {
 fun currentFc(current: List<OtFix>): String {
     val feats = current.joinToString(",") { f ->
         """{"type":"Feature","geometry":{"type":"Point","coordinates":[${f.lon},${f.lat}]},"properties":{"device":${jsonStr(f.device ?: "")}}}"""
+    }
+    return """{"type":"FeatureCollection","features":[$feats]}"""
+}
+
+/** Metres per degree of latitude — the equirectangular constant the SPA uses. */
+const val METRES_PER_DEG_LAT = 111_320.0
+
+/**
+ * A geodesic circle as a closed lon/lat polygon ring (port of `circleRing` in
+ * MapTab.tsx). MapLibre circles are pixel-sized; a fence is metres, so it needs
+ * real geometry. `steps` segments → `steps + 1` points, the last equal to the
+ * first (GeoJSON ring closure). Pairs are (lon, lat).
+ */
+fun circleRing(lat: Double, lon: Double, radiusM: Double, steps: Int = 64): List<Pair<Double, Double>> {
+    val dLat = radiusM / METRES_PER_DEG_LAT
+    val dLon = radiusM / (METRES_PER_DEG_LAT * Math.cos(Math.toRadians(lat)))
+    return (0..steps).map { i ->
+        val a = (i.toDouble() / steps) * 2 * Math.PI
+        (lon + dLon * Math.cos(a)) to (lat + dLat * Math.sin(a))
+    }
+}
+
+/** Fences → one Polygon each with the state/visual flags the layer expressions read (MapTab.tsx `fencesToFC`). */
+fun fencesFc(fences: List<MapFence>): String {
+    val feats = fences.joinToString(",") { f ->
+        val ring = circleRing(f.lat, f.lon, f.radius).joinToString(",") { (lon, lat) -> "[$lon,$lat]" }
+        """{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[$ring]]},""" +
+            """"properties":{"id":${jsonStr(f.id)},"name":${jsonStr(f.name)},"radius":${f.radius},""" +
+            """"inside":${if (f.state?.inside == true) 1 else 0},"known":${if (f.state != null) 1 else 0},""" +
+            """"private":${if (f.private) 1 else 0},"since":${f.state?.since ?: 0L},""" +
+            """"note":${jsonStr(f.note ?: "")},"wake":${jsonStr(f.wake.joinToString(", "))},"expiresAt":${f.expiresAt ?: 0L}}}"""
+    }
+    return """{"type":"FeatureCollection","features":[$feats]}"""
+}
+
+/** Labels sit just above each circle's north edge — a geographic point, so they clear the pin at every zoom. */
+fun fenceLabelsFc(fences: List<MapFence>): String {
+    val feats = fences.joinToString(",") { f ->
+        val northLat = f.lat + f.radius / METRES_PER_DEG_LAT
+        """{"type":"Feature","geometry":{"type":"Point","coordinates":[${f.lon},$northLat]},""" +
+            """"properties":{"id":${jsonStr(f.id)},"name":${jsonStr(f.name)},"inside":${if (f.state?.inside == true) 1 else 0}}}"""
     }
     return """{"type":"FeatureCollection","features":[$feats]}"""
 }

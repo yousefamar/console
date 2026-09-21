@@ -46,6 +46,33 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **Map: live location feed + geofences layer** (^wavy-newt, parity with
+  ^lean-vole ce8dba05 + ^odd-goat de3622d8). The hub now holds the OwnTracks
+  Recorder WebSocket and evaluates server-side geofences; the SPA Map draws
+  them live and the app had none of it — the pin only moved on a reconnect,
+  fences did not exist. `MapRepository` gains `fences` / `locationFeed` /
+  `selectedFenceId`: `reconcile()` also loads `GET /location/map`, and
+  `wireLiveDeltas` subscribes SyncBus `location` — `fix` folds into
+  `current` + extends the drawn track when its range reaches now
+  (`mergeLiveFix`, the SPA `applyLiveFix` port), `fences` replaces the list,
+  `feed` carries the socket health. `MapRenderer`: `geo-fences-fill` /
+  `geo-fences-line` / `geo-fence-labels` under every other layer, each fence a
+  geodesic 64-gon (`circleRing` — MapLibre circles are pixel-sized), green
+  inside / slate outside / amber outline when private; native
+  `line-dasharray` is NOT data-driven (GL JS's is), so the "unknown state"
+  dash is a fourth filtered layer `geo-fences-line-unknown`. `MapScreen`: tap
+  inside a disc (last fallback under pins + agent layers) opens a
+  `FenceDetailPanel` (state + since, radius, wakes, private, note, expiry,
+  navigate); Layers panel row "🟢 Geofences" with count, persisted in the same
+  `console:map:builtinVisible` meta row as the other built-ins; the
+  my-location chip wears a `FeedDot` (green live / amber pulsing reconnecting
+  / grey none). Offline: the last fences + fix are cached in Room meta
+  (`console:map:location:v1`) and hydrate before the WS connects; the feed
+  health is deliberately not cached (it describes the hub's socket). Tests:
+  `MapRendererLogicTest` (ring geometry/closure, fence + label FCs, fmtSince,
+  feedTitle) and `MapLogicTest` (snapshot parse incl. nulls, Room round-trip,
+  `mergeLiveFix` device/track rules).
+
 ## Shipped
 
 ### v102 (2026-09-20)
