@@ -180,7 +180,12 @@ describe('provisionInbox', () => {
   it('an mxroute CONFLICT explains how to adopt; --password adopts without creating', async () => {
     const h = harness()
     h.mx.fail = new MxrouteError(409, 'CONFLICT', 'Email account already exists')
-    const err = await provisionInbox({ name: 'ceo' }, h.deps).catch((e) => e as Error & { code: string })
+    // .catch's return type unions with the promise's success type — narrow it:
+    // the call MUST reject here, so make the success path fail the test.
+    const err = await provisionInbox({ name: 'ceo' }, h.deps).then(
+      () => { throw new Error('expected provisionInbox to reject on CONFLICT') },
+      (e) => e as Error & { code: string },
+    )
     expect(err.code).toBe('CONFLICT')
     expect(err.message).toContain('--password')
     expect(existsSync(join(h.deps.configHome, 'ceo-mail'))).toBe(false)
