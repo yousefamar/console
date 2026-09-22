@@ -42,6 +42,9 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+## Shipped
+
+### v103 (2026-09-21)
 - **Map: live location feed + geofences layer** (^wavy-newt, parity with
   ^lean-vole ce8dba05 + ^odd-goat de3622d8). The hub now holds the OwnTracks
   Recorder WebSocket and evaluates server-side geofences; the SPA Map draws
@@ -130,8 +133,6 @@ view-mode hub-sync (Room meta is fine on one device).
   `Icons.Filled.Sensors` (the closest to lucide's Radio) + count,
   `onSurfaceVariant`, AMBER when any rule is paused (the SPA's yellow), beside
   the cron Clock. Tests: the badge case in `ListenersTest`.
-
-## Shipped
 
 ### v102 (2026-09-20)
 - **Agent session: hand-back + blocked strips capped like the question pager**
