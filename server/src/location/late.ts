@@ -1,5 +1,6 @@
 // Late-for-a-meeting check — the primitive behind "if I'm running more than
-// 10 min late, …". For every upcoming calendar event with a PHYSICAL venue:
+// 10 min late, …". For every upcoming event he is going to (cal/visibility.ts:
+// his ticked calendars, invites he has not declined) with a PHYSICAL venue:
 // geocode it, get a traffic-aware ETA from his current fix, compare arrival
 // with the start. One report per event; it re-reports only when lateness has
 // grown by another threshold (state file keyed by event id). All IO injected.

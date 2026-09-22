@@ -23,6 +23,7 @@ import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
 import type { AuthStore } from '../auth-store.js'
 import { health } from '../health.js'
+import { isVisibleCalendar } from './visibility.js'
 import type { EmitInput, HubEvent } from '../events/types.js'
 
 type EventFingerprint = string // hash of `updated` timestamp + status
@@ -175,7 +176,7 @@ export class CalendarSync {
   private async syncAccount(account: string): Promise<void> {
     const list = await this.cal.getCalendarList(account).catch(() => null)
     if (!list) return
-    const visible = list.items.filter((c) => c.selected !== false)
+    const visible = list.items.filter(isVisibleCalendar)
 
     const now = new Date()
     const timeMin = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()

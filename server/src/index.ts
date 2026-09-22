@@ -1742,7 +1742,7 @@ const locationCtx: LocationRouteCtx = {
     const r = routes[0]
     return r ? { durationSec: r.durationSec, distanceMeters: r.distanceMeters, description: r.description } : null
   },
-  listEvents: async (fromIso, toIso) => (await listAllEvents(calendarClient, authStore, fromIso, toIso)) as import('./location/late.js').CalEvent[],
+  listEvents: async (fromIso, toIso) => (await listAllEvents(calendarClient, authStore, fromIso, toIso, 'true', { attending: true })) as import('./location/late.js').CalEvent[],
 }
 const certCandidates = (() => {
   try {

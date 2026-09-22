@@ -5,22 +5,40 @@ import type { CalendarClient } from '../calendar-client.js'
 import type { AuthStore } from '../auth-store.js'
 import type { DedupStore } from '../dedup-store.js'
 import { readLinks, linksPatch, addLink, removeLink, LINK_MARKER_FILTER, LinkTooLongError } from '../calendar-links.js'
+import { attendsEvent, ownEmails, visibleCalendars, type CalendarListEntry } from '../cal/visibility.js'
 
-/** Every event across every account's calendars in [timeMin, timeMax], each
- *  stamped with `calendarId` + `accountEmail`. Per-calendar failures are
- *  skipped, never fatal — one broken shared calendar must not blank the list. */
-export async function listAllEvents(calendar: CalendarClient, authStore: AuthStore, timeMin: string, timeMax?: string, singleEvents = 'true'): Promise<unknown[]> {
-  const allEvents: unknown[] = []
+/** The calendars Google Calendar shows him, across all his accounts, each once
+ *  (see cal/visibility.ts). Per-account failures are skipped, never fatal. */
+export async function listVisibleCalendars(calendar: CalendarClient, authStore: AuthStore): Promise<CalendarListEntry[]> {
+  const entries: CalendarListEntry[] = []
   for (const acc of authStore.getGoogleAccounts()) {
     try {
-      const calendars = await calendar.getCalendarList(acc.email)
-      for (const cal of calendars.items || []) {
-        try {
-          const events = await calendar.getEvents(acc.email, cal.id, { timeMin, timeMax, singleEvents }) as any
-          for (const event of events.items || []) allEvents.push({ ...event, calendarId: cal.id, accountEmail: acc.email })
-        } catch { /* skip individual calendar errors */ }
-      }
+      const list = await calendar.getCalendarList(acc.email)
+      for (const cal of list.items || []) entries.push({ ...cal, accountEmail: acc.email })
     } catch { /* skip account errors */ }
+  }
+  return visibleCalendars(entries)
+}
+
+/** Every event on his visible calendars in [timeMin, timeMax], each stamped
+ *  with `calendarId` + `accountEmail` (the account with the most access — the
+ *  APK writes back through it) + `accessRole`. `attending` keeps only events he
+ *  is going to (late-check). Per-calendar failures are skipped, never fatal —
+ *  one broken shared calendar must not blank the list. */
+export async function listAllEvents(
+  calendar: CalendarClient, authStore: AuthStore, timeMin: string, timeMax?: string, singleEvents = 'true',
+  opts: { attending?: boolean } = {},
+): Promise<unknown[]> {
+  const own = ownEmails(authStore.getGoogleAccounts())
+  const allEvents: unknown[] = []
+  for (const cal of await listVisibleCalendars(calendar, authStore)) {
+    try {
+      const events = await calendar.getEvents(cal.accountEmail, cal.id, { timeMin, timeMax, singleEvents }) as any
+      for (const event of events.items || []) {
+        if (opts.attending && !attendsEvent(event, cal, own)) continue
+        allEvents.push({ ...event, calendarId: cal.id, accountEmail: cal.accountEmail, accessRole: cal.accessRole })
+      }
+    } catch { /* skip individual calendar errors */ }
   }
   return allEvents
 }
