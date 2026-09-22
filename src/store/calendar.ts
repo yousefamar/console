@@ -9,6 +9,7 @@ import { useUiStore } from '@/store/ui'
 import { getPref, setPref, isPrefsLoaded, prefsReady } from '@/prefs'
 import type { CalendarInfo, CalendarEvent, DbCalendarInfo, DbCalendarEvent } from '@/calendar/types'
 import { readLinks } from '@/calendar/links'
+import { isShownInGoogle } from '@/calendar/google-visibility'
 
 const VISIBLE_CAL_IDS_PREF = 'calendar.visibleIds'
 const DEFAULT_CAL_PREF = 'calendar.defaultId'
@@ -362,7 +363,7 @@ export const useCalendarStore = create<CalendarState>((set, get) => ({
       for (const result of results) {
         if (result.status === 'fulfilled') {
           const cals = result.value.items
-            .filter((c) => c.selected !== false)
+            .filter(isShownInGoogle)
             .map((c) => ({ ...c, accountEmail: result.value.accountEmail, apiAccountEmail: result.value.accountEmail }))
           calsByAccount.set(result.value.accountEmail, cals)
         }

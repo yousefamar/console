@@ -326,7 +326,7 @@ class GlassesMirror(
             db.calendar().observeEventsInRange(now - 60 * 60_000L, now + 30L * 24 * 3600_000L).first()
         }.getOrDefault(emptyList())
         val visibleIds = graph?.calendar?.visibleIds?.value
-        val visible = rows.filter { visibleIds == null || visibleIds.contains("${it.accountEmail}:${it.calendarId}") }
+        val visible = rows.filter { io.amar.console.data.cal.isCalendarShown(visibleIds, it.calendarId) }
         val upcoming = visible.filter { it.startTime >= now - 60 * 60_000L }.sortedBy { it.startTime }.take(MirrorText.BODY_ROWS)
         val body = upcoming.map { MirrorText.clipRow("${fmtEventTime(it.startTime, it.isAllDay)}  ${it.summary.ifBlank { "(no title)" }}") }
         return Frame(

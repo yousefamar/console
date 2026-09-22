@@ -52,6 +52,10 @@ interface CalendarDao {
     @Query("SELECT * FROM cal_list")
     suspend fun calendars(): List<CalendarRow>
 
+    /** Calendars the hub no longer lists (unsubscribed, or unchecked in Google). */
+    @Query("DELETE FROM cal_list WHERE id NOT IN (:keepIds)")
+    suspend fun deleteCalendarsNotIn(keepIds: List<String>)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertEvents(rows: List<CalEventRow>)
 

@@ -938,11 +938,14 @@ class CalendarRepository(
     }
 
     suspend fun reconcile() {
-        // 1. Calendar list.
+        // 1. Calendar list — only what Google Calendar itself shows (checked
+        // calendars; the hub returns the whole list so the SPA sidebar can
+        // offer toggles). Rows for calendars no longer listed are dropped.
         val calsResp = runCatching { hub.get("/cal/calendars") }.getOrNull()
         if (calsResp != null) {
             val cals = (json.parseToJsonElement(calsResp) as? JsonArray)
-                ?.mapNotNull { it as? JsonObject } ?: emptyList()
+                ?.mapNotNull { it as? JsonObject }
+                ?.filter { isSelectedCalendar(it) } ?: emptyList()
             val defaults = HashMap<String, List<Int>>()
             val calRows = cals.mapNotNull { c ->
                 val id = c["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
@@ -958,9 +961,18 @@ class CalendarRepository(
                     visible = true,
                 )
             }
-            if (calRows.isNotEmpty()) db.calendar().upsertCalendars(calRows)
+            if (calRows.isNotEmpty()) db.withTransaction {
+                db.calendar().upsertCalendars(calRows)
+                db.calendar().deleteCalendarsNotIn(calRows.map { it.id })
+            }
             calendarDefaults.value = defaults
         }
+        val shownCalendars = db.calendar().calendars()
+        val shownCalIds = shownCalendars.map { it.calendarId }.toSet()
+        // A calendar reachable through two accounts: the token with the most
+        // access is the one that saw the event's details.
+        val accessByCalId = shownCalendars.groupBy { it.calendarId }
+            .mapValues { (_, rows) -> bestAccessRole(rows.map { it.accessRole }) }
 
         // 2. Events for the offline window — hub fans out across calendars.
         val now = System.currentTimeMillis()
@@ -980,7 +992,10 @@ class CalendarRepository(
                 if (e["status"]?.jsonPrimitive?.content == "cancelled") return@mapNotNull null
                 val account = e["accountEmail"]?.jsonPrimitive?.content ?: ""
                 val calId = e["calendarId"]?.jsonPrimitive?.content ?: ""
-                eventRowFromGoogle(e, account, calId)
+                // Events of a calendar Google doesn't show are never cached —
+                // cached ones then fall to the stale sweep below.
+                if (shownCalIds.isNotEmpty() && calId !in shownCalIds) return@mapNotNull null
+                eventRowFromGoogle(e, account, calId, e["accessRole"]?.jsonPrimitive?.content ?: accessByCalId[calId])
             }
             val serverKeys = rows.map { it.compoundKey }.toSet()
             // Protect pending-queue temp/optimistic writes from stale-cleanup.
@@ -1006,7 +1021,7 @@ class CalendarRepository(
 
     // ---------------------------------------------------------------- //
 
-    internal fun eventRowFromGoogle(e: JsonObject, account: String, calendarId: String): CalEventRow? {
+    internal fun eventRowFromGoogle(e: JsonObject, account: String, calendarId: String, accessRole: String? = null): CalEventRow? {
         val id = e["id"]?.jsonPrimitive?.content ?: return null
         val start = e["start"] as? JsonObject
         val end = e["end"] as? JsonObject
@@ -1018,7 +1033,7 @@ class CalendarRepository(
             accountEmail = account,
             calendarId = calendarId,
             eventId = id,
-            summary = e["summary"]?.jsonPrimitive?.content ?: "(no title)",
+            summary = eventTitle(e["summary"]?.jsonPrimitive?.content, accessRole),
             location = e["location"]?.jsonPrimitive?.content,
             startTime = startMs,
             endTime = endMs,

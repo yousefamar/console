@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.amar.console.core.HubConfig
 import io.amar.console.data.cal.CalendarRepository
+import io.amar.console.data.cal.isCalendarShown
 import io.amar.console.data.cal.isOverlayCalendar
 import io.amar.console.data.cal.DAY_MS
 import io.amar.console.data.cal.FlightsRepository
@@ -128,7 +129,7 @@ fun CalendarScreen(repo: CalendarRepository, onGrid: () -> Unit = {}, onOpenNote
         if (overlayIds.isNotEmpty()) repo.ensureOverlaysVisible(overlayIds)
     }
     // null visibleIds → all visible (first load). Otherwise it's the allow-list.
-    fun isVisible(e: CalEventRow) = visibleIds?.contains(e.calendarId) ?: true
+    fun isVisible(e: CalEventRow) = isCalendarShown(visibleIds, e.calendarId)
     val hiddenCals = remember(visibleIds, calendars) {
         val vis = visibleIds ?: return@remember emptySet()
         calendars.map { it.calendarId }.filter { it !in vis }.toSet()

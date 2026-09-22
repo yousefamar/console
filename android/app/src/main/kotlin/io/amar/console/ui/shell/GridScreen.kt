@@ -103,9 +103,13 @@ fun GridScreen(
     val approvals by app.graph.agents.approvals.collectAsState()
     // Map tile = property pins awaiting a verdict (SPA Map tab count parity).
     val mapState by app.graph.map.state.collectAsState()
-    val nextEvent by app.graph.calendar
+    val upcomingRows by app.graph.calendar
         .observeEvents(System.currentTimeMillis(), System.currentTimeMillis() + 24 * 3600_000)
         .collectAsState(initial = emptyList())
+    val calVisibleIds by app.graph.calendar.visibleIds.collectAsState()
+    val nextEvent = androidx.compose.runtime.remember(upcomingRows, calVisibleIds) {
+        upcomingRows.filter { io.amar.console.data.cal.isCalendarShown(calVisibleIds, it.calendarId) }
+    }
 
     // Feeds total unread — items not in the read set (mirrors FeedsScreen).
     val feedItems by app.graph.feeds.observeItems().collectAsState(initial = emptyList())

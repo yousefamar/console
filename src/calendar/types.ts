@@ -7,7 +7,9 @@ export interface CalendarInfo {
   summary: string               // display name
   backgroundColor: string       // hex color from Google
   foregroundColor: string
-  selected: boolean             // user's visibility preference
+  selected?: boolean            // checked in Google Calendar — Google OMITS it when false
+  hidden?: boolean              // hidden from Google's calendar list
+  deleted?: boolean
   accessRole: 'owner' | 'writer' | 'reader' | 'freeBusyReader'
   primary?: boolean
   timeZone?: string
@@ -94,7 +96,7 @@ export interface DbCalendarInfo {
   summary: string
   backgroundColor: string
   foregroundColor: string
-  selected: boolean
+  selected?: boolean
   accessRole: string
   primary?: boolean
   timeZone?: string

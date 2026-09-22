@@ -150,7 +150,19 @@ while the app is foregrounded (plus short background borrows), so a remote
 **Cross-device prefs**
 - Keys must match the SPA's format EXACTLY (`calendar.visibleIds` = bare
   calendarIds, not `account:calendarId`). A mismatched shape silently fights
-  the desktop forever (calendars kept "un-showing").
+  the desktop forever (calendars kept "un-showing"). Every consumer goes
+  through `data/cal/CalVisibility.kt` `isCalendarShown` — the glasses mirror
+  kept its own compound-key check for months after the screen was fixed.
+
+**Calendar = what Google Calendar shows (^odd-bat)**
+- Google OMITS `selected` from a CalendarListEntry when it is false, so
+  `selected != false` shows every UNTICKED calendar — a colleague's whole
+  calendar (Workspace-admin `owner` access) leaked onto the launcher tile.
+  `isSelectedCalendar` (literal `true`) is the only gate; `reconcile()` keeps
+  just those rows in `cal_list` and never caches another calendar's events.
+  A detail-stripped event (no `summary` on a `reader`/`freeBusyReader`
+  calendar) is titled "Busy" via `eventTitle`, never "(no title)". Twins: hub
+  `server/src/cal/visibility.ts`, SPA `src/calendar/google-visibility.ts`.
 
 **Boards / Spaces**
 - Board reads via `GET /board/:project` (CardView incl. `nofork`/`model`,

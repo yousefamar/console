@@ -42,6 +42,37 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **Calendar shows what Google Calendar shows: checked calendars only, "Busy"
+  for detail-stripped events** (^odd-bat; Yousef 22 Sept: "I also see other
+  people's events on the Calendar icon"). Root cause, two layers: (1) the hub's
+  `GET /cal/events` fan-out (`listAllEvents`) returned every calendar of every
+  linked account — Sam's and Olly's calendars sit in yousef@artanis.ai's list
+  with Workspace-admin `owner` access but UNCHECKED in Google (^lime-lark owns
+  that hub fix + late-check); (2) Google OMITS `selected` when it is false
+  ("Optional. The default is False."), so every `selected != false` gate in
+  the codebase — the SPA store, `cal/sync.ts` reminders — treated unchecked
+  calendars as shown. New pure `data/cal/CalVisibility.kt`:
+  `isSelectedCalendar` (literal `selected == true`, not hidden/deleted),
+  `eventTitle` (no summary on a `reader`/`freeBusyReader` calendar = Google
+  stripped a private or free/busy event → "Busy"; on a writable calendar it is
+  genuinely "(no title)"), `bestAccessRole`, `isCalendarShown`.
+  `CalendarRepository.reconcile()` keeps only Google-checked calendars in
+  `cal_list` (new `deleteCalendarsNotIn` — unsubscribed/unchecked rows are
+  dropped, they used to live forever), never caches an event of a calendar
+  Google doesn't show (so an older hub's union is filtered too and cached
+  colleague events fall to the stale sweep), and titles rows via `eventTitle`
+  with the hub-stamped `accessRole` (falls back to the calendar row's best
+  role). The launcher's Calendar tile subtitle (`GridScreen` "next event") now
+  respects `calendar.visibleIds` — it read the raw Room range and was the
+  surface Yousef saw Sam's meetup on. Glasses mirror: its visibility check
+  compared the pref against `account:calendarId` compound keys while the pref
+  holds bare ids (the compound-key bug `CalendarScreen` fixed for itself,
+  never for the mirror) — now the shared helper. SPA twin: `src/calendar/google-visibility.ts` `isShownInGoogle`
+  replaces the store's `selected !== false`. Tests: `CalVisibilityTest` (pure
+  rules + a MockWebServer `reconcile()` over a hub still returning the union:
+  Sam's calendar row and cached event gone, his union event not cached, the
+  free/busy event titled "Busy"), `src/__tests__/calendar-google-visibility`.
+
 ## Shipped
 
 ### v103 (2026-09-21)
