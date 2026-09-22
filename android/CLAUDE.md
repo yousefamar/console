@@ -103,6 +103,18 @@ while the app is foregrounded (plus short background borrows), so a remote
   faces the same ever-growing gap and chats freeze while previews stay fresh.
 - Hub side bounds the resume backfill walk (6 workers, 20 s budget). Unbounded
   fan-out once starved the hub event loop so hard `/health` stopped answering.
+- Agent transcript catch-up (`AgentsRepository.catchUpSession`) must reach
+  the PRESENT, not advance by one page: follow `hasMore` (bounded), and when
+  the gap exceeds the hub's 500-row window (`truncated`) jump to
+  `since = totalLength − 200` — the skipped rows stay an `absIndex` hole that
+  the transcript renders as a "Load N older" seam filled via
+  `get_older_messages(beforeIndex)`. Rows from the hub carry their own
+  `absIndex`; never derive positions from `minIndex` arithmetic (a mid-seam
+  page would land below row 0). One page per `sessions_list` left every
+  session on the phone ~300 rows behind a chatty fork (^prim-tern). The same
+  catch-up is a SyncEngine domain (`reconcile()` over `/health`) so the
+  background borrow keeps transcripts current — the agents WS is
+  foreground-only.
 - Outbox results: `Done | Retry | Fail | Conflict | NotReady`. Transport-down is
   `NotReady` (row returns to pending, retry budget untouched) — treating it as
   `Retry` burned all 3 retries during reconnect storms and parked rows as

@@ -140,4 +140,24 @@ class TranscriptHelpersTest {
         assertFalse(isVideoPath("/tmp/noext"))
         assertFalse(isVideoPath("/tmp/dir.mp4/shot.png"))
     }
+
+    @Test
+    fun `gaps names the first present index after each hole with its size`() {
+        // Tail-jumped cache [0,3) ∪ [800,802): one hole of 797 rows ending at 800.
+        assertEquals(mapOf(800L to 797L), TranscriptHelpers.gaps(listOf(801L, 0L, 2L, 800L, 1L)))
+        assertEquals(mapOf(5L to 2L, 9L to 3L), TranscriptHelpers.gaps(listOf(2L, 5L, 9L)))
+        assertEquals(emptyMap<Long, Long>(), TranscriptHelpers.gaps(listOf(0L, 1L, 2L)))
+        assertEquals(emptyMap<Long, Long>(), TranscriptHelpers.gaps(emptyList()))
+        // A cache that simply starts late is not a gap — that is the top-of-list loader's job.
+        assertEquals(emptyMap<Long, Long>(), TranscriptHelpers.gaps(listOf(800L, 801L)))
+    }
+
+    @Test
+    fun `seamCarrier is the first rendered row at or after the boundary`() {
+        // 800 is a tool_result folded into 799's tool_use (not rendered) — the
+        // seam rides the next visible row, 801.
+        assertEquals(801L, TranscriptHelpers.seamCarrier(800L, listOf(0L, 1L, 801L, 802L)))
+        assertEquals(800L, TranscriptHelpers.seamCarrier(800L, listOf(800L, 801L)))
+        assertNull(TranscriptHelpers.seamCarrier(800L, listOf(0L, 1L)))
+    }
 }

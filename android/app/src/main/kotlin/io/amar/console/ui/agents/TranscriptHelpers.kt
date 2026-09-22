@@ -177,4 +177,25 @@ object TranscriptHelpers {
     /** Short model id for the result-footer breakdown (drop bedrock ARN / prefix). */
     fun shortModel(id: String): String =
         id.replace(Regex("""^arn:aws:bedrock:.*/"""), "arn:…/").replace(Regex("""^us\.anthropic\."""), "")
+
+    /** Holes in a cached transcript's absIndex sequence: the first PRESENT
+     *  index after each hole → how many rows are missing before it. A catch-up
+     *  that jumped to the tail leaves one; the transcript draws it as a seam
+     *  that loads the hole through `get_older_messages(beforeIndex)`. */
+    fun gaps(indices: Collection<Long>): Map<Long, Long> {
+        val sorted = indices.toSortedSet()
+        val out = LinkedHashMap<Long, Long>()
+        var prev: Long? = null
+        for (i in sorted) {
+            if (prev != null && i - prev > 1) out[i] = i - prev - 1
+            prev = i
+        }
+        return out
+    }
+
+    /** Which rendered row carries the seam for a gap ending at [boundary]: the
+     *  rendered row with the smallest index ≥ boundary (the boundary row itself
+     *  may be a paired tool_result or a bg_task duplicate the list hides). */
+    fun seamCarrier(boundary: Long, renderedIndices: Collection<Long>): Long? =
+        renderedIndices.filter { it >= boundary }.minOrNull()
 }

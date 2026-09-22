@@ -42,6 +42,9 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+## Shipped
+
+### v104 (2026-09-22)
 - **Calendar shows what Google Calendar shows: checked calendars only, "Busy"
   for detail-stripped events** (^odd-bat; Yousef 22 Sept: "I also see other
   people's events on the Calendar icon"). Root cause, two layers: (1) the hub's
@@ -73,7 +76,36 @@ view-mode hub-sync (Room meta is fine on one device).
   Sam's calendar row and cached event gone, his union event not cached, the
   free/busy event titled "Busy"), `src/__tests__/calendar-google-visibility`.
 
-## Shipped
+- **Agent sessions open at the PRESENT, not 200 rows behind** (^prim-tern;
+  Yousef 22 Sept: "I open sessions on mobile and they're stuck far behind.
+  Why?"). Root cause: `AgentsRepository.catchUpSession` fetched ONE
+  `GET /agents/sessions/:id/messages?since=cached+1&limit=200` page per
+  `sessions_list` and ignored the hub's `hasMore`/`truncated`/`totalLength`.
+  A chatty fork logs hundreds of rows between syncs (tool events count), so
+  every sync advanced the cache by exactly 200 and the transcript showed the
+  next slice of the backlog — never the tail. Now: (1) the catch-up follows
+  `hasMore` in a bounded loop (`MAX_CATCHUP_PAGES` = 4; the hub's in-memory
+  window is 500 rows = ≤3 pages); (2) a gap the window can't cover
+  (`truncated`, or > `TAIL_JUMP_GAP` = 500 rows behind) jumps straight to
+  `since = totalLength − 200` so the latest turns render first; (3) the
+  skipped rows stay a hole in `absIndex`, which the transcript draws as a
+  `Load N older` seam (`TranscriptHelpers.gaps` / `seamCarrier` — the
+  boundary row may be a folded tool_result, so the seam rides the first
+  RENDERED row after the hole) that fills through
+  `get_older_messages(beforeIndex)`; the `older_messages` handler now places
+  rows by their own hub-stamped `absIndex` instead of `minIndex − n + i`
+  (which would have written a mid-transcript page below row 0), and an empty
+  or `hasMore:false` reply marks that boundary exhausted ("N older messages
+  no longer available" — rolled off the hub) so nothing re-asks; (4) the same
+  catch-up runs as a SyncEngine domain (`AgentsRepository.reconcile()` over
+  `GET /health`, whose `sessions` IS the `SessionInfo[]` the WS pushes) so
+  `backgroundSync` — push-kicked or the periodic SyncWorker — keeps
+  transcripts current while the app is closed; skipped while the agents WS is
+  live, whose connect burst already does it. Tests: `AgentsRepositoryTest`
+  (three-page follow, tail jump + seam for a 1000-row session cached to 199,
+  small-window truncation stored as-is, growth-bounded loop, `sessions_list`
+  fan-out, seam fill by `absIndex`, exhausted marking), `TranscriptHelpersTest`
+  (`gaps`, `seamCarrier`).
 
 ### v103 (2026-09-21)
 - **Map: live location feed + geofences layer** (^wavy-newt, parity with

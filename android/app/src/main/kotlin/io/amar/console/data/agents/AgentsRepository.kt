@@ -57,6 +57,12 @@ class AgentsRepository(
     companion object {
         const val TYPE_SEND = "agentSend"
         const val SESSION_CACHE_LIMIT = 200
+        /** The hub's in-memory log window (`Session.MAX_LOG_SIZE`); a gap
+         *  wider than this cannot be paged through, so jump to the tail. */
+        const val TAIL_JUMP_GAP = 500L
+        /** ≤ window/limit pages + one for the tail jump; bounds a catch-up
+         *  against a session that keeps growing while we page. */
+        const val MAX_CATCHUP_PAGES = 4
     }
 
     // Live approval requests (transient — not persisted; approvals are
@@ -266,6 +272,7 @@ class AgentsRepository(
         ws?.close(1000, "bg")
         ws = null
         _connected.value = false
+        pendingOlder.clear()
         // The generation guard orphans the socket's onClosed, so onDisconnect
         // no longer runs on a background-stop — clear transient state here or
         // an approval answered from ANOTHER client while we're away lingers
@@ -284,6 +291,7 @@ class AgentsRepository(
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (gen != generation.get()) { webSocket.close(1000, "stale"); return }
                 caughtUp.clear() // fresh replay burst incoming — re-gate appends
+                pendingOlder.clear() // a reply to the old socket never comes
                 _connected.value = true
                 // Flush any prompts queued while offline now that sends can land.
                 outbox.scheduleDrain()
@@ -313,6 +321,7 @@ class AgentsRepository(
     private fun onDisconnect() {
         _connected.value = false
         _approvals.value = emptyList()
+        pendingOlder.clear()
         if (!wantConnected) return
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
@@ -324,48 +333,12 @@ class AgentsRepository(
     // ---------------------------------------------------------------- //
     // Inbound protocol
 
-    private suspend fun handleHubMessage(text: String) {
+    internal suspend fun handleHubMessage(text: String) {
         val msg = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
         when (msg["type"]?.jsonPrimitive?.content) {
             "sessions_list" -> {
                 val sessions = (msg["sessions"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return
-                // Detect hub-restart ID remaps via matching claudeSessionId (a
-                // restarted hub mints new hub ids; without remapping the open
-                // transcript would look like a brand-new session).
-                val existing = db.agents().allSessions()
-                val claudeToOldId = existing.mapNotNull { r -> r.claudeSessionId?.let { it to r.id } }.toMap()
-                val idRemap = mutableMapOf<String, String>()
-                for (s in sessions) {
-                    val csid = s["claudeSessionId"]?.jsonPrimitive?.content ?: continue
-                    val id = s["id"]?.jsonPrimitive?.content ?: continue
-                    val oldId = claudeToOldId[csid]
-                    if (oldId != null && oldId != id) idRemap[oldId] = id
-                }
-                for ((oldId, newId) in idRemap) remapSession(oldId, newId)
-
-                val rows = sessions.mapNotNull { sessionRow(it) }
-                db.agents().upsertSessions(rows)
-                db.agents().deleteAbsent(rows.map { it.id })
-                // SessionInfo.todos is authoritative on every list push.
-                _todos.value = sessions.mapNotNull { s ->
-                    val id = s["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
-                    val items = todosFrom(s["todos"] as? JsonArray)
-                    if (items.isEmpty()) null else id to items
-                }.toMap()
-                _queued.value = sessions.mapNotNull { s ->
-                    val id = s["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
-                    val q = s["queuedMessage"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content }
-                    if (q.isNullOrBlank()) null else id to q
-                }.toMap()
-                // Catch up transcripts for sessions we lag on (REST — indices
-                // are authoritative); then open the live-append gate.
-                for (row in rows) {
-                    val cached = db.agents().maxIndex(row.id) ?: -1L
-                    if (row.messageLogLength - 1 > cached) {
-                        catchUpSession(row.id, cached + 1)
-                    }
-                    caughtUp.add(row.id)
-                }
+                applySessionsList(sessions)
             }
             "project_dirs" -> {
                 _projectDirs.value = (msg["dirs"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
@@ -583,12 +556,28 @@ class AgentsRepository(
             "older_messages" -> {
                 val sessionId = msg["sessionId"]?.jsonPrimitive?.content ?: return
                 val older = (msg["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return
-                val oldest = db.agents().minIndex(sessionId) ?: 0
-                // Prepend: assign indices below the current oldest.
+                val before = pendingOlder.remove(sessionId) ?: db.agents().minIndex(sessionId) ?: 0
+                val hasMore = msg["hasMore"]?.jsonPrimitive?.booleanOrNull ?: true
+                if (older.isEmpty()) {
+                    // Rolled off the hub's window — nothing will ever fill this
+                    // seam; remember so the UI stops offering it.
+                    markExhausted(sessionId, before)
+                    return
+                }
+                // Each logged row carries its absolute index (hub stamps it at
+                // logMessage); the arithmetic fallback only serves a pre-v75 hub.
                 val rows = older.mapIndexed { i, m ->
-                    AgentMessageRow(sessionId = sessionId, absIndex = oldest - older.size + i, kind = m["type"]?.jsonPrimitive?.content ?: "unknown", payloadJson = m.toString())
-                }.filter { it.absIndex < oldest }
+                    AgentMessageRow(
+                        sessionId = sessionId,
+                        absIndex = m["absIndex"]?.jsonPrimitive?.longOrNull ?: (before - older.size + i),
+                        kind = m["type"]?.jsonPrimitive?.content ?: "unknown",
+                        payloadJson = m.toString(),
+                    )
+                }.filter { it.absIndex >= 0 }
                 if (rows.isNotEmpty()) db.agents().insertMessages(rows)
+                // "No more in memory before these": the page's first row is the
+                // hub's window edge — anything older is gone.
+                if (!hasMore && rows.isNotEmpty()) markExhausted(sessionId, rows.minOf { it.absIndex })
             }
             "session_order" -> {
                 _sessionOrder.value = (msg["order"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content } ?: emptyList()
@@ -710,30 +699,125 @@ class AgentsRepository(
         }
     }
 
-    private suspend fun catchUpSession(sessionId: String, since: Long) {
+    /** One authoritative `SessionInfo[]` push — from the WS `sessions_list`
+     *  or a REST `GET /health` (same shape; [reconcile]). */
+    internal suspend fun applySessionsList(sessions: List<JsonObject>) {
+        // Detect hub-restart ID remaps via matching claudeSessionId (a
+        // restarted hub mints new hub ids; without remapping the open
+        // transcript would look like a brand-new session).
+        val existing = db.agents().allSessions()
+        val claudeToOldId = existing.mapNotNull { r -> r.claudeSessionId?.let { it to r.id } }.toMap()
+        val idRemap = mutableMapOf<String, String>()
+        for (s in sessions) {
+            val csid = s["claudeSessionId"]?.jsonPrimitive?.content ?: continue
+            val id = s["id"]?.jsonPrimitive?.content ?: continue
+            val oldId = claudeToOldId[csid]
+            if (oldId != null && oldId != id) idRemap[oldId] = id
+        }
+        for ((oldId, newId) in idRemap) remapSession(oldId, newId)
+
+        val rows = sessions.mapNotNull { sessionRow(it) }
+        db.agents().upsertSessions(rows)
+        db.agents().deleteAbsent(rows.map { it.id })
+        // SessionInfo.todos is authoritative on every list push.
+        _todos.value = sessions.mapNotNull { s ->
+            val id = s["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            val items = todosFrom(s["todos"] as? JsonArray)
+            if (items.isEmpty()) null else id to items
+        }.toMap()
+        _queued.value = sessions.mapNotNull { s ->
+            val id = s["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
+            val q = s["queuedMessage"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content }
+            if (q.isNullOrBlank()) null else id to q
+        }.toMap()
+        // Catch up transcripts for sessions we lag on (REST — indices
+        // are authoritative); then open the live-append gate.
+        for (row in rows) {
+            val cached = db.agents().maxIndex(row.id) ?: -1L
+            if (row.messageLogLength - 1 > cached) {
+                catchUpSession(row.id, cached + 1)
+            }
+            caughtUp.add(row.id)
+        }
+    }
+
+    /** SyncEngine domain pass: the same catch-up the WS connect burst runs,
+     *  over REST — so a phone closed for hours is current on open (the agents
+     *  WS is foreground-only; `backgroundSync` never brings it up). A live WS
+     *  already did this on connect and streams from there. */
+    suspend fun reconcile() {
+        if (_connected.value) return
+        val resp = runCatching { hub.get("/health") }.getOrNull() ?: return
+        val obj = runCatching { json.parseToJsonElement(resp).jsonObject }.getOrNull() ?: return
+        val sessions = (obj["sessions"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return
+        applySessionsList(sessions)
+    }
+
+    private class MessagesPage(
+        val messages: List<JsonObject>,
+        val fromIndex: Long,
+        val totalLength: Long,
+        val hasMore: Boolean,
+        val truncated: Boolean,
+    )
+
+    private suspend fun fetchMessages(sessionId: String, since: Long): MessagesPage? {
         val resp = runCatching {
             hub.get("/agents/sessions/${java.net.URLEncoder.encode(sessionId, "UTF-8")}/messages?since=$since&limit=$SESSION_CACHE_LIMIT")
-        }.getOrNull() ?: return
-        val obj = json.parseToJsonElement(resp).jsonObject
-        val messages = (obj["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return
+        }.getOrNull() ?: return null
+        val obj = runCatching { json.parseToJsonElement(resp).jsonObject }.getOrNull() ?: return null
+        val messages = (obj["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return null
         val fromIndex = obj["fromIndex"]?.jsonPrimitive?.longOrNull ?: since
-        val rows = messages.mapIndexed { i, m ->
-            AgentMessageRow(
-                sessionId = sessionId,
-                absIndex = fromIndex + i,
-                kind = m["type"]?.jsonPrimitive?.content ?: "unknown",
-                payloadJson = m.toString(),
-            )
-        }
-        if (rows.isNotEmpty()) {
+        return MessagesPage(
+            messages = messages,
+            fromIndex = fromIndex,
+            totalLength = obj["totalLength"]?.jsonPrimitive?.longOrNull ?: (fromIndex + messages.size),
+            hasMore = obj["hasMore"]?.jsonPrimitive?.booleanOrNull ?: false,
+            truncated = obj["truncated"]?.jsonPrimitive?.booleanOrNull ?: false,
+        )
+    }
+
+    /** Page forward from `since` until the hub says there is no more, bounded
+     *  by [MAX_CATCHUP_PAGES]. A gap wider than the hub's in-memory window
+     *  (`truncated`, or more than [TAIL_JUMP_GAP] rows behind) jumps straight
+     *  to the tail so the PRESENT renders first; the skipped rows stay a gap
+     *  in absIndex that the transcript draws as a "load older" seam and fills
+     *  through `get_older_messages`. One 200-row page per list push used to be
+     *  the whole catch-up — a chatty fork added hundreds of rows between syncs
+     *  and the phone showed the next slice of the backlog, never the present. */
+    internal suspend fun catchUpSession(sessionId: String, since: Long) {
+        var from = since
+        var decided = false
+        repeat(MAX_CATCHUP_PAGES) {
+            val page = fetchMessages(sessionId, from) ?: return
+            if (page.messages.isEmpty()) return
+            if (!decided) {
+                decided = true
+                val gap = page.totalLength - since
+                if (page.truncated || gap > TAIL_JUMP_GAP) {
+                    val tailStart = maxOf(page.fromIndex, page.totalLength - SESSION_CACHE_LIMIT)
+                    if (tailStart > page.fromIndex) {
+                        from = tailStart
+                        return@repeat
+                    }
+                }
+            }
+            val rows = page.messages.mapIndexed { i, m ->
+                AgentMessageRow(
+                    sessionId = sessionId,
+                    absIndex = m["absIndex"]?.jsonPrimitive?.longOrNull ?: (page.fromIndex + i),
+                    kind = m["type"]?.jsonPrimitive?.content ?: "unknown",
+                    payloadJson = m.toString(),
+                )
+            }
             db.agents().insertMessages(rows)
             if (rows.any { it.kind == "user_prompt" }) dedupeEchoes(sessionId)
-        }
-        val last = rows.lastOrNull()?.absIndex
-        if (last != null) {
+            val last = rows.maxOf { it.absIndex }
             db.agents().byId(sessionId)?.let {
                 db.agents().upsertSessions(listOf(it.copy(lastCachedIndex = maxOf(it.lastCachedIndex, last))))
             }
+            if (!page.hasMore) return
+            from = last + 1
         }
     }
 
@@ -961,24 +1045,42 @@ class AgentsRepository(
         }
     }
 
-    /** Request older transcript history over the WS (pagination on scroll-up). */
-    fun loadOlder(sessionId: String) {
+    /** Boundary of the in-flight `get_older_messages` per session — the reply
+     *  names no index, so the request remembers what it asked for. */
+    private val pendingOlder = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val _exhaustedOlder = MutableStateFlow<Map<String, Set<Long>>>(emptyMap())
+    /** Seam boundaries (per session) the hub answered with nothing — the rows
+     *  before them rolled off its window and can't be loaded. */
+    val exhaustedOlder: StateFlow<Map<String, Set<Long>>> = _exhaustedOlder
+
+    private fun markExhausted(sessionId: String, boundary: Long) {
+        if (boundary <= 0) return // index 0 is the true start, not a rolled-off edge
+        _exhaustedOlder.value = _exhaustedOlder.value + (sessionId to (_exhaustedOlder.value[sessionId].orEmpty() + boundary))
+    }
+
+    /** Request older transcript history over the WS. Default boundary = the
+     *  oldest cached row (scroll-up pagination); a mid-transcript seam passes
+     *  the first row AFTER its gap as `beforeIndex`. */
+    fun loadOlder(sessionId: String, beforeIndex: Long? = null) {
         scope.launch {
-            val oldest = db.agents().minIndex(sessionId) ?: return@launch
-            if (oldest <= 0) return@launch
-            sendWs(buildJsonObject {
+            val before = beforeIndex ?: db.agents().minIndex(sessionId) ?: return@launch
+            if (before <= 0) return@launch
+            if (_exhaustedOlder.value[sessionId]?.contains(before) == true) return@launch
+            if (pendingOlder.putIfAbsent(sessionId, before) != null) return@launch
+            val sent = sendWs(buildJsonObject {
                 put("type", "get_older_messages")
                 put("sessionId", sessionId)
-                put("beforeIndex", oldest)
+                put("beforeIndex", before)
                 put("limit", 100)
             })
+            if (!sent) pendingOlder.remove(sessionId)
         }
     }
 
     /** Whether more history exists before the oldest cached message. */
     suspend fun hasOlder(sessionId: String): Boolean {
         val oldest = db.agents().minIndex(sessionId) ?: return false
-        return oldest > 0
+        return oldest > 0 && _exhaustedOlder.value[sessionId]?.contains(oldest) != true
     }
 
     private val autoApproveTools = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()

@@ -118,12 +118,15 @@ class AppGraph(context: Context) {
 
         agents.registerOutboxHandlers()
         // The agents WS (separate from /sync) follows the same
-        // foreground-only lifecycle; its connect burst IS the reconcile.
+        // foreground-only lifecycle; its connect burst IS the reconcile while
+        // it is up. The domain pass covers the background borrow (SyncWorker /
+        // push-kicked backgroundSync), when that WS is deliberately down.
         appScope.launch {
             AppLifecycle.foregroundFlow.collectLatest { fg ->
                 if (fg) agents.start() else agents.stop()
             }
         }
+        syncEngine.addDomain("agents") { agents.reconcile() }
         // PTT mic ownership rides the shared SyncBus (one socket for the app)
         // instead of Mic's own /sync WS.
         io.amar.console.data.agents.Mic.attach(syncBus)

@@ -373,6 +373,17 @@ fun AgentSessionScreen(
 
         // Pair tool_result / tool_diff to their tool_use; dedup bg_task.
         val paired = remember(messages) { pairMessages(messages) }
+        // Holes in the cached absIndex run (a tail-jumped catch-up leaves the
+        // skipped backlog unloaded) → the rendered row whose top edge carries
+        // the "load older" seam, with the gap's boundary + size.
+        val exhaustedAll by repo.exhaustedOlder.collectAsState()
+        val exhausted = exhaustedAll[sessionId].orEmpty()
+        val seams = remember(paired) {
+            val rendered = paired.filter { !it.bgTaskDup }.map { it.msg.absIndex }
+            TranscriptHelpers.gaps(messages.map { it.absIndex }).mapNotNull { (boundary, missing) ->
+                TranscriptHelpers.seamCarrier(boundary, rendered)?.let { it to (boundary to missing) }
+            }.toMap()
+        }
         // Unread divider anchor: the FIRST unread absIndex, captured once on
         // entry so it doesn't jump as new messages auto-mark read. The divider
         // renders just before this message (in chronological order).
@@ -403,6 +414,13 @@ fun AgentSessionScreen(
                         TranscriptBlock(row.msg, row.result, row.diff)
                     }
                     if (dividerAnchor != null && row.msg.absIndex == dividerAnchor) UnreadDivider()
+                    seams[row.msg.absIndex]?.let { (boundary, missing) ->
+                        GapSeam(
+                            missing = missing,
+                            exhausted = boundary in exhausted,
+                            onLoad = { repo.loadOlder(sessionId, boundary) },
+                        )
+                    }
                 }
             }
             // Jump-to-bottom pill.
@@ -569,6 +587,34 @@ private fun pairMessages(messages: List<AgentMessageRow>): List<PairedRow> {
         }
     }
     return out
+}
+
+/** Seam over a hole in the cached transcript (rows the catch-up skipped when
+ *  it jumped to the tail). Tapping loads the 100 rows just before the hole's
+ *  end; an exhausted seam names rows the hub no longer holds. */
+@Composable
+private fun GapSeam(missing: Long, exhausted: Boolean, onLoad: () -> Unit) {
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(Modifier.weight(1f).size(1.dp).background(muted.copy(alpha = 0.4f)))
+        if (exhausted) {
+            Text(
+                "$missing older messages no longer available",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                color = muted,
+                modifier = Modifier.padding(vertical = 8.dp),
+            )
+        } else {
+            androidx.compose.material3.TextButton(onClick = onLoad, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
+                Text("Load $missing older", style = MaterialTheme.typography.labelSmall)
+            }
+        }
+        Box(Modifier.weight(1f).size(1.dp).background(muted.copy(alpha = 0.4f)))
+    }
 }
 
 @Composable
