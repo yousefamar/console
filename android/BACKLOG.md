@@ -44,6 +44,30 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Shipped
 
+### v105 (2026-09-22)
+- **A `/clear` on any client resets the phone's transcript cache** (^prim-tern
+  follow-up; Yousef 22 Sept on v104: "Doesn't seem to work?"). Read off the
+  live device, not guessed: `sql` over the APK's Room showed every session's
+  cache AT the hub's tail except **Console mobile** — hub `messageLogLength`
+  1289, phone `MAX(absIndex)` 4481 (rows 4282–4481 from the 18–19 Sept hub
+  processes, remapped across restarts by csid). Cause: hub-side `/clear` runs
+  `Session.clearLog()`, which resets `logOffset` to 0 — the SPA holds
+  transcripts in memory and drops them, the APK persists them and only reset
+  on its OWN `/clear` (`sendPrompt`). A `/clear` typed on the SPA/CLI arrived
+  as a plain `user_prompt` at `absIndex 0`, every new row then landed BELOW
+  the stale rows, and `len−1 > cached` never fired — so that session (the one
+  you open to check on mobile work) showed the pre-`/clear` transcript
+  forever, whatever v104's catch-up did. Fix: `applySessionsList` treats a
+  cached max ≥ hub length + `NUMBERING_RESET_SLACK` (10; an optimistic echo /
+  streaming row legitimately sit at max+1) as a numbering reset →
+  `resetSessionCache` (rows, pending text/row/older, exhausted seams) then the
+  normal catch-up from 0 (tail-jumps to the newest 200); a live `user_prompt`
+  whose content is `/clear` from another client resets the same way; the
+  local `/clear` path shares the helper. Tests: `AgentsRepositoryTest`
+  (reset → re-catch-up lands on the hub's tail; a +1 echo is NOT a reset;
+  remote `/clear` wipes and the next hub row starts clean).
+
+
 ### v104 (2026-09-22)
 - **Calendar shows what Google Calendar shows: checked calendars only, "Busy"
   for detail-stripped events** (^odd-bat; Yousef 22 Sept: "I also see other

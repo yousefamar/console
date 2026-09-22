@@ -114,7 +114,13 @@ while the app is foregrounded (plus short background borrows), so a remote
   session on the phone ~300 rows behind a chatty fork (^prim-tern). The same
   catch-up is a SyncEngine domain (`reconcile()` over `/health`) so the
   background borrow keeps transcripts current — the agents WS is
-  foreground-only.
+  foreground-only. **`absIndex` is only meaningful under ONE hub counter**:
+  `/clear` (from any client) resets `Session.logOffset` to 0, so a cached max
+  above the hub's `messageLogLength` (+10 slack for the local echo/streaming
+  rows) means the numbering restarted — drop the session's cache and re-catch
+  up; a remote `/clear` `user_prompt` resets the same way (v104 looked
+  "not working" on the phone because Console mobile had been `/clear`ed from
+  the SPA and the phone kept the old rows on top).
 - Outbox results: `Done | Retry | Fail | Conflict | NotReady`. Transport-down is
   `NotReady` (row returns to pending, retry budget untouched) — treating it as
   `Retry` burned all 3 retries during reconnect storms and parked rows as

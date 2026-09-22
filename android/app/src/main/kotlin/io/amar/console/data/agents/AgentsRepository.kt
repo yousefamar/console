@@ -63,6 +63,10 @@ class AgentsRepository(
         /** ≤ window/limit pages + one for the tail jump; bounds a catch-up
          *  against a session that keeps growing while we page. */
         const val MAX_CATCHUP_PAGES = 4
+        /** Our cache may legitimately run a couple of rows past the hub's
+         *  count (an optimistic user_prompt echo, the streaming text row);
+         *  further than this and the hub's numbering has restarted. */
+        const val NUMBERING_RESET_SLACK = 10L
     }
 
     // Live approval requests (transient — not persisted; approvals are
@@ -438,6 +442,14 @@ class AgentsRepository(
                     return
                 }
                 if (sessionId !in caughtUp) return
+                // A /clear typed on ANOTHER client (SPA, CLI) arrives as an
+                // ordinary user_prompt — but the hub has just reset this
+                // session's numbering to 0. Mirror our own /clear path.
+                if (kind == "user_prompt" && msg["content"]?.jsonPrimitive?.content?.trim() == "/clear") {
+                    resetSessionCache(sessionId)
+                    setActivity(sessionId) { Activity() }
+                    return
+                }
                 when (kind) {
                     "text" -> {
                         pendingText.remove(sessionId)
@@ -733,12 +745,33 @@ class AgentsRepository(
         // Catch up transcripts for sessions we lag on (REST — indices
         // are authoritative); then open the live-append gate.
         for (row in rows) {
-            val cached = db.agents().maxIndex(row.id) ?: -1L
+            var cached = db.agents().maxIndex(row.id) ?: -1L
+            if (cached >= row.messageLogLength + NUMBERING_RESET_SLACK) {
+                // The hub's counter is BEHIND our cache: `/clear` (from any
+                // client) resets `Session.logOffset` to 0, so every cached row
+                // sits under a numbering the hub no longer speaks. Left alone,
+                // new rows land BELOW the stale ones and `len-1 > cached` never
+                // triggers a catch-up — the phone shows the pre-/clear
+                // transcript forever (Console mobile, 2026-09-22).
+                android.util.Log.w("AgentsRepository", "session ${row.id}: cached max $cached ≥ hub length ${row.messageLogLength} — numbering reset, dropping cache")
+                resetSessionCache(row.id)
+                cached = -1L
+            }
             if (row.messageLogLength - 1 > cached) {
                 catchUpSession(row.id, cached + 1)
             }
             caughtUp.add(row.id)
         }
+    }
+
+    /** Forget a session's cached transcript + the transient rows pinned to
+     *  its old indices; the next catch-up rebuilds it from the hub. */
+    private suspend fun resetSessionCache(sessionId: String) {
+        db.agents().clearMessages(sessionId)
+        pendingText.remove(sessionId)
+        pendingRowIndex.remove(sessionId)
+        pendingOlder.remove(sessionId)
+        _exhaustedOlder.value = _exhaustedOlder.value - sessionId
     }
 
     /** SyncEngine domain pass: the same catch-up the WS connect burst runs,
@@ -872,9 +905,7 @@ class AgentsRepository(
         // /clear wipes the session's chat UI locally (no user_prompt bubble).
         if (content.trim() == "/clear") {
             sendWs(buildJsonObject { put("type", "send_message"); put("sessionId", sessionId); put("content", content) })
-            db.agents().clearMessages(sessionId)
-            pendingText.remove(sessionId)
-            pendingRowIndex.remove(sessionId)
+            resetSessionCache(sessionId)
             return
         }
         val imagePaths = mutableListOf<String>()

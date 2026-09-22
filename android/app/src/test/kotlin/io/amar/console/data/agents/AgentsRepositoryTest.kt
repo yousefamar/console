@@ -188,6 +188,49 @@ class AgentsRepositoryTest {
     }
 
     @Test
+    fun `hub numbering reset (a slash-clear on another client) drops the stale cache and re-catches-up`() = runTest {
+        // Console mobile, 2026-09-22: phone held rows 4282..4481 from before a
+        // /clear; the hub's counter had restarted and stood at 1289. New rows
+        // landed BELOW the stale ones and `len-1 > cached` never fired.
+        db.agents().upsertSessions(listOf(session("s1", logLen = 4482)))
+        db.agents().insertMessages((4282L until 4482L).map { AgentMessageRow(sessionId = "s1", absIndex = it, kind = "text", payloadJson = "{}") })
+        logs["s1"] = FakeLog(total = 1289, offset = 789)
+
+        repo.applySessionsList(listOf(sessionInfo("s1", 1289)))
+
+        assertEquals(listOf(0L, 1089L), logs["s1"]!!.requests) // probe from 0 → tail jump
+        assertEquals((1089L until 1289L).toList(), cachedIndices("s1"))
+    }
+
+    @Test
+    fun `a cache a couple of rows past the hub count is a live echo, not a reset`() = runTest {
+        // Optimistic user_prompt echo / streaming text row sit at maxIndex+1.
+        db.agents().upsertSessions(listOf(session("s1", logLen = 100)))
+        db.agents().insertMessages((0L until 101L).map { AgentMessageRow(sessionId = "s1", absIndex = it, kind = "text", payloadJson = "{}") })
+        logs["s1"] = FakeLog(total = 100)
+
+        repo.applySessionsList(listOf(sessionInfo("s1", 100)))
+
+        assertTrue(logs["s1"]!!.requests.isEmpty())
+        assertEquals(101, cachedIndices("s1").size)
+    }
+
+    @Test
+    fun `a remote slash-clear user_prompt wipes the session cache like a local one`() = runTest {
+        db.agents().upsertSessions(listOf(session("s1", logLen = 50)))
+        db.agents().insertMessages((0L until 50L).map { AgentMessageRow(sessionId = "s1", absIndex = it, kind = "text", payloadJson = "{}") })
+        logs["s1"] = FakeLog(total = 50)
+        repo.applySessionsList(listOf(sessionInfo("s1", 50))) // opens the live-append gate
+
+        repo.handleHubMessage("""{"type":"user_prompt","sessionId":"s1","content":"/clear","absIndex":0}""")
+
+        assertEquals(emptyList<Long>(), cachedIndices("s1"))
+        // The next hub row starts the new numbering cleanly.
+        repo.handleHubMessage("""{"type":"user_prompt","sessionId":"s1","content":"hello again","absIndex":1}""")
+        assertEquals(listOf(1L), cachedIndices("s1"))
+    }
+
+    @Test
     fun `older_messages fills a mid-transcript seam by each row's own absIndex`() = runTest {
         // Tail-jumped cache: [0, 200) ∪ [800, 1000). A seam load asks for the
         // 100 rows before 800; the hub answers with rows 700..799.
