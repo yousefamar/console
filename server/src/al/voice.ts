@@ -287,6 +287,18 @@ export function callEnvelope(p: CallTranscript, displayName: string): string {
     if (p.task) lines.push(`Task: ${p.task}`)
     if (p.outcome === 'rejected' || p.outcome === 'missed') {
       lines.push('', 'They were not answered. Decide whether to text them back (con whatsapp send) — an unknown number gets nothing unless Yousef says so.')
+    } else if (p.outcome === 'failed') {
+      // The pipeline could not carry the call (call 008048b0, 23 Sept 2026:
+      // 33 s of dead air). What the caller heard is at most the pre-rendered
+      // clips, which the pipeline reports as turns.
+      const spoken = p.turns.filter((t) => t.text.trim())
+      if (p.answeredAt) {
+        lines.push(`Answered: yes, ${formatDuration(p.durationMs)} — ${spoken.length ? `they heard only the canned line${spoken.length > 1 ? 's' : ''}: ${spoken.map((t) => `"${t.text}"`).join(' / ')}` : 'they heard NOTHING (no clip could be played)'}.`)
+        lines.push('', `Text them now (con whatsapp send): a short apology for the broken call${spoken.length ? ' (you promised a message)' : ''}, and carry on by message or offer to call back once \`con whatsapp voice\` is green. Tell Yousef the call failed and why — this is a technical fault, not a busy signal.`)
+      } else {
+        lines.push('Answered: no — the call was ended before they picked up.')
+        lines.push('', 'Decide whether to text instead or retry once `con whatsapp voice` is green; tell Yousef the call failed and why.')
+      }
     } else {
       lines.push('', 'Nothing was said. Decide whether to text instead or retry later; reply in this session only if Yousef needs to know.')
     }

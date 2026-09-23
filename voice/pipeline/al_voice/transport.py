@@ -33,6 +33,30 @@ from .sidecar import SidecarClient
 SAMPLE_RATE = 16_000
 FRAME_MS = 60
 LEAD_SECS = 0.3
+FRAME_BYTES = SAMPLE_RATE * FRAME_MS // 1000 * 2
+# The sidecar may put a noise pre-roll before each utterance (WA_VOICE_ONSET_PREROLL_MS).
+PREROLL_SECS = 0.3
+TAIL_SECS = 0.4
+
+
+async def play_pcm(sidecar: SidecarClient, slot: int, pcm: bytes) -> float:
+    """Play raw 16 kHz s16le PCM straight to a slot, paced like the transport
+    (real time, `LEAD_SECS` ahead), and return only once it has been heard —
+    for the pre-rendered clips a call falls back on when its pipeline cannot
+    speak. Returns the clip's duration in seconds (0 if nothing was sent)."""
+    if len(pcm) % FRAME_BYTES:
+        pcm += b"\0" * (FRAME_BYTES - len(pcm) % FRAME_BYTES)
+    frames = [pcm[i : i + FRAME_BYTES] for i in range(0, len(pcm), FRAME_BYTES)]
+    start = time.monotonic()
+    for i, frame in enumerate(frames):
+        if not await sidecar.send_audio(slot, frame):
+            return 0.0
+        ahead = start + (i + 1) * FRAME_MS / 1000 - time.monotonic()
+        if ahead > LEAD_SECS:
+            await asyncio.sleep(ahead - LEAD_SECS)
+    duration = len(frames) * FRAME_MS / 1000
+    await asyncio.sleep(max(0.0, start + duration + PREROLL_SECS + TAIL_SECS - time.monotonic()))
+    return duration
 
 
 class CallLatency:
@@ -138,6 +162,7 @@ class _Output(BaseOutputTransport):
         self._latency = latency
         self._playhead = 0.0
         self._awaiting_first_audio = False
+        self.audio_frames = 0
 
     async def start(self, frame: StartFrame):
         await super().start(frame)
@@ -163,6 +188,7 @@ class _Output(BaseOutputTransport):
         ok = await self._sidecar.send_audio(self._slot, frame.audio)
         if not ok:
             return False
+        self.audio_frames += 1
         chunk_secs = len(frame.audio) / 2 / SAMPLE_RATE
         now = time.monotonic()
         if self._playhead < now:

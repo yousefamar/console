@@ -15,12 +15,15 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from loguru import logger
+from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pydantic import BaseModel
 
 from .call import CallSession
+from .clips import CARTESIA_VERSION, ClipStore
 from .config import Config
 from .hub import HubClient
 from .language import voice_languages
@@ -32,9 +35,11 @@ class CallManager:
         self.cfg = cfg
         self.hub = HubClient(cfg)
         self.sidecar = SidecarClient(cfg.sidecar_url, self._on_sidecar_event)
+        self.clips = ClipStore(cfg)
         self.calls: dict[str, CallSession] = {}
         self.recent: list[dict[str, Any]] = []
         self.tts_languages: tuple[str, ...] = cfg.tts_languages
+        self._cartesia_probe: dict[str, Any] = {}
 
     async def start(self) -> None:
         self.sidecar.start()
@@ -42,6 +47,61 @@ class CallManager:
         if langs:
             self.tts_languages = langs
         logger.info(f"tts languages: {', '.join(self.tts_languages)}")
+        asyncio.create_task(self._warm(), name="warm")
+
+    async def _warm(self) -> None:
+        """First-call costs, paid at boot: the Silero ONNX session (26 s on a
+        cold, saturated disk in call 008048b0) and the apology/hold-on clips."""
+        t0 = time.monotonic()
+        try:
+            await asyncio.to_thread(SileroVADAnalyzer, sample_rate=16000)
+            logger.info(f"silero vad warm in {time.monotonic() - t0:.1f} s")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"silero warm-up failed: {e!r}")
+        await self.clips.ensure(self.tts_languages)
+
+    async def cartesia_health(self) -> dict[str, Any]:
+        """Is Cartesia reachable right now? A GET of the voice record over the
+        same API the TTS/STT sockets hang off; cached 15 s."""
+        now = time.monotonic()
+        cached = self._cartesia_probe
+        if cached and now - cached.get("_at", 0) < 15:
+            return {k: v for k, v in cached.items() if not k.startswith("_")}
+        cfg = self.cfg
+        out: dict[str, Any] = {"ok": False, "ms": None, "error": None}
+        if not cfg.cartesia_api_key or not cfg.cartesia_voice_id:
+            out["error"] = "not configured"
+        else:
+            t0 = time.monotonic()
+            try:
+                async with httpx.AsyncClient(timeout=4.0) as http:
+                    r = await http.get(
+                        f"https://api.cartesia.ai/voices/{cfg.cartesia_voice_id}",
+                        headers={"X-API-Key": cfg.cartesia_api_key, "Cartesia-Version": CARTESIA_VERSION},
+                    )
+                out["ms"] = int((time.monotonic() - t0) * 1000)
+                out["ok"] = r.status_code == 200
+                if r.status_code != 200:
+                    out["error"] = f"HTTP {r.status_code}"
+            except Exception as e:  # noqa: BLE001
+                out["ms"] = int((time.monotonic() - t0) * 1000)
+                out["error"] = repr(e)
+        self._cartesia_probe = {**out, "_at": now}
+        return out
+
+    async def sidecar_health(self) -> dict[str, Any]:
+        """The control socket, round-tripped: a `status` command answered
+        within 3 s. `connected` alone is what the socket LOOKS like; the
+        22:29–22:37 flaps on 23 Sept were live sockets that had stopped
+        answering."""
+        if not self.sidecar.connected:
+            return {"socket": False, "rtt_ms": None, **self.sidecar.state}
+        t0 = time.monotonic()
+        try:
+            await self.sidecar.command("status", timeout=3.0)
+            return {"socket": True, "rtt_ms": int((time.monotonic() - t0) * 1000), **self.sidecar.state}
+        except Exception as e:  # noqa: BLE001
+            return {"socket": True, "rtt_ms": None, "error": f"status command: {e!r}", **self.sidecar.state}
 
     async def stop(self) -> None:
         for call in list(self.calls.values()):
@@ -77,7 +137,7 @@ class CallManager:
             raise HTTPException(403, sess.get("why") or "hub refused the call")
         session = CallSession(
             cfg=self.cfg, sidecar=self.sidecar, hub=self.hub, call_id=call_id, slot=int(slot),
-            jid=jid, direction="out", session=sess, task=task, tts_languages=self.tts_languages,
+            jid=jid, direction="out", session=sess, task=task, tts_languages=self.tts_languages, clips=self.clips,
         )
         self.calls[call_id] = session
         logger.info(f"[{call_id}] ringing {session.display_name}; fork {sess.get('forkKey')} warming")
@@ -88,9 +148,7 @@ class CallManager:
         try:
             await session.prepare()
         except Exception as e:  # noqa: BLE001
-            logger.error(f"[{session.call_id}] pipeline prepare failed: {e!r}; hanging up")
-            session.end_reason = "pipeline failed"
-            await self.sidecar.hangup(session.call_id)
+            session.fail(f"pipeline could not be built: {e!r}")
 
     # ---- sidecar events ----
 
@@ -102,7 +160,8 @@ class CallManager:
             call = self.calls.get(ev.get("callId", ""))
             if call and call.live_at is None:
                 warm = f"{time.time() - call.prepared_at:.1f} s after prepare" if call.prepared_at else "pipeline not yet prepared"
-                logger.info(f"[{call.call_id}] accepted — live ({warm})")
+                state = "ready" if call.ready.is_set() else ("FAILED" if call.failed else "NOT READY")
+                logger.info(f"[{call.call_id}] accepted — live ({warm}; pipeline {state})")
                 await call.go()
         elif kind == "ended":
             await self._on_ended(ev)
@@ -147,7 +206,7 @@ class CallManager:
             return
         session = CallSession(
             cfg=self.cfg, sidecar=self.sidecar, hub=self.hub, call_id=call_id, slot=slot,
-            jid=jid, direction="in", session=sess, tts_languages=self.tts_languages,
+            jid=jid, direction="in", session=sess, tts_languages=self.tts_languages, clips=self.clips,
         )
         self.calls[call_id] = session
         # Sockets open while we answer; the caller's first words meet a live pipeline.
@@ -167,13 +226,14 @@ class CallManager:
         call = self.calls.pop(call_id, None)
         if not call:
             return
-        if call.live_at is None:
+        if call.live_at is None and not call.failed:
             call.outcome = {"declined": "declined", "timeout": "no-answer", "cancelled": "missed"}.get(reason or "", "no-answer")
         await call.stop(reason)
         payload = call.transcript_payload()
         self._remember(payload)
         logger.info(
-            f"[{call_id}] ended ({reason}); {len(payload['turns'])} turns, "
+            f"[{call_id}] ended ({reason}); outcome {payload['outcome']}"
+            f"{' — ' + payload['reason'] if call.failed else ''}; {len(payload['turns'])} turns, "
             f"{payload['durationMs'] / 1000:.0f}s, latency {json.dumps(payload['latency'].get('eos_to_first_audio'))}"
         )
         try:
@@ -216,7 +276,7 @@ class CallManager:
             "ttsLanguages": list(self.tts_languages),
             "active": [
                 {"callId": c.call_id, "jid": c.jid, "displayName": c.display_name, "direction": c.direction,
-                 "live": c.live_at is not None, "prepared": c.prepared_at is not None,
+                 "live": c.live_at is not None, "prepared": c.prepared_at is not None, "ready": c.ready.is_set(), "failed": c.failed,
                  "forkSessionId": c.fork_session_id, "turns": len(c._collector.turns) if c._collector else 0,
                  "lastTurn": (c._collector.turns[-1] if c._collector and c._collector.turns else None)}
                 for c in self.calls.values()
@@ -253,7 +313,15 @@ def build_app(cfg: Config) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"ok": True, "hub": await manager.hub.health(), **manager.snapshot()["sidecar"], "missing": cfg.missing()}
+        # Everything a call needs, each actually exercised: the hub, the
+        # sidecar socket round-tripped, Cartesia reachable, the fallback clips
+        # on disk. `ok` is the AND — `con whatsapp voice` said all green at
+        # 23:22 on 23 Sept while Cartesia was never probed.
+        hub_ok, sidecar, cartesia = await asyncio.gather(manager.hub.health(), manager.sidecar_health(), manager.cartesia_health())
+        clips = manager.clips.status(manager.tts_languages)
+        missing = cfg.missing()
+        ok = bool(hub_ok and sidecar.get("socket") and sidecar.get("rtt_ms") is not None and sidecar.get("connected") and cartesia.get("ok") and not missing)
+        return {"ok": ok, "hub": hub_ok, **sidecar, "cartesia": cartesia, "clips": clips, "missing": missing}
 
     @app.get("/calls")
     async def calls():

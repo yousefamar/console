@@ -139,6 +139,28 @@ describe('callEnvelope', () => {
       .toBe('[WHATSAPP CALL to Yousef (+447845443890) — no answer]')
     expect(callEnvelope(completed({ direction: 'out', outcome: 'declined', turns: [], durationMs: 0 }), 'Yousef')).toMatch(/declined\]/)
   })
+  it('a pipeline failure after pickup names the fault, what the caller heard, and asks AL to text them (call 008048b0)', () => {
+    const env = callEnvelope(completed({
+      direction: 'out', outcome: 'failed', reason: 'PIPELINE SETUP FAILED: pipeline setup timed out after 20 s; still connecting: CartesiaTTSService (cancelled after 20 s)',
+      answeredAt: '2026-09-23T22:16:32Z', durationMs: 9400, task: 'Test call',
+      turns: [{ role: 'assistant', text: "Sorry, I have a technical problem on my side. I'll text you instead.", t: 8385 }],
+    }), 'Yousef')
+    expect(env.split('\n')[0]).toBe('[WHATSAPP CALL with Yousef (+447845443890) — failed: PIPELINE SETUP FAILED: pipeline setup timed out after 20 s; still connecting: CartesiaTTSService (cancelled after 20 s)]')
+    expect(env).toContain('Task: Test call')
+    expect(env).toContain('Answered: yes, 9s — they heard only the canned line: "Sorry, I have a technical problem on my side. I\'ll text you instead."')
+    expect(env).toMatch(/Text them now \(con whatsapp send\)/)
+    expect(env).toMatch(/you promised a message/)
+    expect(env).toMatch(/Tell Yousef the call failed and why/)
+    expect(env).not.toMatch(/Nothing was said/)
+  })
+  it('a pipeline failure with no clip available says the caller heard nothing; one before pickup says it never rang through', () => {
+    const silent = callEnvelope(completed({ direction: 'out', outcome: 'failed', reason: 'PIPELINE SETUP FAILED: x', answeredAt: '2026-09-23T22:16:32Z', durationMs: 3000, turns: [] }), 'Yousef')
+    expect(silent).toContain('they heard NOTHING (no clip could be played)')
+    expect(silent).not.toMatch(/you promised a message/)
+    const ringing = callEnvelope(completed({ direction: 'out', outcome: 'failed', reason: 'PIPELINE SETUP FAILED: pipeline could not be built', answeredAt: null, durationMs: 0, turns: [] }), 'Yousef')
+    expect(ringing).toContain('Answered: no — the call was ended before they picked up.')
+    expect(ringing).toMatch(/tell Yousef the call failed and why/)
+  })
 })
 
 describe('historyLineFor + formatDuration', () => {

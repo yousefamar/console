@@ -58,6 +58,7 @@ class ForkLLMService(LLMService):
         language: Callable[[], str],
         heard: Callable[[], str],
         on_turn_done: Callable[[dict], None] | None = None,
+        on_turn_start: Callable[[], None] | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -73,6 +74,7 @@ class ForkLLMService(LLMService):
         self._language = language
         self._heard = heard
         self._on_turn_done = on_turn_done
+        self._on_turn_start = on_turn_start
         self._streaming = False
         self._chars_this_response = 0
         self._interrupted_after: str | None = None
@@ -137,6 +139,8 @@ class ForkLLMService(LLMService):
         self._chars_this_response = 0
         self._streaming = True
         self.turns += 1
+        if self._on_turn_start:
+            self._on_turn_start()
         outcome: dict = {"type": "error", "message": "no result"}
         await self.push_frame(LLMFullResponseStartFrame())
         await self.start_processing_metrics()
@@ -185,7 +189,7 @@ class ForkLLMService(LLMService):
             await self.push_frame(LLMFullResponseEndFrame())
         if self._on_turn_done:
             try:
-                self._on_turn_done({**outcome, "cue": cue, "text": text})
+                self._on_turn_done({**outcome, "cue": cue, "text": text, "spokenChars": self._chars_this_response})
             except Exception:  # noqa: BLE001
                 logger.exception("on_turn_done failed")
 

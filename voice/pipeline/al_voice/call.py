@@ -5,7 +5,13 @@ router → Cartesia TTS in Yousef's clone → the slot. The pipeline is built an
 STARTED at ring time (`prepare`), so the STT/TTS sockets are open and the fork
 is warm before the first word; `go` on `accepted` only sends the opening cue.
 (Call 2 on 2026-09-20: a 7 s Cartesia connect after `accepted` delayed the
-greeting until after Yousef's "Hello?", and both replies played back to back.)"""
+greeting until after Yousef's "Hello?", and both replies played back to back.)
+
+A pipeline that cannot start FAILS LOUD (`fail`): the pre-rendered apology is
+played straight to the slot, the call is hung up and the transcript says
+`PIPELINE SETUP FAILED: <why>` so AL texts the caller. Call 008048b0
+(2026-09-23): Pipecat timed out setting up after Yousef picked up and he heard
+33 s of nothing — nothing watched for that."""
 
 from __future__ import annotations
 
@@ -23,6 +29,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     CancelFrame,
     EndFrame,
+    ErrorFrame,
     Frame,
     LLMMessagesAppendFrame,
     LLMRunFrame,
@@ -49,12 +56,13 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import Speec
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.string import TextPartForConcatenation, concatenate_aggregated_text
 
+from .clips import ClipStore
 from .config import Config
 from .fork_llm import ForkLLMService
 from .hub import HubClient
 from .language import LanguageRouter
 from .sidecar import SidecarClient
-from .transport import SAMPLE_RATE, CallLatency, WhatsAppCallTransport
+from .transport import SAMPLE_RATE, CallLatency, WhatsAppCallTransport, play_pcm
 
 # The caller asked for the line to drop. The fork is told to hang up itself;
 # this is the safety net when it does not (call 2: "it's just... hang up" was
@@ -142,6 +150,7 @@ class CallSession:
         session: dict[str, Any],
         task: str | None = None,
         tts_languages: tuple[str, ...] | None = None,
+        clips: ClipStore | None = None,
     ):
         self.cfg = cfg
         self.sidecar = sidecar
@@ -153,12 +162,16 @@ class CallSession:
         self.session = session
         self.task = task
         self.tts_languages = tts_languages or cfg.tts_languages
+        self.clips = clips
         self.started_at = time.time()
         self.prepared_at: float | None = None
+        self.ready_at: float | None = None
         self.live_at: float | None = None
         self.latency = CallLatency()
         self.outcome = "completed"
         self.end_reason: str | None = None
+        self.failed: str | None = None
+        self.ready = asyncio.Event()
         self._pipeline_task: PipelineTask | None = None
         self._runner_task: asyncio.Task | None = None
         self._transport: WhatsAppCallTransport | None = None
@@ -166,11 +179,20 @@ class CallSession:
         self._router: LanguageRouter | None = None
         self._llm: ForkLLMService | None = None
         self._done = asyncio.Event()
+        self._stopping = False
         self._hangup_requested = False
         self._hangup_after_reply = False
         self._hangup_task: asyncio.Task | None = None
         self._greet_task: asyncio.Task | None = None
+        self._watchdog_task: asyncio.Task | None = None
+        self._fail_task: asyncio.Task | None = None
+        self._expect_audio_task: asyncio.Task | None = None
+        self._audio_frames_at_turn_start = 0
         self._line_problems: set[str] = set()
+        self._setup_started: dict[str, float] = {}
+        self.setup_secs: dict[str, float] = {}
+        self.setup_cancelled: dict[str, float] = {}
+        self.spoken_clips: list[dict[str, Any]] = []
 
     @property
     def display_name(self) -> str:
@@ -182,9 +204,38 @@ class CallSession:
 
     # ---- pipeline ----
 
-    def _build(self) -> PipelineTask:
+    def _time_setup(self, proc: FrameProcessor) -> None:
+        """Log how long each processor's `setup` (= its connect) takes, and
+        remember which ones are still inside it — that is the answer to
+        "which processor blocked?" when Pipecat's setup timeout fires."""
+        orig = proc.setup
+        name = proc.name
+
+        async def setup(params):  # noqa: ANN001
+            started = time.monotonic()
+            self._setup_started[name] = started
+            try:
+                await orig(params)
+            except asyncio.CancelledError:
+                # Pipecat's setup timeout cancels whatever is still connecting.
+                self.setup_cancelled[name] = time.monotonic() - started
+                raise
+            else:
+                self.setup_secs[name] = time.monotonic() - started
+            finally:
+                self._setup_started.pop(name, None)
+
+        proc.setup = setup  # type: ignore[method-assign]
+
+    async def _build(self) -> PipelineTask:
         cfg = self.cfg
         self._transport = WhatsAppCallTransport(self.sidecar, self.slot, self.call_id, self.latency)
+        # The ONNX session load is the one synchronous heavyweight here; on a
+        # saturated disk it took 26 s in call 008048b0 and, run inline, held
+        # the event loop so the `accepted` event itself arrived 8 s late.
+        t0 = time.monotonic()
+        vad = await asyncio.to_thread(SileroVADAnalyzer, sample_rate=SAMPLE_RATE, params=VADParams(stop_secs=0.2))
+        self.setup_secs["SileroVAD"] = time.monotonic() - t0
 
         initial_language = self.session.get("language") or cfg.stt_language
         if cfg.stt_vendor == "openai":
@@ -209,6 +260,7 @@ class CallSession:
         # aggregator here would hold each one back until the next began.
         tts = CartesiaTTSService(
             api_key=cfg.cartesia_api_key,
+            url=cfg.cartesia_tts_url,
             sample_rate=SAMPLE_RATE,
             text_aggregation_mode=TextAggregationMode.TOKEN,
             settings=CartesiaTTSSettings(voice=cfg.cartesia_voice_id, model=cfg.cartesia_tts_model, language="en"),
@@ -224,6 +276,7 @@ class CallSession:
             language=lambda: router.language,
             heard=collector.heard_so_far,
             on_turn_done=self._on_turn_done,
+            on_turn_start=self._on_turn_start,
         )
 
         context = LLMContext(messages=[])
@@ -238,7 +291,7 @@ class CallSession:
         # (any sound barges in, and turns end 0.4 s after the caller stops).
         start_strategies = [MinWordsUserTurnStartStrategy(min_words=cfg.interrupt_min_words)] if cfg.interrupt_min_words > 1 else None
         user_params = LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(sample_rate=SAMPLE_RATE, params=VADParams(stop_secs=0.2)),
+            vad_analyzer=vad,
             user_turn_strategies=UserTurnStrategies(start=start_strategies, stop=stop_strategies),
         )
         aggregators = LLMContextAggregatorPair(context, user_params=user_params, assistant_params=LLMAssistantAggregatorParams())
@@ -252,19 +305,31 @@ class CallSession:
                     logger.info(f"[{self.call_id}] caller asked to hang up: {text[:80]!r}")
                     self._hangup_after_reply = True
 
-        pipeline = Pipeline(
-            [
-                self._transport.input(),
-                stt,
-                aggregators.user(),
-                self._llm,
-                self._router,
-                tts,
-                self._transport.output(),
-                self._collector,
-                aggregators.assistant(),
-            ]
-        )
+        # A Cartesia socket that fails to open while the pipeline is being set
+        # up leaves it deaf or mute; Pipecat itself just logs and carries on.
+        for svc in (stt, tts):
+
+            @svc.event_handler("on_connection_error")
+            async def _conn_error(service, error, *_):
+                if self.ready.is_set():
+                    logger.warning(f"[{self.call_id}] {service.name} connection error mid-call: {error}")
+                else:
+                    self.fail(f"{service.name} could not connect: {error}")
+
+        processors = [
+            self._transport.input(),
+            stt,
+            aggregators.user(),
+            self._llm,
+            self._router,
+            tts,
+            self._transport.output(),
+            self._collector,
+            aggregators.assistant(),
+        ]
+        for p in processors:
+            self._time_setup(p)
+        pipeline = Pipeline(processors)
         task = PipelineTask(
             pipeline,
             params=PipelineParams(
@@ -276,21 +341,60 @@ class CallSession:
             idle_timeout_secs=240,
             cancel_on_idle_timeout=True,
             check_dangling_tasks=False,
+            setup_timeout_secs=cfg.setup_timeout_secs,
         )
         return task
+
+    def _setup_report(self) -> str:
+        slow = sorted(((n, s) for n, s in self.setup_secs.items() if s >= 0.05), key=lambda x: -x[1])
+        return ", ".join(f"{n.split('#')[0]} {s:.1f} s" for n, s in slow) or "all < 50 ms"
+
+    def _still_connecting(self) -> str:
+        now = time.monotonic()
+        parts = [f"{n.split('#')[0]} ({now - t:.0f} s)" for n, t in self._setup_started.items()]
+        parts += [f"{n.split('#')[0]} (cancelled after {s:.0f} s)" for n, s in self.setup_cancelled.items()]
+        return ", ".join(parts) or "nothing"
 
     async def prepare(self) -> None:
         """Ring time: build and start the pipeline so every socket is open
         before the peer picks up. Nothing is spoken yet."""
-        if self._pipeline_task:
+        if self._pipeline_task or self.failed:
             return
-        task = self._build()
+        task = await self._build()
+        if self.failed or self._stopping:
+            return
         self._pipeline_task = task
         self.prepared_at = time.time()
+
+        @task.event_handler("on_pipeline_started")
+        async def _started(_task, *_):
+            self.ready_at = time.time()
+            self.ready.set()
+            since = f"{self.ready_at - self.prepared_at:.1f} s after prepare" if self.prepared_at else ""
+            live = f", {self.ready_at - self.live_at:.1f} s after pickup" if self.live_at else ""
+            logger.info(f"[{self.call_id}] pipeline ready {since}{live} (setup: {self._setup_report()})")
+
+        @task.event_handler("on_setup_timeout")
+        async def _setup_timeout(_task, *_):
+            self.fail(f"pipeline setup timed out after {self.cfg.setup_timeout_secs:.0f} s; still connecting: {self._still_connecting()}; done: {self._setup_report()}")
+
+        @task.event_handler("on_pipeline_timeout")
+        async def _pipeline_timeout(_task, frame=None, *_):
+            if not self.ready.is_set():
+                self.fail(f"{type(frame).__name__ if frame else 'StartFrame'} never reached the end of the pipeline")
+
+        @task.event_handler("on_pipeline_error")
+        async def _pipeline_error(_task, frame: ErrorFrame, *_):
+            proc = getattr(frame.processor, "name", "?") if getattr(frame, "processor", None) else "?"
+            logger.warning(f"[{self.call_id}] pipeline error from {proc}{' (fatal)' if frame.fatal else ''}: {frame.error}")
+            if frame.fatal and not self._stopping:
+                self.fail(f"{proc}: {frame.error}")
 
         @task.event_handler("on_pipeline_finished")
         async def _finished(_task, *_):
             self._done.set()
+            if not self._stopping and self.end_reason is None and not self.failed:
+                self.fail("the pipeline stopped on its own mid-call")
 
         @task.event_handler("on_idle_timeout")
         async def _idle(_task, *_):
@@ -304,17 +408,92 @@ class CallSession:
 
     async def go(self) -> None:
         """The peer accepted: the call is live. Outbound greets from the task;
-        inbound waits for the caller, with the silence cue as fallback."""
+        inbound waits for the caller, with the silence cue as fallback. A
+        pipeline that is not ready yet gets a watchdog: the hold-on clip, then
+        the apology + hangup if it never comes up."""
         if self.live_at is not None:
             return
-        if not self._pipeline_task:
-            await self.prepare()
         self.live_at = time.time()
+        if self.failed:
+            self._run_failure()
+            return
+        if not self._pipeline_task:
+            asyncio.create_task(self.prepare(), name=f"prepare-late-{self.call_id}")
+        self._watchdog_task = asyncio.create_task(self._ready_watchdog(), name=f"ready-{self.call_id}")
+
+    async def _ready_watchdog(self) -> None:
+        cfg = self.cfg
+        try:
+            await asyncio.wait_for(self.ready.wait(), timeout=cfg.hold_on_after_secs)
+        except asyncio.TimeoutError:
+            if self._done.is_set() or self.failed:
+                return
+            logger.warning(f"[{self.call_id}] pipeline not ready {cfg.hold_on_after_secs:.0f} s after pickup (still connecting: {self._still_connecting()}) — playing the hold-on clip")
+            asyncio.create_task(self._play_clip("hold_on"), name=f"holdon-{self.call_id}")
+            try:
+                await asyncio.wait_for(self.ready.wait(), timeout=max(0.0, cfg.setup_grace_secs - cfg.hold_on_after_secs))
+            except asyncio.TimeoutError:
+                if self._done.is_set() or self.failed:
+                    return
+                self.fail(f"pipeline not ready {cfg.setup_grace_secs:.0f} s after pickup; still connecting: {self._still_connecting()}; done: {self._setup_report()}")
+                return
+        if self._done.is_set() or self.failed:
+            return
         assert self._pipeline_task is not None
         if self.direction == "out":
             await self._kick(self._pipeline_task, ANSWERED_CUE)
         else:
             self._greet_task = asyncio.create_task(self._greet_if_silent(self._pipeline_task), name=f"greet-{self.call_id}")
+
+    # ---- failing loud ----
+
+    def fail(self, why: str) -> None:
+        """The pipeline cannot carry this call. Say so to the caller (the
+        pre-rendered apology, no live TTS needed), hang up, and make the
+        transcript say PIPELINE SETUP FAILED so AL texts them. Idempotent."""
+        if self.failed or self._stopping:
+            return
+        self.failed = why
+        self.outcome = "failed"
+        self.end_reason = f"PIPELINE SETUP FAILED: {why}"
+        logger.error(f"[{self.call_id}] {self.end_reason}")
+        self._done.set()
+        for t in (self._greet_task, self._watchdog_task):
+            if t and t is not asyncio.current_task():
+                t.cancel()
+        if self.live_at is not None:
+            self._run_failure()
+        else:
+            # Still ringing: nothing can be said; stop the ring so they see a
+            # missed call, not a pickup into silence. A race where they answer
+            # first lands in `go`, which plays the apology.
+            self._fail_task = asyncio.create_task(self.sidecar.hangup(self.call_id), name=f"fail-hangup-{self.call_id}")
+
+    def _run_failure(self) -> None:
+        if self._fail_task and not self._fail_task.done():
+            return
+
+        async def run() -> None:
+            await self._play_clip("apology")
+            await self.sidecar.hangup(self.call_id)
+
+        self._fail_task = asyncio.create_task(run(), name=f"fail-{self.call_id}")
+
+    async def _play_clip(self, name: str) -> None:
+        clip = self.clips.get(name, self.session.get("language") or self.cfg.stt_language) if self.clips else None
+        if clip is None:
+            logger.error(f"[{self.call_id}] no pre-rendered '{name}' clip — the caller hears nothing")
+            return
+        text, pcm = clip
+        t = int((time.time() - self.started_at) * 1000)
+        try:
+            secs = await play_pcm(self.sidecar, self.slot, pcm)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[{self.call_id}] playing the '{name}' clip failed: {e!r}")
+            return
+        if secs:
+            self.spoken_clips.append({"role": "assistant", "text": text, "t": t, "clip": name})
+            logger.info(f"[{self.call_id}] played the '{name}' clip ({secs:.1f} s): {text!r}")
 
     async def _kick(self, task: PipelineTask, cue: str) -> None:
         await task.queue_frames([LLMMessagesAppendFrame([{"role": "user", "content": cue}]), LLMRunFrame()])
@@ -335,6 +514,13 @@ class CallSession:
         logger.warning(f"[{self.call_id}] line problem ({kind}): {issue}")
         if self.live_at is None:
             return
+        if kind == "outbound-lost":
+            # Our own speech is being binned before the wire: nothing the fork
+            # says can reach them, so do not ask it to explain — end the call
+            # and let AL text. (The inbound alarms stay a cue: the caller being
+            # quiet for 4 s is normal, and the fork can ask.)
+            self.fail(f"outbound audio is being discarded ({issue})")
+            return
         await self._kick(
             self._pipeline_task,
             f"(Line problem — {issue}. If the caller does not seem to hear you, tell them briefly the line is broken and you'll follow up by message, then hang up.)",
@@ -350,13 +536,35 @@ class CallSession:
 
     # ---- hangup ----
 
+    def _audio_frames(self) -> int:
+        return self._transport.output().audio_frames if self._transport else 0
+
+    def _on_turn_start(self) -> None:
+        self._audio_frames_at_turn_start = self._audio_frames()
+
     def _on_turn_done(self, outcome: dict[str, Any]) -> None:
+        if outcome.get("spokenChars") and not outcome.get("interrupted") and not self._done.is_set():
+            self._expect_audio_task = asyncio.create_task(self._expect_audio(int(outcome["spokenChars"])), name=f"expect-audio-{self.call_id}")
         if self._hangup_after_reply and not self._hangup_requested and not outcome.get("cue"):
             self._hangup_after_reply = False
             logger.info(f"[{self.call_id}] safety-net hangup after the reply to a hang-up request")
             self.request_hangup("caller asked")
         elif self._hangup_requested:
             self._maybe_hangup()
+
+    async def _expect_audio(self, chars: int) -> None:
+        """The fork said something: its TTS audio must reach the slot. A turn
+        whose text produces no audio at all is a mute call the sidecar cannot
+        see (nothing is lost from its side) — fail loud instead of letting the
+        caller listen to silence."""
+        deadline = time.monotonic() + self.cfg.tts_audio_timeout_secs
+        while time.monotonic() < deadline:
+            if self._done.is_set() or self._audio_frames() > self._audio_frames_at_turn_start:
+                return
+            await asyncio.sleep(0.25)
+        if self._done.is_set() or self._audio_frames() > self._audio_frames_at_turn_start:
+            return
+        self.fail(f"TTS produced no audio for a spoken turn ({chars} chars, {self.cfg.tts_audio_timeout_secs:.0f} s)")
 
     def _speech_pending(self) -> bool:
         """The fork produced text that has not finished playing: still
@@ -402,10 +610,14 @@ class CallSession:
 
     async def stop(self, reason: str | None) -> None:
         """The sidecar says the call ended (either side). Tear the pipeline down."""
+        self._stopping = True
         self.end_reason = self.end_reason or reason
-        if self._greet_task:
-            self._greet_task.cancel()
-        if self._pipeline_task and not self._done.is_set():
+        for t in (self._greet_task, self._watchdog_task, self._fail_task, self._expect_audio_task):
+            if t:
+                t.cancel()
+        # `_done` is also set by `fail`, so judge by the runner: a pipeline that
+        # was still setting up when the call failed is still running here.
+        if self._pipeline_task and self._runner_task and not self._runner_task.done():
             try:
                 await asyncio.wait_for(self._pipeline_task.cancel(), timeout=5)
             except Exception:  # noqa: BLE001
@@ -425,6 +637,8 @@ class CallSession:
         ended = time.time()
         live_at = self.live_at or ended
         turns = list(self._collector.turns) if self._collector else []
+        if self.spoken_clips:
+            turns = sorted([*turns, *self.spoken_clips], key=lambda t: t.get("t", 0))
         return {
             "callId": self.call_id,
             "jid": self.jid,
@@ -438,6 +652,13 @@ class CallSession:
             "answeredAt": datetime.fromtimestamp(live_at, tz=timezone.utc).isoformat() if self.live_at else None,
             "durationMs": int((ended - live_at) * 1000) if self.live_at else 0,
             "turns": turns,
+            "failed": self.failed,
+            "setup": {
+                "readyMs": int((self.ready_at - self.prepared_at) * 1000) if self.ready_at and self.prepared_at else None,
+                "readyAfterPickupMs": int((self.ready_at - self.live_at) * 1000) if self.ready_at and self.live_at else None,
+                "secs": {k.split("#")[0]: round(v, 3) for k, v in self.setup_secs.items()},
+                "stillConnecting": [k.split("#")[0] for k in (*self._setup_started, *self.setup_cancelled)],
+            },
             "lineProblems": sorted(self._line_problems),
             "delegations": 0,
             "toolCalls": self._llm.tool_calls if self._llm else 0,

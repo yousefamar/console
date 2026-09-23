@@ -38,6 +38,8 @@ class Config:
     cartesia_voice_id: str = ""
     cartesia_tts_model: str = "sonic-3.6"
     cartesia_stt_model: str = "ink-whisper"
+    # Fault injection for tests/harness.py --setup-fail (a tarpit URL); leave unset in prod.
+    cartesia_tts_url: str = "wss://api.cartesia.ai/tts/websocket"
     # cartesia (default, the spec's vendor): no language auto-detect ("defaults
     # to en"), so the router moves it to follow whatever AL speaks and a call
     # starts in `stt_language` / the caller's users-file language.
@@ -61,7 +63,16 @@ class Config:
     turn_timeout_secs: float = 200.0
     hangup_grace_secs: float = 8.0
     max_call_secs: int = 30 * 60
+    # Pipecat's own bound on setting the processors up (its default, 20 s);
+    # then, counted from pickup: the pre-rendered hold-on line if the
+    # pipeline is still not ready, and the apology + hangup if it never is.
+    setup_timeout_secs: float = 20.0
+    hold_on_after_secs: float = 2.0
+    setup_grace_secs: float = 12.0
+    # A spoken turn whose TTS audio never reaches the slot within this = a mute call.
+    tts_audio_timeout_secs: float = 8.0
     log_dir: Path = field(default_factory=lambda: CONFIG_DIR / "voice-calls")
+    clips_dir: Path = field(default_factory=lambda: CONFIG_DIR / "voice-clips")
     inbound_enabled: bool = True
 
     @classmethod
@@ -83,6 +94,7 @@ class Config:
             cartesia_voice_id=env.get("CARTESIA_VOICE_ID", ""),
             cartesia_tts_model=env.get("CARTESIA_MODEL", "sonic-3.6"),
             cartesia_stt_model=env.get("VOICE_STT_MODEL", "ink-whisper"),
+            cartesia_tts_url=env.get("CARTESIA_TTS_URL", "wss://api.cartesia.ai/tts/websocket"),
             stt_vendor=env.get("VOICE_STT", "cartesia").strip().lower(),
             openai_api_key=env.get("OPENAI_API_KEY", ""),
             openai_stt_model=env.get("VOICE_OPENAI_STT_MODEL", "gpt-transcribe"),
@@ -96,6 +108,11 @@ class Config:
             turn_timeout_secs=float(env.get("VOICE_TURN_TIMEOUT", "200")),
             hangup_grace_secs=float(env.get("VOICE_HANGUP_GRACE", "8")),
             max_call_secs=int(env.get("VOICE_MAX_CALL_SECS", str(30 * 60))),
+            setup_timeout_secs=float(env.get("VOICE_SETUP_TIMEOUT", "20")),
+            hold_on_after_secs=float(env.get("VOICE_HOLD_ON_AFTER", "2")),
+            setup_grace_secs=float(env.get("VOICE_SETUP_GRACE", "12")),
+            tts_audio_timeout_secs=float(env.get("VOICE_TTS_AUDIO_TIMEOUT", "8")),
+            clips_dir=Path(env.get("VOICE_CLIPS_DIR", str(CONFIG_DIR / "voice-clips"))),
             inbound_enabled=env.get("VOICE_INBOUND", "1") not in ("0", "false", "off"),
         )
         cfg.log_dir.mkdir(parents=True, exist_ok=True)

@@ -141,6 +141,17 @@ class FakeSidecar:
     async def drive(self):
         await self.answered.wait()
         await asyncio.sleep(0.3)
+        if not self.wavs:
+            # A silent caller (the --setup-fail run): the bot must end the call.
+            deadline = time.monotonic() + 40
+            while not self.ended.is_set() and time.monotonic() < deadline:
+                await self.ws.send(bytes((0,)) + b"\0" * FRAME)
+                await asyncio.sleep(0.06)
+            if not self.ended.is_set():
+                print("[harness] the pipeline never hung up — ending from the peer side")
+                await self.send({"ev": "ended", "callId": self.call_id, "slot": 0, "reason": "peer", "durationMs": 40_000})
+                self.ended.set()
+            return
         for i, wav in enumerate(list(self.wavs)):
             if wav is None:
                 continue
@@ -283,13 +294,16 @@ async def main():
     ap.add_argument("--no-spawn", action="store_true", help="assume a pipeline is already running on 9979")
     ap.add_argument("--barge", action="store_true", help="turn 1 asks for a long story; the caller talks over it (checks interrupt + flush + interruptedAfter)")
     ap.add_argument("--arabic", action="store_true", help="turn 1 asks for Arabic; the scripted reply switches ar → en mid-turn (checks the language router, and that the next English utterance still transcribes)")
+    ap.add_argument("--setup-fail", action="store_true", help="the TTS websocket is a tarpit, so Pipecat's setup times out after pickup (checks: hold-on clip, apology clip, hangup, transcript outcome=failed / PIPELINE SETUP FAILED)")
     args = ap.parse_args()
+    if args.setup_fail:
+        args.ring = min(args.ring, 1.0)
     if args.arabic:
         args.wavs = [str(HERE / "q5.wav"), str(HERE / "q3.wav")]
     if args.barge:
         args.wavs = [str(HERE / "q4.wav"), str(HERE / "q1.wav"), str(HERE / "q3.wav")]
 
-    wavs = [read_wav(Path(w)) for w in args.wavs]
+    wavs = [] if args.setup_fail else [read_wav(Path(w)) for w in args.wavs]
     side = FakeSidecar(wavs, args.inbound, args.ring, args.barge)
     hub = FakeHub()
 
@@ -306,21 +320,39 @@ async def main():
         "VOICE_PIPELINE_PORT": "9979",
         "CONSOLE_CONFIG_DIR": os.environ.get("CONSOLE_CONFIG_DIR", str(Path.home() / ".config" / "console")),
     }
+    tarpit = None
+    if args.setup_fail:
+        # Accepts the TCP connection and never answers the websocket handshake:
+        # the TTS blocks inside setup, which is exactly what call 008048b0 hit.
+        async def _hold(_reader, writer):
+            try:
+                await asyncio.sleep(120)
+            finally:
+                writer.close()
+
+        tarpit = await asyncio.start_server(_hold, "127.0.0.1", 9976)
+        env["CARTESIA_TTS_URL"] = "ws://127.0.0.1:9976/tts/websocket"
+        env["VOICE_SETUP_TIMEOUT"] = "5"
+        env["VOICE_HOLD_ON_AFTER"] = "2"
+        env["VOICE_SETUP_GRACE"] = "12"
     proc = None
     if not args.no_spawn:
         proc = subprocess.Popen([sys.executable, "-m", "al_voice.main"], env=env, cwd=str(HERE.parent))
     try:
         async with httpx.AsyncClient() as http:
-            for _ in range(60):
+            for _ in range(120):
                 try:
-                    r = await http.get("http://127.0.0.1:9979/health", timeout=1)
-                    if r.status_code == 200 and r.json().get("connected"):
+                    r = await http.get("http://127.0.0.1:9979/health", timeout=6)
+                    h = r.json() if r.status_code == 200 else {}
+                    # The fallback clips render at boot (once; cached on disk).
+                    if h.get("connected") and {"apology.en", "hold_on.en"} <= set((h.get("clips") or {}).get("ready", [])):
+                        print(f"[harness] pipeline health: {json.dumps({k: h.get(k) for k in ('ok', 'hub', 'rtt_ms', 'cartesia', 'clips')})}")
                         break
                 except Exception:
                     pass
                 await asyncio.sleep(0.5)
             else:
-                raise SystemExit("pipeline never came up / never connected to the fake sidecar")
+                raise SystemExit("pipeline never came up / never connected to the fake sidecar / clips never rendered")
             if not args.inbound:
                 dial_at = time.monotonic()
                 r = await http.post("http://127.0.0.1:9979/call", json={"jid": "447845443890@s.whatsapp.net", "task": "Tell Yousef this is a test call and ask if the audio sounds right."}, timeout=30)
@@ -337,6 +369,27 @@ async def main():
 
         turns = payload.get("turns", [])
         first_audio = (side.first_bot_audio - side.accepted_at) if (side.first_bot_audio and side.accepted_at) else None
+        if args.setup_fail:
+            clips = [t.get("clip") for t in turns if t.get("clip")]
+            hangup_after_accept = (side.hangup_at - side.accepted_at) if (side.hangup_at and side.accepted_at) else None
+            checks = {
+                "transcript outcome = failed": payload.get("outcome") == "failed",
+                "reason says PIPELINE SETUP FAILED": str(payload.get("reason", "")).startswith("PIPELINE SETUP FAILED"),
+                "hold-on clip played while waiting": "hold_on" in clips,
+                "apology clip played": "apology" in clips,
+                "apology audio reached the slot (≥ 2 s of bot audio)": len(side.out) / 32000 >= 2.0,
+                "hangup issued": side.hangup_at is not None,
+                "hangup waited for the apology's playout": side.hangup_at is not None and side.hangup_at >= side.last_bot_audio - 0.05,
+                "failed loud within the grace window (≤ 14 s after pickup)": hangup_after_accept is not None and hangup_after_accept <= 14.0,
+            }
+            print(f"[harness] setup: {json.dumps(payload.get('setup'))}")
+            print(f"[harness] failed: {payload.get('failed')}")
+            print(f"[harness] pickup → hangup: {hangup_after_accept:.1f}s" if hangup_after_accept is not None else "[harness] no hangup")
+            for k, v in checks.items():
+                print(f"  {'PASS' if v else 'FAIL'}  {k}")
+            if not all(checks.values()):
+                raise SystemExit(1)
+            return
         if args.inbound:
             # the caller speaks 0.3 s after the answer, so the 2 s silence cue must not fire
             checks = {
@@ -382,6 +435,8 @@ async def main():
             except subprocess.TimeoutExpired:
                 proc.kill()
         ws_server.close()
+        if tarpit:
+            tarpit.close()
         await runner.cleanup()
 
 
