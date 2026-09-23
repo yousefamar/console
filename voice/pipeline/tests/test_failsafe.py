@@ -255,15 +255,25 @@ async def test_a_spoken_turn_with_no_tts_audio_fails_loud_but_one_with_audio_doe
 
 
 def test_loopback_verdict():
-    from al_voice.main import loopback_verdict
+    import numpy as np
 
-    clip = 1920 * 35  # 2.1 s
-    good = {"frames": 47, "speechFrames": 35, "encodedFrames": 47, "meanSpeechPacket": 80.0, "meanIdlePacket": 127.0, "encodeMsMax": 9.0}
-    assert loopback_verdict(good, clip) == (True, None), "packet sizes are not judged (tone < noise floor is normal)"
-    ok, why = loopback_verdict({**good, "speechFrames": 6}, clip)
-    assert not ok and "only 6 of 35" in why
+    from al_voice.main import loopback_verdict, signal_frames
+
+    # A "clip": 0.3 s quiet, 1.5 s of a -20 dBFS tone, 0.3 s quiet = 35 frames, 25 with signal.
+    t = np.arange(16000 * 2.1) / 16000
+    tone = (0.1 * 32767 * np.sin(2 * np.pi * 440 * t)).astype("<i2")
+    tone[: 16000 * 3 // 10] = 0
+    tone[-(16000 * 3 // 10):] = 0
+    clip = tone.tobytes()
+    assert signal_frames(clip) == 25
+    good = {"frames": 47, "speechFrames": 25, "encodedFrames": 47, "meanSpeechPacket": 80.0, "meanIdlePacket": 127.0, "encodeMsMax": 9.0}
+    assert loopback_verdict(good, clip) == (True, None), "quiet edges are not missing frames; packet sizes are not judged"
+    assert loopback_verdict({**good, "speechFrames": 24}, clip)[0] is True, "one frame of tolerance for the padded last chunk"
+    ok, why = loopback_verdict({**good, "speechFrames": 12}, clip)
+    assert not ok and "only 12 of the clip's 25 signal frames" in why
     ok, why = loopback_verdict({**good, "encodedFrames": 40}, clip)
     assert not ok and "packets for 40 of 47" in why
     ok, why = loopback_verdict({**good, "encodeMsMax": 75.0}, clip)
     assert not ok and "too slow" in why
     assert loopback_verdict({}, clip)[0] is False
+    assert loopback_verdict(good, b"\0" * 1920 * 10) == (False, "the probe clip itself is silent")

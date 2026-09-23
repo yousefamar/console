@@ -30,19 +30,36 @@ from .language import voice_languages
 from .sidecar import SidecarClient
 
 
-def loopback_verdict(rep: dict[str, Any], pcm_bytes: int) -> tuple[bool, str | None]:
+def signal_frames(pcm: bytes, floor_dbfs: float = -50.0) -> int:
+    """How many 60 ms frames of this clip carry signal (RMS above the idle
+    floor) — the sidecar judges its ticks by the same rule."""
+    import numpy as np
+
+    n = 0
+    for i in range(0, len(pcm), 1920):
+        chunk = np.frombuffer(pcm[i : i + 1920].ljust(1920, b"\0"), dtype="<i2").astype(np.float32)
+        rms = float(np.sqrt(np.mean(chunk * chunk))) if chunk.size else 0.0
+        if rms > 0 and 20 * np.log10(rms / 32767.0) > floor_dbfs:
+            n += 1
+    return n
+
+
+def loopback_verdict(rep: dict[str, Any], pcm: bytes) -> tuple[bool, str | None]:
     """Did the clip go through the sidecar's clock + encoder as a call would
-    send it? Every clip frame must have come out of the mic clock as signal,
-    every tick's frame must have become a packet, and encoding must be
-    real-time. Packet SIZE is not judged: MLow is content-adaptive (a pure
-    tone codes smaller than the -60 dBFS noise floor)."""
-    expected = max(1, -(-pcm_bytes // 1920))
+    send it? Every clip frame that carries signal must have come out of the
+    mic clock as signal (a spoken clip has quiet edges and pauses — those are
+    not missing frames), every tick's frame must have become a packet, and
+    encoding must be real-time. Packet SIZE is not judged: MLow is
+    content-adaptive (a pure tone codes smaller than the -60 dBFS floor)."""
+    expected = signal_frames(pcm)
     frames = int(rep.get("frames") or 0)
     speech = int(rep.get("speechFrames") or 0)
     encoded = int(rep.get("encodedFrames") or 0)
     encode_ms_max = float(rep.get("encodeMsMax") or 0)
-    if speech < expected * 0.9:
-        return False, f"only {speech} of {expected} clip frames came out of the mic clock as signal"
+    if expected == 0:
+        return False, "the probe clip itself is silent"
+    if speech < expected - 1:
+        return False, f"only {speech} of the clip's {expected} signal frames came out of the mic clock"
     if frames == 0 or encoded < frames:
         return False, f"encoder produced packets for {encoded} of {frames} frames"
     if encode_ms_max >= 60:
@@ -131,7 +148,7 @@ class CallManager:
                 rep = await self.sidecar.loopback(clip[1])
                 out["ms"] = int((time.monotonic() - t0) * 1000)
                 out.update({k: rep.get(k) for k in ("frames", "speechFrames", "encodedFrames", "meanSpeechPacket", "meanIdlePacket", "encodeMsMax", "inputDbfs")})
-                out["ok"], out["error"] = loopback_verdict(rep, len(clip[1]))
+                out["ok"], out["error"] = loopback_verdict(rep, clip[1])
             except Exception as e:  # noqa: BLE001
                 out["ms"] = int((time.monotonic() - t0) * 1000)
                 out["error"] = f"loopback command: {e!r}"
