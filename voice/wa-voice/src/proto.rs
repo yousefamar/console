@@ -46,6 +46,15 @@ pub enum Command {
         #[serde(default)]
         id: Option<String>,
     },
+    /// Pre-call self-test without a peer: run base64 s16le 16 kHz PCM through
+    /// the mic clock's frame source (live levers) and the MLow encoder, and
+    /// report what would have gone out — proves the socket, the frame path
+    /// and the encoder end to end short of the network.
+    Loopback {
+        pcm: String,
+        #[serde(default)]
+        id: Option<String>,
+    },
     Ping,
 }
 
@@ -128,6 +137,29 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         jid: Option<String>,
         calls: Vec<CallSummary>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// Answer to `loopback`: one row of what the mic clock + encoder produced.
+    Loopback {
+        /// Ticks the mic clock ran (input frames + pre-roll + hangover).
+        frames: usize,
+        /// Input frames carrying signal (RMS above the idle floor).
+        #[serde(rename = "speechFrames")]
+        speech_frames: usize,
+        /// Ticks whose frame the encoder turned into at least one byte.
+        #[serde(rename = "encodedFrames")]
+        encoded_frames: usize,
+        #[serde(rename = "encodedBytes")]
+        encoded_bytes: usize,
+        #[serde(rename = "meanSpeechPacket")]
+        mean_speech_packet: f32,
+        #[serde(rename = "meanIdlePacket")]
+        mean_idle_packet: f32,
+        #[serde(rename = "encodeMsMax")]
+        encode_ms_max: f32,
+        #[serde(rename = "inputDbfs")]
+        input_dbfs: f32,
         #[serde(skip_serializing_if = "Option::is_none")]
         id: Option<String>,
     },

@@ -30,6 +30,26 @@ from .language import voice_languages
 from .sidecar import SidecarClient
 
 
+def loopback_verdict(rep: dict[str, Any], pcm_bytes: int) -> tuple[bool, str | None]:
+    """Did the clip go through the sidecar's clock + encoder as a call would
+    send it? Every clip frame must have come out of the mic clock as signal,
+    every tick's frame must have become a packet, and encoding must be
+    real-time. Packet SIZE is not judged: MLow is content-adaptive (a pure
+    tone codes smaller than the -60 dBFS noise floor)."""
+    expected = max(1, -(-pcm_bytes // 1920))
+    frames = int(rep.get("frames") or 0)
+    speech = int(rep.get("speechFrames") or 0)
+    encoded = int(rep.get("encodedFrames") or 0)
+    encode_ms_max = float(rep.get("encodeMsMax") or 0)
+    if speech < expected * 0.9:
+        return False, f"only {speech} of {expected} clip frames came out of the mic clock as signal"
+    if frames == 0 or encoded < frames:
+        return False, f"encoder produced packets for {encoded} of {frames} frames"
+    if encode_ms_max >= 60:
+        return False, f"encoder too slow for real time ({encode_ms_max:.0f} ms for one 60 ms frame)"
+    return True, None
+
+
 class CallManager:
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -40,6 +60,7 @@ class CallManager:
         self.recent: list[dict[str, Any]] = []
         self.tts_languages: tuple[str, ...] = cfg.tts_languages
         self._cartesia_probe: dict[str, Any] = {}
+        self._loopback_probe: dict[str, Any] = {}
 
     async def start(self) -> None:
         self.sidecar.start()
@@ -89,6 +110,36 @@ class CallManager:
         self._cartesia_probe = {**out, "_at": now}
         return out
 
+    async def loopback_health(self, fresh: bool = False) -> dict[str, Any]:
+        """The pre-call audio loopback: the hold-on clip (Yousef's clone, the
+        very PCM a call would send) through the sidecar socket, its mic clock
+        and the MLow encoder, packet sizes back. Everything short of the
+        network. Cached 60 s unless `fresh`."""
+        now = time.monotonic()
+        cached = self._loopback_probe
+        if not fresh and cached and now - cached.get("_at", 0) < 60:
+            return {k: v for k, v in cached.items() if not k.startswith("_")}
+        out: dict[str, Any] = {"ok": False, "ms": None, "error": None}
+        clip = self.clips.get("hold_on", "en")
+        if clip is None:
+            out["error"] = "no hold_on.en clip to send"
+        elif not self.sidecar.connected:
+            out["error"] = "sidecar socket down"
+        else:
+            t0 = time.monotonic()
+            try:
+                rep = await self.sidecar.loopback(clip[1])
+                out["ms"] = int((time.monotonic() - t0) * 1000)
+                out.update({k: rep.get(k) for k in ("frames", "speechFrames", "encodedFrames", "meanSpeechPacket", "meanIdlePacket", "encodeMsMax", "inputDbfs")})
+                out["ok"], out["error"] = loopback_verdict(rep, len(clip[1]))
+            except Exception as e:  # noqa: BLE001
+                out["ms"] = int((time.monotonic() - t0) * 1000)
+                out["error"] = f"loopback command: {e!r}"
+        self._loopback_probe = {**out, "_at": now}
+        if not out["ok"]:
+            logger.warning(f"audio loopback FAILED: {out}")
+        return out
+
     async def sidecar_health(self) -> dict[str, Any]:
         """The control socket, round-tripped: a `status` command answered
         within 3 s. `connected` alone is what the socket LOOKS like; the
@@ -119,6 +170,9 @@ class CallManager:
             raise HTTPException(409, "a call is already in progress")
         if not await self.hub.health():
             raise HTTPException(503, "hub unreachable — the call's AL fork cannot be started")
+        loop = await self.loopback_health(fresh=True)
+        if not loop.get("ok"):
+            raise HTTPException(503, f"pre-call audio loopback failed: {loop.get('error')} — not dialling into a call nobody would hear")
         # Dial first: the sidecar mints the call id. The fork + pipeline then
         # warm up during the ring (typically 5-10 s).
         ack = await self.sidecar.call(jid)
@@ -191,6 +245,12 @@ class CallManager:
             logger.info(f"[{call_id}] busy — rejecting {jid}")
             await self.sidecar.reject(call_id)
             await self._report_unanswered(call_id, jid, "missed", "busy")
+            return
+        loop = await self.loopback_health(fresh=True)
+        if not loop.get("ok"):
+            logger.error(f"[{call_id}] pre-call audio loopback failed ({loop.get('error')}) — rejecting {jid} rather than answering into silence")
+            await self.sidecar.reject(call_id)
+            await self._report_unanswered(call_id, jid, "failed", f"PIPELINE SETUP FAILED: pre-call audio loopback: {loop.get('error')}")
             return
         try:
             sess = await self.hub.session(call_id, jid, "in")
@@ -317,11 +377,13 @@ def build_app(cfg: Config) -> FastAPI:
         # sidecar socket round-tripped, Cartesia reachable, the fallback clips
         # on disk. `ok` is the AND — `con whatsapp voice` said all green at
         # 23:22 on 23 Sept while Cartesia was never probed.
-        hub_ok, sidecar, cartesia = await asyncio.gather(manager.hub.health(), manager.sidecar_health(), manager.cartesia_health())
+        hub_ok, sidecar, cartesia, loopback = await asyncio.gather(
+            manager.hub.health(), manager.sidecar_health(), manager.cartesia_health(), manager.loopback_health()
+        )
         clips = manager.clips.status(manager.tts_languages)
         missing = cfg.missing()
-        ok = bool(hub_ok and sidecar.get("socket") and sidecar.get("rtt_ms") is not None and sidecar.get("connected") and cartesia.get("ok") and not missing)
-        return {"ok": ok, "hub": hub_ok, **sidecar, "cartesia": cartesia, "clips": clips, "missing": missing}
+        ok = bool(hub_ok and sidecar.get("socket") and sidecar.get("rtt_ms") is not None and sidecar.get("connected") and cartesia.get("ok") and loopback.get("ok") and not missing)
+        return {"ok": ok, "hub": hub_ok, **sidecar, "cartesia": cartesia, "loopback": loopback, "clips": clips, "missing": missing}
 
     @app.get("/calls")
     async def calls():

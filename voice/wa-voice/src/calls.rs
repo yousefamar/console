@@ -314,6 +314,77 @@ impl MicSource {
     }
 }
 
+/// What `loopback` reports: the mic clock + MLow encoder run over a clip
+/// with the live levers, no call, no network.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopbackReport {
+    pub frames: usize,
+    pub speech_frames: usize,
+    /// Ticks whose frame the encoder turned into at least one byte.
+    pub encoded_frames: usize,
+    pub encoded_bytes: usize,
+    pub mean_speech_packet: f32,
+    pub mean_idle_packet: f32,
+    pub encode_ms_max: f32,
+    pub input_dbfs: f32,
+}
+
+/// The pre-call self-test behind `Command::Loopback`: queue `pcm` exactly as
+/// the pipeline's frames are queued, tick `MicSource` until it has drained and
+/// gone idle again, encode every tick's frame with a fresh `MlowEncoder`, and
+/// describe the packets. Speech vs idle is judged on the INPUT frame's level
+/// (idle comfort noise sits at -60 dBFS; anything above -50 dBFS is signal).
+pub fn loopback(pcm: &[i16], levers: Levers) -> LoopbackReport {
+    use whatsapp_rust::wacore::voip::mlow::MlowEncoder;
+
+    let dbfs = |f: &[i16]| -> f32 {
+        let rms = (f.iter().map(|&s| (s as f32) * (s as f32)).sum::<f32>() / f.len().max(1) as f32).sqrt();
+        if rms > 0.0 { 20.0 * (rms / 32767.0).log10() } else { -120.0 }
+    };
+    let input_dbfs = dbfs(pcm);
+    let mut q: VecDeque<Vec<i16>> = pcm.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect();
+    let input_frames = q.len();
+    let mut source = MicSource::new(levers);
+    let mut enc = MlowEncoder::new();
+    let mut buf = Vec::new();
+    let (mut frames, mut speech_frames, mut encoded_bytes, mut encoded_frames) = (0usize, 0usize, 0usize, 0usize);
+    let (mut speech_bytes, mut idle_frames, mut idle_bytes) = (0usize, 0usize, 0usize);
+    let mut encode_ms_max = 0f32;
+    // Every input frame, then the pre-roll and the hangover, then a few idle ticks.
+    let budget = input_frames + levers.preroll_frames + HANGOVER_TICKS + 4;
+    while frames < budget {
+        let (frame, _events) = source.next_frame(&mut q);
+        let t0 = Instant::now();
+        buf.clear();
+        if enc.encode_i16_into(&frame, &mut buf).is_err() {
+            break;
+        }
+        encode_ms_max = encode_ms_max.max(t0.elapsed().as_secs_f32() * 1000.0);
+        frames += 1;
+        encoded_bytes += buf.len();
+        if !buf.is_empty() {
+            encoded_frames += 1;
+        }
+        if dbfs(&frame) > -50.0 {
+            speech_frames += 1;
+            speech_bytes += buf.len();
+        } else {
+            idle_frames += 1;
+            idle_bytes += buf.len();
+        }
+    }
+    LoopbackReport {
+        frames,
+        speech_frames,
+        encoded_frames,
+        encoded_bytes,
+        mean_speech_packet: if speech_frames > 0 { speech_bytes as f32 / speech_frames as f32 } else { 0.0 },
+        mean_idle_packet: if idle_frames > 0 { idle_bytes as f32 / idle_frames as f32 } else { 0.0 },
+        encode_ms_max,
+        input_dbfs,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Direction {
     In,
@@ -524,6 +595,35 @@ impl CallManager {
                 }
                 self.bcast.event(&Event::Ack { cmd: "repair", call_id: None, slot: None, id });
                 self.repair.notify_one();
+            }
+            Command::Loopback { pcm, id } => {
+                use base64::Engine;
+                let bytes = match base64::engine::general_purpose::STANDARD.decode(pcm.trim()) {
+                    Ok(b) if b.len() >= 2 => b,
+                    Ok(_) => return self.err(None, id, "loopback: empty pcm"),
+                    Err(e) => return self.err(None, id, format!("loopback: pcm is not base64: {e}")),
+                };
+                let samples: Vec<i16> = bytes.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+                let levers = Levers::from_env();
+                let bcast = self.bcast.clone();
+                tokio::task::spawn_blocking(move || {
+                    let r = loopback(&samples, levers);
+                    info!(
+                        "loopback: {} frames, {} speech ({:.0} B mean) / idle {:.0} B mean, encode max {:.1} ms, input {:.1} dBFS",
+                        r.frames, r.speech_frames, r.mean_speech_packet, r.mean_idle_packet, r.encode_ms_max, r.input_dbfs
+                    );
+                    bcast.event(&Event::Loopback {
+                        frames: r.frames,
+                        speech_frames: r.speech_frames,
+                        encoded_frames: r.encoded_frames,
+                        encoded_bytes: r.encoded_bytes,
+                        mean_speech_packet: r.mean_speech_packet,
+                        mean_idle_packet: r.mean_idle_packet,
+                        encode_ms_max: r.encode_ms_max,
+                        input_dbfs: r.input_dbfs,
+                        id,
+                    });
+                });
             }
             Command::Ping => self.bcast.event(&Event::Pong),
         }
@@ -1165,5 +1265,31 @@ mod tests {
         let before = quiet.clone();
         n.apply(&mut quiet);
         assert_eq!(quiet, before, "a frame with any signal is not touched");
+    }
+
+    #[test]
+    fn loopback_encodes_every_input_frame_as_speech_sized_packets() {
+        // 1 s of a 440 Hz tone at about -12 dBFS = 17 frames (the last one partial, padded).
+        let n = 16_000;
+        let tone: Vec<i16> = (0..n)
+            .map(|i| (8000.0 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin()) as i16)
+            .collect();
+        let levers = Levers { dtx: false, preroll: Preroll::Off, preroll_frames: 0, preroll_db: -30.0 };
+        let r = loopback(&tone, levers);
+        assert_eq!(r.speech_frames, 17, "every input frame went through the clock: {r:?}");
+        assert_eq!(r.frames, 17 + HANGOVER_TICKS + 4, "then the hangover and a few idle ticks");
+        assert_eq!(r.encoded_frames, r.frames, "every tick's frame became a packet: {r:?}");
+        assert!(r.encoded_bytes > 0 && r.mean_speech_packet > 1.0, "{r:?}");
+        // MLow is content-adaptive: a pure tone codes SMALLER than the -60 dBFS noise
+        // floor (~80 B vs ~127 B here), so packet size says nothing about "speech".
+        assert!(r.encode_ms_max < 60.0, "real-time capable: {r:?}");
+        assert!((r.input_dbfs + 15.0).abs() < 2.0, "{r:?}");
+        // With a pre-roll the clock adds those frames too — they carry signal, so they count as speech.
+        let with = Levers { dtx: false, preroll: Preroll::Noise, preroll_frames: 5, preroll_db: -30.0 };
+        let r2 = loopback(&tone, with);
+        assert_eq!(r2.speech_frames, 17 + 5, "{r2:?}");
+        // Silence in = only the idle floor out, nothing counted as speech.
+        let r3 = loopback(&vec![0i16; n], levers);
+        assert_eq!(r3.speech_frames, 0, "{r3:?}");
     }
 }

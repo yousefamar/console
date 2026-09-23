@@ -116,6 +116,12 @@ class FakeSidecar:
                 print("[harness] flush (barge-in) received")
             elif c == "status":
                 await self.send({"ev": "status", "connected": True, "paired": True, "jid": "x", "calls": [], "id": cmd.get("id")})
+            elif c == "loopback":
+                # What the real sidecar reports for a clip that codes as speech.
+                import base64
+                n = -(-len(base64.b64decode(cmd["pcm"])) // 1920)
+                await self.send({"ev": "loopback", "frames": n + 12, "speechFrames": n, "encodedFrames": n + 12, "encodedBytes": n * 160 + 12 * 80,
+                                 "meanSpeechPacket": 160.0, "meanIdlePacket": 80.0, "encodeMsMax": 0.9, "inputDbfs": -22.0, "id": cmd.get("id")})
 
     async def _accept_later(self):
         await asyncio.sleep(self.ring_secs)
@@ -346,7 +352,7 @@ async def main():
                     h = r.json() if r.status_code == 200 else {}
                     # The fallback clips render at boot (once; cached on disk).
                     if h.get("connected") and {"apology.en", "hold_on.en"} <= set((h.get("clips") or {}).get("ready", [])):
-                        print(f"[harness] pipeline health: {json.dumps({k: h.get(k) for k in ('ok', 'hub', 'rtt_ms', 'cartesia', 'clips')})}")
+                        print(f"[harness] pipeline health: {json.dumps({k: h.get(k) for k in ('ok', 'hub', 'rtt_ms', 'cartesia', 'loopback', 'clips')})}")
                         break
                 except Exception:
                     pass

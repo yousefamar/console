@@ -199,3 +199,10 @@ class SidecarClient:
 
     async def status(self) -> dict[str, Any]:
         return await self.command("status", timeout=5.0)
+
+    async def loopback(self, pcm: bytes) -> dict[str, Any]:
+        """Run 16 kHz s16le PCM through the sidecar's mic clock + MLow encoder
+        (no call) and get the packet report back."""
+        import base64
+
+        return await self.command("loopback", pcm=base64.b64encode(pcm).decode("ascii"), timeout=10.0)

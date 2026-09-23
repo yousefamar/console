@@ -252,3 +252,18 @@ async def test_a_spoken_turn_with_no_tts_audio_fails_loud_but_one_with_audio_doe
     call2._on_turn_done({"type": "result", "spokenChars": 30, "interrupted": True})
     await asyncio.sleep(0.15)
     assert call2.failed is None and side2.hangups == []
+
+
+def test_loopback_verdict():
+    from al_voice.main import loopback_verdict
+
+    clip = 1920 * 35  # 2.1 s
+    good = {"frames": 47, "speechFrames": 35, "encodedFrames": 47, "meanSpeechPacket": 80.0, "meanIdlePacket": 127.0, "encodeMsMax": 9.0}
+    assert loopback_verdict(good, clip) == (True, None), "packet sizes are not judged (tone < noise floor is normal)"
+    ok, why = loopback_verdict({**good, "speechFrames": 6}, clip)
+    assert not ok and "only 6 of 35" in why
+    ok, why = loopback_verdict({**good, "encodedFrames": 40}, clip)
+    assert not ok and "packets for 40 of 47" in why
+    ok, why = loopback_verdict({**good, "encodeMsMax": 75.0}, clip)
+    assert not ok and "too slow" in why
+    assert loopback_verdict({}, clip)[0] is False
