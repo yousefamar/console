@@ -9,7 +9,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection
 
-from al_voice.language import FILLERS, LanguageDetector, LanguageRouter
+from al_voice.language import FILLERS, LanguageDetector, LanguageRouter, SegmentEndFrame
 
 
 @pytest.fixture(scope="module")
@@ -116,6 +116,27 @@ async def test_router_flushes_trailing_text_without_terminator():
     assert texts == ["Hallo Yousef, wie geht es dir "]
     assert router.language == "de"
     assert router.filler() in FILLERS["de"]
+
+
+@pytest.mark.asyncio
+async def test_segment_end_releases_the_sentence_held_for_lookahead():
+    # Call 0074df98: the pre-tool line ends in '.', the post-tool text starts
+    # with a letter and no space, so without a segment boundary the aggregator
+    # emits 'calendar.Nothing' as one token and the TTS says "calendar dot nothing".
+    pre = ["Hold", " on", ",", " let", " me", " check", " your", " calendar", "."]
+    post = ["Nothing", " on", " your", " calendar", " today", "."]
+    glued = await _run(LanguageRouter(("en", "de")), [LLMFullResponseStartFrame(), *map(LLMTextFrame, pre + post), LLMFullResponseEndFrame()])
+    assert [f.text for f in glued if isinstance(f, LLMTextFrame)] == ["Hold on, let me check your calendar.Nothing on your calendar today. "]
+
+    out = await _run(LanguageRouter(("en", "de")), [LLMFullResponseStartFrame(), *map(LLMTextFrame, pre), SegmentEndFrame(), *map(LLMTextFrame, post), LLMFullResponseEndFrame()])
+    assert [f.text for f in out if isinstance(f, LLMTextFrame)] == ["Hold on, let me check your calendar. ", "Nothing on your calendar today. "]
+    assert not any(isinstance(f, SegmentEndFrame) for f in out)
+
+
+@pytest.mark.asyncio
+async def test_segment_end_with_nothing_held_is_a_no_op():
+    out = await _run(LanguageRouter(("en", "de")), [LLMFullResponseStartFrame(), SegmentEndFrame(), LLMTextFrame("Let me check"), SegmentEndFrame(), SegmentEndFrame(), LLMFullResponseEndFrame()])
+    assert [f.text for f in out if isinstance(f, LLMTextFrame)] == ["Let me check "]
 
 
 @pytest.mark.asyncio

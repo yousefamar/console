@@ -32,7 +32,7 @@ from pipecat.services.llm_service import LLMService
 from pipecat.services.settings import LLMSettings
 
 from .hub import HubClient
-from .language import FILLERS
+from .language import FILLERS, SegmentEndFrame
 
 # Spoken when the fork's turn fails outright (hub down, fork ended, timeout).
 APOLOGIES: dict[str, str] = {
@@ -163,6 +163,11 @@ class ForkLLMService(LLMService):
                         filler = _pick(FILLERS, self._language())
                         self._chars_this_response += len(filler)
                         await self.push_frame(TTSSpeakFrame(filler))
+                    else:
+                        # What the fork said before the tool is a finished
+                        # segment: speak it now rather than gluing it to the
+                        # first word after the tool result.
+                        await self.push_frame(SegmentEndFrame())
                 elif kind in ("result", "error"):
                     outcome = ev
                     if kind == "error":

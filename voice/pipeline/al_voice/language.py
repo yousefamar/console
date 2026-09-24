@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
 from loguru import logger
 from pipecat.frames.frames import (
     CancelFrame,
+    ControlFrame,
     EndFrame,
     Frame,
     InterruptionFrame,
@@ -87,6 +89,17 @@ FILLERS: dict[str, list[str]] = {
 }
 
 _WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+
+@dataclass
+class SegmentEndFrame(ControlFrame):
+    """The fork's text broke off here (a tool call follows): whatever the
+    router is holding is a finished sentence and must go to the TTS now. The
+    aggregator's lookahead otherwise keeps a sentence ending in '.' until the
+    next non-space character — which, after the tool, is the first letter of
+    the next reply — so 'calendar.' + 'Nothing' became the single token
+    'calendar.Nothing' and Cartesia said "calendar dot nothing" (call
+    0074df98, 24 Sept). Consumed by the router, never forwarded."""
 
 
 def _script_of(ch: str) -> str | None:
@@ -183,6 +196,9 @@ class LanguageRouter(FrameProcessor):
         if isinstance(frame, LLMTextFrame):
             async for sentence in self._agg.aggregate(frame.text):
                 await self._emit(sentence.text, direction)
+            return
+        if isinstance(frame, SegmentEndFrame):
+            await self._flush(direction)
             return
         if isinstance(frame, LLMFullResponseEndFrame):
             await self._flush(direction)
