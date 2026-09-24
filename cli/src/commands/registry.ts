@@ -692,6 +692,20 @@ export const COMMANDS: CommandDef[] = [
       'con whatsapp send 447700900123 --speak "أنا في الطريق" --lang ar',
       'con whatsapp send 447700900123 --audio clip.mp3',
     ] },
+  { name: 'whatsapp edit', description: 'Replace the text of a message AL sent (text messages only). WhatsApp applies edits within ~15 min of the send and silently ignores them after; the reply carries a warning when the original is older. `send` returns the id (and `editableUntil`); `last` targets the newest message sent to that thread.', safety: 'write',
+    args: [
+      { name: 'to', required: true, description: 'Recipient JID the original was sent to' },
+      { name: 'message_id', required: false, description: 'Message id returned by `send`, or `last` (default)' },
+    ],
+    flags: {
+      body: { type: 'string', description: 'Replacement text' },
+      file: { type: 'string', description: 'Read replacement text from file' },
+      stdin: { type: 'boolean', description: 'Read replacement text from stdin' },
+    },
+    examples: [
+      'con whatsapp edit 447700900123@s.whatsapp.net last --body "AL here — quick one about Friday."',
+      'con whatsapp edit 447700900123@s.whatsapp.net 3EB0A1B2C3D4E5F6 --body "Corrected: 3pm, not 2pm."',
+    ] },
   { name: 'whatsapp delete', description: 'Revoke a message for everyone (~48h window; WhatsApp silently ignores past that)', safety: 'destructive',
     args: [{ name: 'message_id', required: true, description: 'Message id returned by `send`' }],
     flags: { to: { type: 'string', description: 'Recipient JID (required)' } } },

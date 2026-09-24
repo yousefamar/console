@@ -6,6 +6,8 @@
 //   con whatsapp send <to> --speak "…" [--lang ar] [--speed 1.1]
 //                                              → voice note in Yousef's cloned voice (Cartesia)
 //   con whatsapp send <to> --audio <file>      → any audio file, sent as a voice note
+//   con whatsapp edit <to> [<message_id>|last] --body "…"
+//                                              → replace the text of a message we sent (~15-min window; text only)
 //   con whatsapp delete <message_id> --to <jid> → revoke for everyone
 //   con whatsapp contacts [--query <text>]     → workspace contacts lookup
 //   con whatsapp call <to> --task "…"          → AL phones <to> on WhatsApp (Yousef's voice, full context)
@@ -27,6 +29,7 @@ export async function whatsapp(verb: string | undefined, args: string[], flags: 
     case 'status': return waStatus(flags)
     case 'qr': return waQr(args, flags)
     case 'send': return waSend(args, flags)
+    case 'edit': return waEdit(args, flags)
     case 'delete': return waDelete(args, flags)
     case 'contacts': return waContacts(args, flags)
     case 'call': return waCall(args, flags)
@@ -91,6 +94,38 @@ async function waSend(args: string[], flags: GlobalFlags): Promise<void> {
 
   const data = await hubFetch('/whatsapp/send', { method: 'POST', body: { to, text: body } })
   output(data, flags)
+}
+
+async function waEdit(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const positional = positionals(args)
+  const to = (positional[0] ?? opts.to ?? '').trim()
+  const messageId = (positional[1] ?? opts.message_id ?? 'last').trim()
+  let body = opts.body
+  if (!body && opts.file) {
+    try { body = readFileSync(opts.file, 'utf-8') }
+    catch (err) { exitWithError('USAGE', `Could not read ${opts.file}: ${(err as Error).message}`, flags) }
+  }
+  if (!body && opts.stdin === 'true') body = await readStdin()
+  if (!to || !body || !body.trim()) {
+    exitWithError('USAGE', 'Usage: con whatsapp edit <to> [<message_id>|last] --body "..." | --file <path> | --stdin', flags)
+  }
+  const data = await hubFetch('/whatsapp/edit', { method: 'POST', body: { to, messageId, text: body } })
+  output(data, flags)
+}
+
+/** Bare words in `args`, skipping every `--flag` and the value it consumes. */
+function positionals(args: string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i]!
+    if (a.startsWith('--')) {
+      if (!a.includes('=') && i + 1 < args.length && !args[i + 1]!.startsWith('--')) i++
+      continue
+    }
+    out.push(a)
+  }
+  return out
 }
 
 async function waDelete(args: string[], flags: GlobalFlags): Promise<void> {

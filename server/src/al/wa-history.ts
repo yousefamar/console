@@ -89,6 +89,31 @@ export function record(entry: HistoryEntry): void {
   save()
 }
 
+/** The most recent outbound message on a thread that still has its WhatsApp
+ *  id — the target of `con whatsapp edit <to> last`. */
+export function lastOutbound(jid: string): HistoryEntry | null {
+  const list = load().threads[normalize(jid)] ?? []
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i]!
+    if (e.dir === 'out' && e.id) return e
+  }
+  return null
+}
+
+export function findOutbound(jid: string, id: string): HistoryEntry | null {
+  return (load().threads[normalize(jid)] ?? []).find((e) => e.dir === 'out' && e.id === id) ?? null
+}
+
+/** Replace the recorded text of an outbound message after a successful edit,
+ *  so the envelope's recent-thread lines show what the recipient now sees. */
+export function amend(jid: string, id: string, text: string): boolean {
+  const entry = findOutbound(jid, id)
+  if (!entry) return false
+  entry.text = truncate(text)
+  save()
+  return true
+}
+
 /** The last `limit` entries across every identifier of one thread (phone +
  *  @lid, group id…), oldest first, minus the message the envelope carries. */
 export function recentThread(ids: string[], opts: { excludeId?: string; limit?: number } = {}): HistoryEntry[] {

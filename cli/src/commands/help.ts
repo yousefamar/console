@@ -23,7 +23,7 @@ Services:
   event        Hub event bus — topics, log, tail, emit (what happened)
   listen       Event-driven rules — add, list, test, pause (react to it without polling)
   mic          System mic owner + push-to-talk routing
-  whatsapp     WhatsApp (via AL) — send, call, calls, voice, contacts, status
+  whatsapp     WhatsApp (via AL) — send, edit, delete, call, calls, voice, contacts, status
   glasses      G1 smart glasses — status, text, clear, bmp, notify, mic, nav, teleprompt
   pen          Neo smartpen — status, devices, connect, scan, unlock, research
   ring         Pebble Index 01 ring — webhook setup, recordings, say (simulate), schema
@@ -667,6 +667,34 @@ Examples:
   con auth login google
   con auth login matrix
   con auth status
+`.trim(),
+
+  whatsapp: `
+con whatsapp — WhatsApp via AL's own account
+
+Commands:
+  status                              Connection + QR state
+  qr [--out <png>]                    Pairing QR PNG (404 when paired)
+  send <to> --body "…"                Text message → { id, jid, editableUntil }
+  send <to> --speak "…" [--lang ar]   Voice note in Yousef's cloned voice
+  send <to> --audio <file>            Any audio file as a voice note
+  edit <to> [<id>|last] --body "…"    Replace the text of a message AL sent (default: the last one to that thread)
+  delete <id> --to <jid>              Revoke for everyone (~48 h window)
+  contacts [--query <text>]           Workspace contacts (users/*.md)
+  call <to> --task "…"                AL phones <to>; a fork of AL runs the call
+  calls [--last N] [--live]           Calls in progress, then recent transcripts
+  hangup <callId>                     End a live call after the current sentence
+  voice [--qr <png>]                  wa-voice device + pipeline status
+
+Notes:
+  <to> is a bare phone (447700900123) or a full JID (…@s.whatsapp.net, <lid>@lid, <id>@g.us).
+  WhatsApp applies an edit only within ~15 min of the send and silently ignores it after;
+  edit's reply carries a warning when the original is older. Text messages only.
+
+Examples:
+  con whatsapp send 447700900123 --body "On my way."
+  con whatsapp edit 447700900123@s.whatsapp.net last --body "AL here — quick one about Friday."
+  con whatsapp delete 3EB0A1B2C3D4E5F6 --to 447700900123@s.whatsapp.net
 `.trim(),
 
   hub: `

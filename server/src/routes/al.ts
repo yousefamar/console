@@ -2,9 +2,10 @@
 //
 //   GET  /whatsapp/status                 → { connected, hasQr }
 //   GET  /whatsapp/qr                     → image/png QR (404 if connected)
-//   POST /whatsapp/send  {to,text}        → { ok, id, jid }
+//   POST /whatsapp/send  {to,text}        → { ok, id, jid, user, editableUntil }
 //                        {to,speak,language?,speed?} → same + { voiceNote, seconds }  (Cartesia TTS in Yousef's voice → ptt)
 //                        {to,audio(base64)}          → same  (any audio file → ptt)
+//   POST /whatsapp/edit  {to,messageId|'last',text} → { ok, id, jid, user, previousText, warning? }  (text messages only; ~15-min window)
 //   POST /whatsapp/delete {to,messageId}  → { ok }
 //   GET  /whatsapp/contacts?query=…       → { contacts: [...] }
 //
@@ -33,7 +34,7 @@ import * as wa from '../al/whatsapp.js'
 import * as tts from '../al/tts.js'
 import * as voice from '../al/voice.js'
 import * as voiceFork from '../al/voice-fork.js'
-import { record as recordHistory } from '../al/wa-history.js'
+import { record as recordHistory, amend as amendHistory, lastOutbound, findOutbound } from '../al/wa-history.js'
 import { resolveUsername } from '../al/users.js'
 import { injectToAl } from '../al/al-session.js'
 import { WORKSPACE_DIR } from '../al/identity.js'
@@ -118,8 +119,9 @@ export function handleAlRoutes(
         if (text) {
           const { id, jid } = await wa.sendText(to.trim(), text)
           const user = resolveUsername(jid)
-          recordHistory({ ts: Date.now(), dir: 'out', jid, user, text, via, id })
-          return jsonResponse(res, 200, { ok: true, id, jid, user })
+          const ts = Date.now()
+          recordHistory({ ts, dir: 'out', jid, user, text, via, id })
+          return jsonResponse(res, 200, { ok: true, id, jid, user, editableUntil: new Date(ts + wa.EDIT_WINDOW_MS).toISOString() })
         }
         const wav = speak
           ? await tts.synthesise(speak, { language, speed })
@@ -128,6 +130,40 @@ export function handleAlRoutes(
         const user = resolveUsername(jid)
         recordHistory({ ts: Date.now(), dir: 'out', jid, user, text: `(voice note, ${seconds}s) ${speak ?? '[audio file]'}`, via, id })
         jsonResponse(res, 200, { ok: true, id, jid, user, voiceNote: true, seconds })
+      } catch (err) {
+        const msg = (err as Error)?.message ?? 'unknown'
+        const status = /not connected/i.test(msg) ? 503 : 500
+        jsonResponse(res, status, { error: msg })
+      }
+    }).catch((err: Error) => jsonResponse(res, 400, { error: err.message }))
+    return true
+  }
+
+  if (path === '/whatsapp/edit' && req.method === 'POST') {
+    readBody(req).then(async (body) => {
+      const { to, messageId, text } = JSON.parse(body || '{}') as { to?: string; messageId?: string; text?: string }
+      if (!to || typeof to !== 'string' || !messageId || typeof messageId !== 'string') return jsonResponse(res, 400, { error: 'missing to or messageId' })
+      if (typeof text !== 'string' || !text.trim()) return jsonResponse(res, 400, { error: 'missing text' })
+      if (wa.findBlockedTerm(text)) {
+        console.warn('[al/wa] outbound edit BLOCKED — message matched censored-content policy')
+        return jsonResponse(res, 400, { error: 'blocked: message contains censored content (home address)' })
+      }
+      // 'last' = the newest outbound line recorded for this thread; a raw id
+      // is looked up too, only to know how old the original is.
+      const wanted = messageId.trim()
+      const previous = wanted === 'last' ? lastOutbound(to) : findOutbound(to, wanted)
+      const targetId = wanted === 'last' ? previous?.id : wanted
+      if (!targetId) return jsonResponse(res, 404, { error: `no outbound message recorded for ${to.trim()} — pass the message id from send` })
+      const previousText = previous?.text
+      const sentAgoMs = previous ? Date.now() - previous.ts : null
+      try {
+        const { jid } = await wa.editText(to.trim(), targetId, text)
+        const user = resolveUsername(jid)
+        amendHistory(jid, targetId, text)
+        const warning = sentAgoMs !== null && sentAgoMs > wa.EDIT_WINDOW_MS
+          ? `original sent ${Math.round(sentAgoMs / 60000)} min ago — WhatsApp only applies edits within ~15 min, so the recipient may still see the old text`
+          : undefined
+        jsonResponse(res, 200, { ok: true, id: targetId, jid, user, previousText, ...(warning ? { warning } : {}) })
       } catch (err) {
         const msg = (err as Error)?.message ?? 'unknown'
         const status = /not connected/i.test(msg) ? 503 : 500

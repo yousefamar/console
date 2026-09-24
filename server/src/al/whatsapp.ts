@@ -11,6 +11,7 @@
 //   - isConnected(): current socket health
 //   - sendText(to, text): outbound text → returns { id }
 //   - sendVoiceNote(to, audio): any audio buffer → ogg/opus voice note (ptt) → { id, seconds }
+//   - editText(to, id, text): replace a sent message's text (~15-min window upstream)
 //   - deleteForEveryone(to, id): revoke message (2-day window upstream)
 //   - getQrDataUrl(): the most recent QR (data URL string) — null when paired
 //   - inboundEnvelope(): pure helper that formats an inbound message
@@ -518,6 +519,25 @@ export async function sendVoiceNote(to: string, audio: Buffer): Promise<{ id: st
   const id = result?.key?.id
   if (!id) throw new Error('send returned no message id')
   return { id, jid, seconds }
+}
+
+/** WhatsApp applies edits to a sent message only within ~15 minutes of the send. */
+export const EDIT_WINDOW_MS = 15 * 60 * 1000
+
+/**
+ * Replace the text of a message we sent. Baileys wraps it as a
+ * `protocolMessage` of type MESSAGE_EDIT keyed on the original; the original
+ * id stays the message's identity (the returned id is the edit's own, only
+ * useful for logs). Past the ~15-min window WhatsApp silently ignores it —
+ * no error surfaces, the recipient keeps seeing the old text.
+ */
+export async function editText(to: string, messageId: string, text: string): Promise<{ id: string; jid: string }> {
+  if (!sock || !connected) throw new Error('WhatsApp not connected')
+  const jid = to.includes('@') ? to : `${to}@s.whatsapp.net`
+  const result = await sock.sendMessage(jid, { text, edit: { remoteJid: jid, fromMe: true, id: messageId } })
+  const id = result?.key?.id
+  if (!id) throw new Error('edit returned no message id')
+  return { id, jid }
 }
 
 /**
