@@ -231,6 +231,20 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('voice mum')).toBeNull() // nothing to send
     expect(describeCommand(r("voice mum I'm late")!.command)).toBe("voice note → mum (yasmina-amar): I'm late")
   })
+  it('draft <person> <text> — the text as an UNSENT composer draft; the person may sit behind "a message to" (^odd-loon)', () => {
+    expect(r("Draft mum I'll be home in 30 mins")).toMatchObject({ rule: 'draft', command: { kind: 'draft', contact: 'yasmina-amar', spoken: 'mum', text: "I'll be home in 30 mins" } })
+    expect(r('draft a message to nika running late')).toMatchObject({ rule: 'draft', command: { kind: 'draft', contact: 'nica', spoken: 'nika', text: 'running late' } })
+    expect(r('Draft a reply to Sam. Thanks, Tuesday works.')).toMatchObject({ rule: 'draft', command: { contact: 'sam-miller', spoken: 'sam', text: 'Thanks, Tuesday works' } })
+    expect(r('draft mum that I will be late')).toMatchObject({ command: { kind: 'draft', text: 'I will be late' } }) // "that" lead dropped, like message
+    expect(r('prepare a text for control room hello all')).toMatchObject({ rule: 'draft', command: { kind: 'draft', contact: 'control room', spoken: 'control room', text: 'hello all' } })
+    expect(r('compose al are you there')).toMatchObject({ rule: 'draft', command: { kind: 'draft', contact: 'al', text: 'are you there' } })
+    expect(r('graft mum hi')).toMatchObject({ rule: 'draft', command: { kind: 'draft', contact: 'yasmina-amar' } }) // one edit
+    expect(r('draft stranger hi')).toMatchObject({ rule: 'draft.unknown-target', command: { kind: 'unknown-target', verb: 'draft', target: 'stranger' } })
+    expect(r('draft a message to a stranger hi')).toMatchObject({ rule: 'draft.unknown-target', command: { kind: 'unknown-target', verb: 'draft', target: 'a' } }) // three phrase words max
+    expect(r('graft stranger hi')).toBeNull() // fuzzy verb + nobody: not a command
+    expect(r('draft mum')).toBeNull() // nothing to draft
+    expect(describeCommand(r("draft mum I'm late")!.command)).toBe("draft → mum (yasmina-amar): I'm late")
+  })
   it('message|voice <room> — a group chat from the note\'s rooms:, by its (multi-word) name or a spoken form (^fond-bass)', () => {
     // Recording 2026-09-19T09-56-52.948Z-e313: "Voice control room. This is a test." died as `no voice target called "control"`.
     expect(r('Voice control room. This is a test.')).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'control room', spoken: 'control room', text: 'This is a test' } })
@@ -654,6 +668,9 @@ describe('llm fallback parsing', () => {
     expect(parseClassifyReply('{"kind":"voice","contact":"nica","lead_in":"Voys note for Nika,"}', SCHEMA, ENV, "Voys note for Nika, I'm late")).toEqual({ kind: 'voice', contact: 'nica', spoken: 'nica', text: "I'm late" })
     expect(parseClassifyReply('{"kind":"voice","contact":"nica","lead_in":"Voice Nica"}', SCHEMA, ENV, "voys nika I'm late")).toBeNull() // lead-in not a prefix: never send the command words
     expect(buildClassifyPrompt('x', SCHEMA, ENV)).toMatch(/"kind":"voice".*VOICE note/)
+    expect(parseClassifyReply('{"kind":"draft","contact":"nica","lead_in":"Drafted a message to Nika,"}', SCHEMA, ENV, "Drafted a message to Nika, I'm late")).toEqual({ kind: 'draft', contact: 'nica', spoken: 'nica', text: "I'm late" })
+    expect(parseClassifyReply('{"kind":"draft","contact":"nica","lead_in":"Draft Nica"}', SCHEMA, ENV, "drafted nika I'm late")).toBeNull() // lead-in not a prefix: never draft the command words
+    expect(buildClassifyPrompt('x', SCHEMA, ENV)).toMatch(/"kind":"draft".*DRAFT/)
     expect(buildClassifyPrompt('x', SCHEMA, ENV)).toMatch(/"contact":"<one of: .*control room/) // rooms are recipients too
     expect(parseClassifyReply('{"kind":"voice","contact":"control room","lead_in":"Voys, control room."}', SCHEMA, ENV, 'Voys, control room. This is a test.')).toEqual({ kind: 'voice', contact: 'control room', spoken: 'control room', text: 'This is a test' })
     expect(parseClassifyReply('{"kind":"message","contact":"some room","lead_in":"message some room"}', SCHEMA, ENV, 'message some room hi')).toBeNull() // off-schema room
@@ -1065,7 +1082,10 @@ describe('describeSchema', () => {
     const voice = d.verbs.find((v) => v.verb === 'voice')!
     expect(voice).toMatchObject({ aliases: ['voicenote', 'audio'], note: /voice note/ })
     expect(voice.targets.map((t) => t.name)).toEqual(msg.targets.map((t) => t.name))
-    expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'voice', 'echo', 'music', 'timer', 'remind'])
+    const draft = d.verbs.find((v) => v.verb === 'draft')!
+    expect(draft).toMatchObject({ aliases: ['prepare', 'compose'], note: /UNSENT/ })
+    expect(draft.targets.map((t) => t.name)).toEqual(msg.targets.map((t) => t.name))
+    expect(d.verbs.map((v) => v.verb)).toEqual(['add', 'start', 'message', 'voice', 'draft', 'echo', 'music', 'timer', 'remind'])
   })
 })
 
@@ -1077,6 +1097,7 @@ describe('RingStore + pipeline', () => {
   let echoed: string[]
   let sentAsYousef: Array<{ contact: string; text: string }>
   let voiceSent: Array<{ contact: string; clip: VoiceClip }>
+  let drafts: Map<string, string>
   let cuts: Array<{ path: string; from: number }>
   let timedWords: TimedWord[] | null
   let envelope: Frame[] | null
@@ -1095,7 +1116,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; reminders = []; heads = []; durationMs = null
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; drafts = new Map(); cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; reminders = []; heads = []; durationMs = null
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -1108,6 +1129,12 @@ describe('RingStore + pipeline', () => {
       whatsappToYousef: async (text) => { echoed.push(text); return '447000@s.whatsapp.net' },
       chatSendAsYousef: async (contact, text) => { if (contact === 'nobody') throw new Error('no WhatsApp DM room found for nobody'); sentAsYousef.push({ contact, text }); return `${contact} (dm)` },
       chatSendVoiceAsYousef: async (contact, clip) => { if (contact === 'nobody') throw new Error('no WhatsApp DM room found for nobody'); voiceSent.push({ contact, clip }); return `${contact} (dm)` },
+      chatDraftAsYousef: async (contact, text) => {
+        if (contact === 'nobody') throw new Error('no WhatsApp DM room found for nobody')
+        const existing = drafts.get(contact)
+        drafts.set(contact, existing ? `${existing}\n\n${text}` : text)
+        return { room: `${contact} (dm)`, appended: !!existing }
+      },
       voiceAudio: {
         words: async () => timedWords,
         envelope: async () => envelope,
@@ -1241,6 +1268,21 @@ describe('RingStore + pipeline', () => {
     expect(notified[0]).toMatchObject({ title: 'Ring → mum (yasmina-amar (dm))', body: "I'll be home in 30 mins" })
     ENV.contacts.push('nobody')
     expect((await deliver('message nobody hi')).route).toMatchObject({ ok: false, detail: 'no WhatsApp DM room found for nobody' })
+    ENV.contacts.pop()
+  })
+
+  it('draft puts the text in the room\'s composer UNSENT — appends to an open draft, never sends (^odd-loon)', async () => {
+    const rec = await deliver("draft mum I'll be home in 30 mins")
+    expect(rec.route).toMatchObject({ rule: 'draft', ok: true, detail: 'yasmina-amar (dm)', command: { kind: 'draft', contact: 'yasmina-amar', text: "I'll be home in 30 mins" } })
+    expect(drafts.get('yasmina-amar')).toBe("I'll be home in 30 mins")
+    expect(sentAsYousef).toHaveLength(0)
+    expect(toAl).toHaveLength(0)
+    expect(notified[0]).toMatchObject({ title: 'Ring · draft for mum (yasmina-amar (dm))', body: "I'll be home in 30 mins" })
+    const again = await deliver('draft a message to mum actually make it 40')
+    expect(again.route).toMatchObject({ ok: true, detail: 'yasmina-amar (dm), appended to the open draft' })
+    expect(drafts.get('yasmina-amar')).toBe("I'll be home in 30 mins\n\nactually make it 40")
+    ENV.contacts.push('nobody')
+    expect((await deliver('draft nobody hi')).route).toMatchObject({ ok: false, detail: 'no WhatsApp DM room found for nobody' })
     ENV.contacts.pop()
   })
 

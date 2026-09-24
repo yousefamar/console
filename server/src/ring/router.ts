@@ -34,6 +34,9 @@ export type RingCommand =
   /** The recording itself, minus the command head, as a voice note. `text`
    *  is the payload transcript — it anchors the cut and captions the push. */
   | { kind: 'voice'; contact: string; spoken: string; text: string }
+  /** `text` into the recipient's chat composer as an UNSENT draft — Yousef
+   *  edits and sends it himself. Same recipients as `message`. */
+  | { kind: 'draft'; contact: string; spoken: string; text: string }
   /** Only ever minted by the FALLBACK (unclaimed text → the fallback agent) —
    *  there is no spoken "agent" verb: Yousef talks to projects (`add <project>
    *  …` forks a card), not to agents. */
@@ -182,6 +185,9 @@ const MESSAGE_LEAD = /^(?:to|that)\s+/i
  *  may sit behind. Skipped one at a time, never more than this many. */
 const VOICE_PHRASE = new Set(['note', 'message', 'memo', 'to', 'for'])
 const VOICE_PHRASE_MAX = 2
+/** "draft A MESSAGE TO mum", "draft a reply for mum" — three words at most. */
+const DRAFT_PHRASE = new Set(['a', 'message', 'text', 'reply', 'note', 'to', 'for'])
+const DRAFT_PHRASE_MAX = 3
 
 // The STT decorates the HEAD of a command with punctuation — "Log dream.",
 // "Music, play", "Al: …", "Message Nica — I'm late", "Music… pause" — so every
@@ -410,18 +416,16 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
         return unknown('message')
       }
       case 'voice': {
-        // The recipient may sit behind verb-phrase words: "voice mum …",
-        // "voice note mum …", "voice message to mum …".
-        for (let p = 1, skipped = 0; ; p++, skipped++) {
-          const hit = resolveRecipientAt(cased, p, schema, env)
-          if (hit) return hit.rest ? { rule: 'voice', command: { kind: 'voice', contact: hit.contact, spoken: hit.spoken, text: hit.rest } } : null
-          const head = headWords(cased, p + 1)
-          if (!head?.rest) return unknown('voice')
-          const spoken = head.words[p]!
-          if (skipped >= VOICE_PHRASE_MAX || !VOICE_PHRASE.has(spoken)) {
-            return matched.exact ? { rule: 'voice.unknown-target', command: { kind: 'unknown-target', verb: 'voice', target: spoken, text } } : null
-          }
-        }
+        const r = resolveRecipientBehindPhrase(cased, schema, env, VOICE_PHRASE, VOICE_PHRASE_MAX)
+        if (r.kind === 'hit') return r.rest ? { rule: 'voice', command: { kind: 'voice', contact: r.contact, spoken: r.spoken, text: r.rest } } : null
+        if (r.kind === 'none') return unknown('voice')
+        return matched.exact ? { rule: 'voice.unknown-target', command: { kind: 'unknown-target', verb: 'voice', target: r.spoken, text } } : null
+      }
+      case 'draft': {
+        const r = resolveRecipientBehindPhrase(cased, schema, env, DRAFT_PHRASE, DRAFT_PHRASE_MAX)
+        if (r.kind === 'hit') return r.rest ? { rule: 'draft', command: { kind: 'draft', contact: r.contact, spoken: r.spoken, text: r.rest.replace(MESSAGE_LEAD, '') } } : null
+        if (r.kind === 'none') return unknown('draft')
+        return matched.exact ? { rule: 'draft.unknown-target', command: { kind: 'unknown-target', verb: 'draft', target: r.spoken, text } } : null
       }
       case 'echo':
       case 'music':
@@ -451,6 +455,25 @@ function resolveRecipientAt(cased: string, p: number, schema: RingSchema, env: R
     if (contact) return { contact, spoken, rest: head.rest }
   }
   return null
+}
+
+/** The recipient after the verb, possibly behind verb-phrase words ("voice
+ *  NOTE mum", "draft A MESSAGE TO mum") — skipped one at a time, at most
+ *  `max`. `hit` = a recipient (rest may be empty: no command); `stranger` =
+ *  the first word that is neither a phrase word nor a recipient; `none` =
+ *  the utterance ran out. */
+function resolveRecipientBehindPhrase(cased: string, schema: RingSchema, env: RouteEnv, phrase: Set<string>, max: number):
+  | { kind: 'hit'; contact: string; spoken: string; rest: string }
+  | { kind: 'stranger'; spoken: string }
+  | { kind: 'none' } {
+  for (let p = 1, skipped = 0; ; p++, skipped++) {
+    const hit = resolveRecipientAt(cased, p, schema, env)
+    if (hit) return { kind: 'hit', ...hit }
+    const head = headWords(cased, p + 1)
+    if (!head?.rest) return { kind: 'none' }
+    const spoken = head.words[p]!
+    if (skipped >= max || !phrase.has(spoken)) return { kind: 'stranger', spoken }
+  }
 }
 
 const SENTENCE_END = /[.!?]$/
@@ -510,6 +533,7 @@ export function describeCommand(c: RingCommand): string {
     case 'card': return `card → ${c.project} (${c.column}): ${c.text}`
     case 'message': return `message ${c.spoken} (${c.contact}): ${c.text}`
     case 'voice': return `voice note → ${c.spoken} (${c.contact}): ${c.text}`
+    case 'draft': return `draft → ${c.spoken} (${c.contact}): ${c.text}`
     case 'fallback': return `→ @${c.agentKey} (fallback): ${c.text}`
     case 'music': return `music ${c.action}${c.query ? ` "${c.query}"` : ''}`
     case 'timer': return c.seconds === null ? 'timer cancel' : `timer ${formatDuration(c.seconds)} (${c.spoken})`

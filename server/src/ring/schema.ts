@@ -51,6 +51,10 @@ export interface RingSchema {
     /** voice <person> <speech> → the RECORDING itself, minus the command head,
      *  sent AS Yousef as a WhatsApp voice note. Contacts are `message`'s. */
     voice: { aliases: string[] }
+    /** draft <person|room> <text> → the text lands UNSENT in that chat's
+     *  composer (the hub-owned room draft) for Yousef to edit and send
+     *  himself. Contacts and rooms are `message`'s. */
+    draft: { aliases: string[] }
     /** echo <text> → the payload lands on Yousef's WhatsApp, no LLM — the smoke test. */
     echo: { aliases: string[] }
     music: { aliases: string[]; enabled: boolean }
@@ -88,6 +92,7 @@ export const DEFAULT_SCHEMA: RingSchema = {
     start: { aliases: ['do', 'go', 'kick', 'begin', 'now'], column: 'In Progress' },
     message: { aliases: ['text', 'whatsapp', 'tell'], contacts: {}, rooms: {} },
     voice: { aliases: ['voicenote', 'audio'] },
+    draft: { aliases: ['prepare', 'compose'] },
     echo: { aliases: ['test', 'ping', 'repeat'] },
     music: { aliases: [], enabled: true },
     timer: { aliases: ['countdown', 'set'], enabled: true },
@@ -179,6 +184,7 @@ export function parseSchemaNote(md: string): SchemaParse {
   const start = verbs.start ?? {}
   const message = verbs.message ?? {}
   const voice = verbs.voice ?? {}
+  const draft = verbs.draft ?? {}
   const echo = verbs.echo ?? {}
   const music = verbs.music ?? {}
   const timer = verbs.timer ?? {}
@@ -208,6 +214,9 @@ export function parseSchemaNote(md: string): SchemaParse {
       },
       voice: {
         aliases: voice.aliases === undefined ? [...d.voice.aliases] : strList(voice.aliases, 'verbs.voice.aliases', errors),
+      },
+      draft: {
+        aliases: draft.aliases === undefined ? [...d.draft.aliases] : strList(draft.aliases, 'verbs.draft.aliases', errors),
       },
       echo: {
         aliases: echo.aliases === undefined ? [...d.echo.aliases] : strList(echo.aliases, 'verbs.echo.aliases', errors),
@@ -332,7 +341,9 @@ forces a pass.
 \`add movies Spiderman\`, \`log journal just finished sowing the seeds\`,
 \`message mum I'll be home in 30 mins\`, \`voice mum <keep talking>\` (the recording
 itself, minus those two words, sent as a WhatsApp voice note from your account —
-\`voice note mum …\` works too), \`add console the login button is
+\`voice note mum …\` works too), \`draft mum I'll be late\` (the text lands UNSENT in
+mum's chat composer for you to edit and send yourself — \`draft a message to mum …\`
+works too), \`add console the login button is
 misaligned\` (a project slug → Backlog card), \`start console fix the login
 button\` (→ In Progress, an agent forks now), \`echo testing one two\` (→ your own
 WhatsApp, pure software — the smoke test), \`remind me to take the ring off\` (→ your
@@ -378,6 +389,9 @@ verbs:
 
   voice:                # voice <person|room> <speech> → the RECORDING itself, minus the command words, as a WhatsApp voice note from your account (contacts and rooms as above; "voice note mum …" / "voice message to mum …" work)
     aliases: [voicenote, audio]
+
+  draft:                # draft [a message] [to] <person|room> <text> → the text lands UNSENT in that chat's composer (amber "Draft:" in Chat / Inbox) for you to edit and send yourself; contacts and rooms as above
+    aliases: [prepare, compose]
 
   echo:                 # echo <text> → straight to your own WhatsApp, no LLM
     aliases: [test, ping, repeat]
@@ -455,6 +469,7 @@ export async function describeSchema(
       { verb: 'start', aliases: v.start.aliases, usage: 'start <project> <text>', targets: projectTargets(`${v.start.column} (dispatches now)`) },
       { verb: 'message', aliases: v.message.aliases, usage: 'message <person|room> <text>', targets: recipients, note: `also any of: ${env.contacts.join(', ') || '-'}` },
       { verb: 'voice', aliases: v.voice.aliases, usage: 'voice [note] [to] <person|room> <speech>', targets: recipients, note: 'the recording itself, minus the command words, as a WhatsApp voice note from Yousef\'s account; contacts and rooms as message' },
+      { verb: 'draft', aliases: v.draft.aliases, usage: 'draft [a message] [to] <person|room> <text>', targets: recipients, note: 'the text lands UNSENT in that chat\'s composer as a draft for Yousef to edit and send himself; contacts and rooms as message' },
       { verb: 'echo', aliases: v.echo.aliases, usage: 'echo <text>', targets: [], ...(env.echoConfigured ? {} : { note: 'NOTIFY_JID unset — echo has nowhere to send' }) },
       { verb: 'music', aliases: v.music.aliases, usage: 'play | pause | next | previous | play <query>', targets: [], ...(v.music.enabled ? {} : { note: 'disabled' }) },
       { verb: 'timer', aliases: v.timer.aliases, usage: 'timer <duration> | timer cancel', targets: [], ...(v.timer.enabled ? {} : { note: 'disabled' }) },

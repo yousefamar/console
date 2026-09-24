@@ -34,6 +34,10 @@ export interface RingCtx {
   /** `voice` — the clip AS YOUSEF to the same room as a push-to-talk voice
    *  note (MSC3245). Same room resolution as chatSendAsYousef. */
   chatSendVoiceAsYousef: (contact: string, clip: VoiceClip) => Promise<string>
+  /** `draft` — the text into the same room's hub-owned composer draft,
+   *  UNSENT (the `con chat draft` seam); an open draft is appended to, never
+   *  overwritten. Returns the room name; throws when no room resolves. */
+  chatDraftAsYousef: (contact: string, text: string) => Promise<{ room: string; appended: boolean }>
   /** Head-clip analysis + the cut behind `voice` (ring/voice.ts). Each null
    *  when unavailable: no words → the note goes out uncut; no envelope → the
    *  words' estimate stands; no cut → the delivery fails. */
@@ -124,6 +128,7 @@ export function buildRingForkSeed(schema: RingSchema): string {
     `start <project> <text>   → board card in ${v.start.column} (dispatched, forks an agent now)`,
     `message <person> <text>  → sent AS YOUSEF from his own chat account (not via you)`,
     'voice <person> <speech>  → the recording itself, minus the command words, as a WhatsApp voice note FROM YOUSEF (not via you)',
+    'draft <person> <text>    → the text UNSENT into that chat\'s composer as a draft — Yousef edits and sends it himself (not via you)',
     'echo <text>              → straight to Yousef\'s WhatsApp (pure software smoke test)',
     'remind [me] [in <duration> | at <time> | tomorrow …] <text> → the text to Yousef\'s WhatsApp at that time (no time → 2 h), his words verbatim; pure software',
     'al <text>                → straight to YOU (this fork), skipping the tree — he addressed you by name ("message al …" is different: that is a WhatsApp send FROM YOUSEF to your DM, answer it on WhatsApp)',
@@ -163,7 +168,7 @@ export function sttVocabulary(schema: RingSchema, env: RouteEnv): string {
     ...env.projects.map((p) => `Add ${p.replace(/-/g, ' ')}.`),
     ...[...new Set([...Object.keys(v.message.contacts), ...env.contacts].map(firstName))].map((c) => `Message ${cap(c)}.`),
     ...Object.keys(v.message.rooms).map((r) => `Message ${r.split(' ').map(cap).join(' ')}.`),
-    'Al.', 'Echo.', 'Voice.', 'Timer.', 'Remind me.', 'Play.', 'Pause.', 'Next.',
+    'Al.', 'Echo.', 'Voice.', 'Draft.', 'Timer.', 'Remind me.', 'Play.', 'Pause.', 'Next.',
   ]
   return phrases.join(' ')
 }
@@ -173,7 +178,7 @@ export function sttVocabulary(schema: RingSchema, env: RouteEnv): string {
  *  anchored in the ring transcript and everything from there is taken. Null
  *  when the two cannot be aligned. Kinds without a spoken payload pass. */
 export function spliceHeadPayload(head: RingCommand, transcript: string): RingCommand | null {
-  const field = head.kind === 'list' ? 'item' : head.kind === 'echo' || head.kind === 'card' || head.kind === 'message' || head.kind === 'voice' || head.kind === 'fallback' || head.kind === 'remind' ? 'text' : null
+  const field = head.kind === 'list' ? 'item' : head.kind === 'echo' || head.kind === 'card' || head.kind === 'message' || head.kind === 'voice' || head.kind === 'draft' || head.kind === 'fallback' || head.kind === 'remind' ? 'text' : null
   if (!field) return head
   const want = wordKeys(field === 'item' ? (head as { item: string }).item : (head as { text: string }).text)
   if (!want.length) return null
@@ -307,6 +312,7 @@ function notification(c: RingCommand, o: { ok: boolean; detail?: string }): { ti
     case 'fallback': return { title: `Ring → ${c.agentKey === 'al' ? 'AL' : `@${c.agentKey}`}`, body: c.text }
     case 'message': return { title: `Ring → ${c.spoken}${o.detail ? ` (${o.detail})` : ''}`, body: c.text }
     case 'voice': return { title: `Ring → ${c.spoken} · voice note${o.detail ? ` (${o.detail})` : ''}`, body: c.text }
+    case 'draft': return { title: `Ring · draft for ${c.spoken}${o.detail ? ` (${o.detail})` : ''}`, body: c.text }
     case 'list': return { title: `Ring · ${c.dated ? 'log' : 'add'} ${c.target}`, body: c.dated ? c.item : (o.detail ?? c.item) }
     case 'echo': return { title: 'Ring · echo → WhatsApp', body: c.text }
     case 'card': return { title: `Ring · ${c.project} → ${c.column}`, body: o.detail ?? c.text }
@@ -344,6 +350,10 @@ async function execute(ctx: RingCtx, c: RingCommand, rec: RingRecording): Promis
         if (!clip) throw new Error('ffmpeg could not cut the recording into a voice note')
         const room = await ctx.chatSendVoiceAsYousef(c.contact, clip)
         return { ok: true, detail: `${room}, ${formatDuration(Math.round(clip.durationMs / 1000))}${est ? `, head cut at ${from}s` : ', UNCUT — command words included'}` }
+      }
+      case 'draft': {
+        const { room, appended } = await ctx.chatDraftAsYousef(c.contact, c.text)
+        return { ok: true, detail: appended ? `${room}, appended to the open draft` : room }
       }
       case 'echo': {
         const jid = await ctx.whatsappToYousef(c.text)

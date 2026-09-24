@@ -1527,6 +1527,16 @@ const ringCtx: RingCtx = {
     })
     return room.name
   },
+  // draft: the same room, but the text goes into its hub-owned composer draft
+  // (the `con chat draft` seam) — nothing is sent; the room turns live with an
+  // amber "Draft:" preview and Yousef edits + sends from the composer. An open
+  // draft is appended to, never overwritten — his half-typed text is the only copy.
+  chatDraftAsYousef: async (contact, text) => {
+    const room = await yousefDmRoomFor(contact)
+    const existing = chatRoomsStore.getRoom(room.id)?.draft?.trim()
+    await matrixSync.setDraft({ roomId: room.id, text: existing ? `${existing}\n\n${text}` : text })
+    return { room: room.name, appended: !!existing }
+  },
   // echo: pure software — AL's WhatsApp socket, Yousef's own number.
   whatsappToYousef: async (text) => {
     const jid = yousefWhatsAppJid()
