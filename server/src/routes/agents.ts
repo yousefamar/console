@@ -660,13 +660,7 @@ function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, in
  *  that digest into the parent, then close the child. Parent = fork lineage
  *  (`parentClaudeSessionId`, same conversation ancestry) — the only hierarchy.
  *  A SUMMARY — not the transcript — keeps the parent's context clean. */
-/** How long a batched merge digest may sit queued on the parent before a
- *  timer flushes it. Long enough that a board-approval sweep (Yousef clearing
- *  Under Review card by card) folds into ONE parent wake; short enough that
- *  the digest still lands while the review is fresh. */
-export const ABSORB_BATCH_HOLD_MS = 10 * 60_000
-
-export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000, opts: { request?: string; absorb?: 'wake' | 'batch' } = {}): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
+export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000, opts: { request?: string; absorb?: 'wake' | 'queue' } = {}): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
   const child = ctx.sessions.get(childSessionId)
   if (!child) return { ok: false, error: `session not found: ${childSessionId}` }
   if (child.status === 'running') return { ok: false, error: 'child is busy; wait for its current turn to finish, then merge' }
@@ -682,12 +676,12 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
   const summary = await captureNextTurn(ctx, child, request, timeoutMs)
   if (!summary) return { ok: false, error: 'child produced no summary (timed out) — left alive so nothing is lost' }
 
-  // 'batch' queues the digest with a hold instead of waking the parent per
-  // fold-in: a burst of card approvals costs one absorb turn, not one wake
-  // per card (request-count diet, ^cool-newt). An unrelated turn ending
-  // earlier delivers it sooner; the queue survives a hub restart.
-  if (opts.absorb === 'batch') {
-    parent.queueMessage(buildMergeEnvelope(child.name ?? 'fork', summary, 'fork'), undefined, { holdMs: ABSORB_BATCH_HOLD_MS })
+  // 'queue' never steers a busy parent: the digest waits for its current
+  // turn to end (further approvals during that turn ride the same flush —
+  // the request-count diet's batching, ^cool-newt); an idle parent gets it
+  // now. The queue survives a hub restart.
+  if (opts.absorb === 'queue') {
+    parent.queueMessage(buildMergeEnvelope(child.name ?? 'fork', summary, 'fork'))
   } else {
     wakeSession(ctx, parent, buildMergeEnvelope(child.name ?? 'fork', summary, 'fork'))
   }

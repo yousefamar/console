@@ -1488,39 +1488,48 @@ describe('Session prompt-cache TTL', () => {
   })
 })
 
-describe('queueMessage holdMs (batched machine notifications, ^cool-newt)', () => {
-  it('defers the idle flush until the hold expires, then one delivery carries everything queued', async () => {
+describe('queued messages only wait for a turn that is actually running (^gray-koi)', () => {
+  const resultMsg = {
+    type: 'result', subtype: 'success', duration_ms: 10, session_id: 'x', total_cost_usd: 0,
+    usage: { input_tokens: 1, output_tokens: 1 },
+  }
+  const stdinText = () => mockProcess.stdin.write.mock.calls.map((c) => String(c[0])).join('')
+
+  it('queueMessage on an idle session delivers at once — nothing is parked', async () => {
     const session = new Session({ prompt: 'test' })
-    sendStdoutJson({
-      type: 'result', subtype: 'success', duration_ms: 10, session_id: 'x', total_cost_usd: 0,
-      usage: { input_tokens: 1, output_tokens: 1 },
-    })
+    sendStdoutJson(resultMsg)
     await new Promise((r) => setTimeout(r, 10))
     expect(session.status).toBe('idle')
-    const writesBefore = mockProcess.stdin.write.mock.calls.length
-    session.queueMessage('[MERGE — fork "alpha" folded in and closed]', undefined, { holdMs: 40 })
-    session.queueMessage('[MERGE — fork "beta" folded in and closed]', undefined, { holdMs: 40 })
-    // Held: nothing written yet, both digests accumulate in the queue.
-    expect(mockProcess.stdin.write.mock.calls.length).toBe(writesBefore)
-    expect(session.queuedMessage).toContain('alpha')
-    expect(session.queuedMessage).toContain('beta')
-    await new Promise((r) => setTimeout(r, 80))
+    session.queueMessage('[MERGE — fork "alpha" folded in and closed]')
     expect(session.queuedMessage).toBeNull()
-    const sent = mockProcess.stdin.write.mock.calls.slice(writesBefore).map((c) => String(c[0])).join('')
-    expect(sent).toContain('alpha')
-    expect(sent).toContain('beta')
+    expect(session.status).toBe('running')
+    expect(stdinText()).toContain('alpha')
   })
 
-  it('without holdMs the idle flush stays immediate', async () => {
+  it('setQueuedMessage with text on an idle session delivers at once too', async () => {
     const session = new Session({ prompt: 'test' })
-    sendStdoutJson({
-      type: 'result', subtype: 'success', duration_ms: 10, session_id: 'x', total_cost_usd: 0,
-      usage: { input_tokens: 1, output_tokens: 1 },
-    })
+    sendStdoutJson(resultMsg)
     await new Promise((r) => setTimeout(r, 10))
-    session.queueMessage('deliver now')
+    session.setQueuedMessage('edited then re-queued')
     expect(session.queuedMessage).toBeNull()
-    const sent = mockProcess.stdin.write.mock.calls.map((c) => String(c[0])).join('')
-    expect(sent).toContain('deliver now')
+    expect(stdinText()).toContain('edited then re-queued')
+  })
+
+  it('mid-turn queues wait for the result, and everything queued during the turn rides ONE delivery', async () => {
+    const session = new Session({ prompt: 'test' })
+    expect(session.status).toBe('running')
+    const before = mockProcess.stdin.write.mock.calls.length
+    session.queueMessage('[MERGE — fork "alpha" folded in and closed]')
+    session.queueMessage('[MERGE — fork "beta" folded in and closed]')
+    expect(mockProcess.stdin.write.mock.calls.length).toBe(before)
+    expect(session.queuedMessage).toContain('alpha')
+    expect(session.queuedMessage).toContain('beta')
+    sendStdoutJson(resultMsg)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(session.queuedMessage).toBeNull()
+    const userWrites = mockProcess.stdin.write.mock.calls.slice(before).filter((c) => String(c[0]).includes('"type":"user"'))
+    expect(userWrites).toHaveLength(1)
+    expect(String(userWrites[0]![0])).toContain('alpha')
+    expect(String(userWrites[0]![0])).toContain('beta')
   })
 })

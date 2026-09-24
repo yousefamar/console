@@ -1162,7 +1162,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
         if (cap) clearTimeout(cap)
         // Give the turn a beat to settle (status flips to idle after result).
         setTimeout(() => {
-          void mergeIntoParent(agentCtx, w.id, undefined, { absorb: 'batch' }).then((r) => {
+          void mergeIntoParent(agentCtx, w.id, undefined, { absorb: 'queue' }).then((r) => {
             if (r.ok) {
               broadcast({ type: 'session_merged', forkId: w.id, parentId: r.parentId!, summary: r.summary! })
               log(`[boards] ^${t.blockId} wound down: fork ${w.id} merged into ${r.parentId}`)

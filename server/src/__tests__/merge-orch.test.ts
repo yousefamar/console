@@ -15,13 +15,13 @@ vi.mock('../manifest.js', async (importOriginal) => ({
   saveManifest: () => {},
 }))
 
-import { mergeFork, ABSORB_BATCH_HOLD_MS, type AgentContext } from '../routes/agents.js'
+import { mergeFork, type AgentContext } from '../routes/agents.js'
 
 // --- stubs -----------------------------------------------------------------
 
 class TestSession extends EventEmitter {
   sent: string[] = []
-  queued: Array<{ content: string; holdMs?: number }> = []
+  queued: string[] = []
   killed = false
   status: 'running' | 'idle' | 'ended' = 'idle'
   claudeSessionId?: string
@@ -43,7 +43,7 @@ class TestSession extends EventEmitter {
     }
   }
   logMessage() {}
-  queueMessage(content: string, _images?: unknown, opts?: { holdMs?: number }) { this.queued.push({ content, holdMs: opts?.holdMs }) }
+  queueMessage(content: string) { this.queued.push(content) }
   kill() { this.killed = true }
   getInfo() { return { id: this.id, status: this.status, agentKey: this.agentKey, name: this.name } }
 }
@@ -65,16 +65,15 @@ describe('mergeFork', () => {
     expect(ctx.sessions.has('s-f')).toBe(false)
   })
 
-  it("absorb: 'batch' queues the digest on the parent with a hold instead of waking it (^cool-newt)", async () => {
+  it("absorb: 'queue' hands the digest to the parent's queue (turn-end if busy, at once if idle) instead of steering it (^cool-newt, ^gray-koi)", async () => {
     const parent = new TestSession('s-p', { claudeSessionId: 'c-p', name: 'Parent' })
     const fork = new TestSession('s-f', { claudeSessionId: 'c-f', name: 'Parent (fork)', parentClaudeSessionId: 'c-p', reply: 'card done, worktree removed.' })
     const ctx = ctxOf(new Map([['s-p', parent], ['s-f', fork]]))
-    const res = await mergeFork(ctx, 's-f', 2000, { absorb: 'batch' })
+    const res = await mergeFork(ctx, 's-f', 2000, { absorb: 'queue' })
     expect(res.ok).toBe(true)
-    expect(parent.sent).toEqual([]) // no dedicated wake
+    expect(parent.sent).toEqual([]) // no stdin write behind the queue's back
     expect(parent.queued).toHaveLength(1)
-    expect(parent.queued[0]!.content).toContain('card done')
-    expect(parent.queued[0]!.holdMs).toBe(ABSORB_BATCH_HOLD_MS)
+    expect(parent.queued[0]).toContain('card done')
     expect(fork.killed).toBe(true)
   })
 

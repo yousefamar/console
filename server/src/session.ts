@@ -735,24 +735,17 @@ export class Session extends EventEmitter {
   // and flushed on `result`, which also means it survives a page reload, the
   // phone backgrounding, and a hub restart mid-turn (manifest-persisted).
   // ONE buffer that grows — a second queue appends rather than making a FIFO.
+  // A queue only ever waits for a turn that is actually running: on an idle
+  // session every queue path delivers at once. (A 10-min hold that batched
+  // wind-down digests left them visibly parked on idle parents — ^gray-koi.)
 
-  /** Append `content` to the queued prompt (blank-line separated).
-   *  `holdMs` defers the idle flush: the message waits in the queue so that
-   *  more can pile on (or an unrelated turn can deliver it at turn end), and
-   *  a timer flushes whatever accumulated once the hold expires. Low-urgency
-   *  machine notifications (wind-down fold-ins) use this so a burst costs one
-   *  wake, not one per event. The hold is process-local; after a hub restart
-   *  the manifest-restored queue delivers immediately, which is fine. */
-  queueMessage(content: string, images?: ImageAttachment[], opts?: { holdMs?: number }): void {
+  /** Append `content` to the queued prompt (blank-line separated). */
+  queueMessage(content: string, images?: ImageAttachment[]): void {
     const text = content.trim()
     if (!text) return
     this.queuedMessage = this.queuedMessage ? `${this.queuedMessage}\n\n${text}` : text
     if (images?.length) this.queuedImages.push(...images)
     this.emitQueued()
-    if (opts?.holdMs) {
-      setTimeout(() => this.flushIfIdle(), opts.holdMs).unref?.()
-      return
-    }
     // No turn to wait for — queueing on an idle session is just sending.
     this.flushIfIdle()
   }
@@ -764,6 +757,7 @@ export class Session extends EventEmitter {
     this.queuedMessage = text
     if (!text) this.queuedImages = []
     this.emitQueued()
+    if (text) this.flushIfIdle()
   }
 
   /** Deliver the queued prompt as a real user message. Called at turn end.
