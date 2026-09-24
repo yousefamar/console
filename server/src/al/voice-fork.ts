@@ -157,6 +157,8 @@ export function buildCallEnvelope(opts: {
   user: string | null
   trust: string | null
   userBody: string
+  /** Every other users/<slug>.md (the caller's own is `userBody`). */
+  contacts?: Array<{ user: string; body: string }>
   recentThread: string[]
   openThreads: string
   task: string | null
@@ -169,6 +171,13 @@ export function buildCallEnvelope(opts: {
   if (opts.rulesInline) parts.push(opts.rulesInline)
   parts.push(`[VOICE CALL ${opts.direction === 'in' ? 'INBOUND from' : 'OUTBOUND to'} ${who} — callId ${opts.callId}]`)
   parts.push(`## Who is on the call\n\n${who}${opts.trust === 'owner' ? ' — this is Yousef himself, your owner. No restrictions apply.' : ''}${opts.userBody ? `\n\n${opts.userBody}` : ''}`)
+  if (opts.contacts?.length) {
+    parts.push([
+      '## Your other contacts (users/*.md, inlined — do not Read them again)',
+      'Everyone else in your address book, so you recognise the names the caller drops (family, colleagues, friends) instead of asking who they are. Their privacy walls apply on this call exactly as in chat.',
+      ...opts.contacts.map((c) => `### users/${c.user}.md\n\n${c.body.trim()}`),
+    ].join('\n\n'))
+  }
   if (opts.recentThread.length) parts.push(`## Recent WhatsApp thread with ${opts.displayName} (oldest first)\n\n${opts.recentThread.join('\n')}`)
   if (opts.openThreads.trim()) parts.push(`## Open threads (your memory)\n\n${opts.openThreads.trim()}`)
   if (opts.direction === 'out') {

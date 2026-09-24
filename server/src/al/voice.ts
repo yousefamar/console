@@ -107,6 +107,27 @@ export async function lookupCaller(rawJid: string): Promise<CallerInfo> {
   }
 }
 
+export interface ContactEntry { user: string; body: string }
+
+/** Every other `users/<slug>.md` body, alphabetical — the address book a text
+ *  fork carries in its inherited transcript. A fresh call fork has no such
+ *  history and a Read mid-call is dead air, so the envelope inlines them
+ *  (24 Sept 2026: Yousef rang and had to be asked who "Yasin" was; the fact
+ *  was in yasmina-amar.md and yehia-amar.md, not in his own file). */
+export async function loadContacts(exceptUser: string | null, usersDir = join(WORKSPACE_DIR, 'users')): Promise<ContactEntry[]> {
+  let files: string[]
+  try { files = await readdir(usersDir) } catch { return [] }
+  const out: ContactEntry[] = []
+  for (const f of files.filter((f) => f.endsWith('.md')).sort()) {
+    const user = f.replace(/\.md$/, '')
+    if (user === exceptUser) continue
+    const content = await readIfExists(join(usersDir, f))
+    const body = content ? stripFrontmatter(content) : ''
+    if (body) out.push({ user, body })
+  }
+  return out
+}
+
 /** Who gets answered. Owner always; a known contact unless their file says
  *  `calls: false` (or lists `calls` under `deny:`); an unknown number never —
  *  AL texts them back from the missed-call envelope instead. Outbound is
@@ -152,6 +173,7 @@ export async function prepareCall(rawJid: string, opts: { callId: string; direct
   const base = { displayName: caller.displayName, user: caller.user, jid: caller.jid, phone: caller.phone, language: callerLanguage(caller.frontmatter) }
   if (!policy.answer) return { ...policy, ...base, envelope: '' }
   const openThreads = (await readIfExists(join(WORKSPACE_DIR, 'memory', 'open-threads.md'))) || ''
+  const contacts = await loadContacts(caller.user)
   const ids = caller.user ? identifiersFor(caller.user) : [caller.phone]
   const now = opts.now ?? Date.now()
   const history = waHistory.recentThread(ids.length ? ids : [caller.phone], { limit: HISTORY_TURNS })
@@ -163,6 +185,7 @@ export async function prepareCall(rawJid: string, opts: { callId: string; direct
     user: caller.user,
     trust: caller.trust,
     userBody: caller.body,
+    contacts,
     recentThread: history.map((e) => waHistory.formatHistoryLine(e, now)),
     openThreads,
     task: opts.task ?? null,

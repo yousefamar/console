@@ -4,13 +4,13 @@
 // machine. The sidecar + pipeline processes are out of scope here.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   answerPolicy, callEnvelope, historyLineFor, transcriptRecord, saveTranscript,
   resolveCallTarget, hasPriorChat, applySidecarEvent, getSidecarStatus, getSidecarQr, formatDuration,
-  loadVoiceConfig, closingTurn, callerLanguage, type CallTranscript,
+  loadVoiceConfig, closingTurn, callerLanguage, loadContacts, type CallTranscript,
 } from '../al/voice.js'
 import { buildCallEnvelope, voiceForkRules } from '../al/voice-fork.js'
 import { record, resetHistoryCache } from '../al/wa-history.js'
@@ -101,6 +101,30 @@ describe('voice fork rules + envelope', () => {
     expect(inbound).toContain('Yousef is calling you.')
     expect(inbound).not.toContain('## Call task')
     expect(inbound.trimEnd().endsWith('Reply with exactly the word: ready')).toBe(true)
+  })
+  it('the envelope inlines every other contact file after the caller, so family names need no guessing (24 Sept: "Yasin")', () => {
+    const base = {
+      callId: 'CALL42XYZ', direction: 'in' as const, task: null, displayName: 'Yousef', phone: '447845443890', user: 'yousef', trust: 'owner', userBody: 'likes tea',
+      recentThread: [], openThreads: '', now: Date.UTC(2026, 8, 24, 12, 0, 0),
+    }
+    const contacts = [
+      { user: 'yasmina-amar', body: '## Yasmina Amar\n\nYousef\'s sister. Based in Egypt with Yasin (brother) and our dad.' },
+      { user: 'yehia-amar', body: '## Yehia\n\nOne of two brothers (Yasin is the other).' },
+    ]
+    const out = buildCallEnvelope({ ...base, contacts })
+    const callerAt = out.indexOf('## Who is on the call')
+    const contactsAt = out.indexOf('## Your other contacts (users/*.md')
+    const threadsAt = out.indexOf('## This call')
+    expect(callerAt).toBeGreaterThan(-1)
+    expect(contactsAt).toBeGreaterThan(callerAt)
+    expect(threadsAt).toBeGreaterThan(contactsAt)
+    expect(out).toContain('### users/yasmina-amar.md\n\n## Yasmina Amar')
+    expect(out).toContain('Yasin (brother)')
+    expect(out).toContain('### users/yehia-amar.md')
+    expect(out).toMatch(/do not Read them again/)
+    expect(out).toMatch(/privacy walls apply/)
+    expect(buildCallEnvelope({ ...base })).not.toContain('## Your other contacts')
+    expect(buildCallEnvelope({ ...base, contacts: [] })).not.toContain('## Your other contacts')
   })
   it('the closing turn is the merge request: not spoken, follow-ups + memory first, then a digest — no transcript', () => {
     const c = closingTurn(completed())
@@ -230,6 +254,24 @@ describe('callerLanguage', () => {
     expect(callerLanguage({ lang: 'de-DE' })).toBe('de')
     expect(callerLanguage({ locale: ['it_IT'] })).toBe('it')
     expect(callerLanguage({ language: 'arabic' })).toBe('en')
+  })
+})
+
+describe('loadContacts', () => {
+  it('returns every other users/*.md body, frontmatter stripped, caller and non-md/empty files skipped, alphabetical', async () => {
+    const users = join(dir, 'users')
+    mkdirSync(users)
+    writeFileSync(join(users, 'yousef.md'), '---\ntrust: owner\n---\n\n## Yousef\n\nowner\n')
+    writeFileSync(join(users, 'yehia-amar.md'), '---\nwhatsapp: "491703342476"\n---\n\n## Yehia\n\nOne of two brothers (Yasin is the other).\n')
+    writeFileSync(join(users, 'ab.md'), '## AB\n\nFirst contacted 2026-05-27.\n')
+    writeFileSync(join(users, 'empty.md'), '---\nwhatsapp: "1"\n---\n')
+    writeFileSync(join(users, 'notes.txt'), 'not a contact')
+    const out = await loadContacts('yousef', users)
+    expect(out.map((c) => c.user)).toEqual(['ab', 'yehia-amar'])
+    expect(out[1]!.body).toBe('## Yehia\n\nOne of two brothers (Yasin is the other).')
+    expect(out[1]!.body).not.toContain('whatsapp:')
+    expect((await loadContacts(null, users)).map((c) => c.user)).toEqual(['ab', 'yehia-amar', 'yousef'])
+    expect(await loadContacts('yousef', join(dir, 'nowhere'))).toEqual([])
   })
 })
 
