@@ -56,6 +56,7 @@ from pipecat.turns.user_stop.speech_timeout_user_turn_stop_strategy import Speec
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.string import TextPartForConcatenation, concatenate_aggregated_text
 
+from .barge_in import SustainedSpeechUserTurnStartStrategy
 from .clips import ClipStore
 from .config import Config
 from .fork_llm import ForkLLMService
@@ -283,13 +284,18 @@ class CallSession:
         stop_strategies = None
         if cfg.turn_stop == "timeout":
             stop_strategies = [SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=cfg.user_speech_timeout)]
-        # A user turn starts on WORDS, not on VAD: while AL is talking the
-        # caller must say `interrupt_min_words` before it counts as a barge-in
-        # (the Nica call: her "Hello?" over the greeting cancelled it), and a
-        # single word is enough when AL is quiet.
-        # VOICE_INTERRUPT_MIN_WORDS=1 keeps pipecat's default VAD-based start
-        # (any sound barges in, and turns end 0.4 s after the caller stops).
-        start_strategies = [MinWordsUserTurnStartStrategy(min_words=cfg.interrupt_min_words)] if cfg.interrupt_min_words > 1 else None
+        # While AL is talking the caller barges in with `interrupt_min_secs` of
+        # continuous speech (VAD — the STT sends no interims, so words alone
+        # only ever cut him off after the caller has finished) or with
+        # `interrupt_min_words` in the final transcript; a one-word "Hello?"
+        # over the greeting (the Nica call) cancels nothing. Any speech starts
+        # a turn when AL is quiet. VOICE_INTERRUPT_MIN_WORDS=1 keeps pipecat's
+        # default VAD-based start (any sound barges in).
+        start_strategies = None
+        if cfg.interrupt_min_words > 1:
+            start_strategies = [MinWordsUserTurnStartStrategy(min_words=cfg.interrupt_min_words)]
+            if cfg.interrupt_min_secs > 0:
+                start_strategies.insert(0, SustainedSpeechUserTurnStartStrategy(min_secs=cfg.interrupt_min_secs))
         user_params = LLMUserAggregatorParams(
             vad_analyzer=vad,
             user_turn_strategies=UserTurnStrategies(start=start_strategies, stop=stop_strategies),

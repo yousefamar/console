@@ -18,6 +18,9 @@ PROMPTS = {
     "q3": "Okay, thanks. Hang up.",
     "q4": "Tell me a long story.",
     "q5": "Can you say something in Arabic?",
+    # Continuous talking-over with no pause the STT could endpoint on
+    # (the 24 Sept call: seven "hello"s over a sentence, no cut-off).
+    "q6": "hello hello hello hello hello hello hello hello hello",
 }
 
 

@@ -66,6 +66,8 @@ class FakeSidecar:
         self.answered = asyncio.Event()
         self.hangup_at: float | None = None
         self.flushes = 0
+        self.barge_at: float | None = None
+        self.flush_at: float | None = None  # first flush after barge_at
         self.reply_latencies: list[float] = []
         self.audio_times: list[float] = []
 
@@ -115,7 +117,11 @@ class FakeSidecar:
                 self.ended.set()
             elif c == "flush":
                 self.flushes += 1
-                print("[harness] flush (barge-in) received")
+                now = time.monotonic()
+                if self.barge_at and self.flush_at is None:
+                    self.flush_at = now
+                since = f" {now - self.barge_at:.2f}s after the caller started talking over the bot" if self.barge_at else ""
+                print(f"[harness] flush (barge-in) received{since}")
             elif c == "status":
                 await self.send({"ev": "status", "connected": True, "paired": True, "jid": "x", "calls": [], "id": cmd.get("id")})
             elif c == "loopback":
@@ -308,7 +314,7 @@ async def main():
     ap.add_argument("--inbound", action="store_true")
     ap.add_argument("--ring", type=float, default=4.0, help="seconds between dial and accept")
     ap.add_argument("--no-spawn", action="store_true", help="assume a pipeline is already running on 9979")
-    ap.add_argument("--barge", action="store_true", help="turn 1 asks for a long story; the caller talks over it (checks interrupt + flush + interruptedAfter)")
+    ap.add_argument("--barge", action="store_true", help="turn 1 asks for a long story; the caller talks over it (checks interrupt + flush within 1.2 s + interruptedAfter)")
     ap.add_argument("--arabic", action="store_true", help="turn 1 asks for Arabic; the scripted reply switches ar → en mid-turn (checks the language router, and that the next English utterance still transcribes)")
     ap.add_argument("--setup-fail", action="store_true", help="the TTS websocket is a tarpit, so Pipecat's setup times out after pickup (checks: hold-on clip, apology clip, hangup, transcript outcome=failed / PIPELINE SETUP FAILED)")
     args = ap.parse_args()
@@ -317,7 +323,7 @@ async def main():
     if args.arabic:
         args.wavs = [str(HERE / "q5.wav"), str(HERE / "q3.wav")]
     if args.barge:
-        args.wavs = [str(HERE / "q4.wav"), str(HERE / "q1.wav"), str(HERE / "q3.wav")]
+        args.wavs = [str(HERE / "q4.wav"), str(HERE / "q6.wav"), str(HERE / "q3.wav")]
 
     wavs = [] if args.setup_fail else [read_wav(Path(w)) for w in args.wavs]
     side = FakeSidecar(wavs, args.inbound, args.ring, args.barge)
@@ -443,6 +449,10 @@ async def main():
         if args.barge:
             interrupted_reqs = [r for r in hub.turn_requests if r.get("interruptedAfter")]
             checks["barge-in flushed the sidecar queue"] = side.flushes >= 1
+            # q6 is 2.6 s of continuous speech; a cut that waits for its
+            # transcript lands at ~3 s. The VAD cut must come while he talks.
+            cut_after = side.flush_at - side.barge_at if side.flush_at and side.barge_at else None
+            checks["barge-in cut the bot off while the caller was still talking (≤ 1.2 s)"] = cut_after is not None and cut_after <= 1.2
             checks["barge-in interrupted the fork"] = hub.interrupts >= 1
             checks["next utterance told the fork where it was cut off"] = bool(interrupted_reqs)
             if interrupted_reqs:

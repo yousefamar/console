@@ -55,8 +55,11 @@ class Config:
     tts_languages: tuple[str, ...] = ("en", "ar", "de")
     extra_languages: tuple[str, ...] = ("it", "fr", "es", "pt", "nl", "tr")
     turn_stop: str = "timeout"  # timeout | smart
-    # Words the caller must say over AL before it counts as a barge-in (a bare
-    # "Hello?"/"yeah" no longer cancels the sentence); 1 word when AL is quiet.
+    # Barge-in while AL is speaking: `interrupt_min_secs` of continuous speech
+    # (VAD, cuts him off mid-sentence) or `interrupt_min_words` in the final
+    # transcript (a bare "Hello?"/"yeah" never cancels the sentence). One word
+    # / any speech when AL is quiet. min_words=1 = pipecat's plain VAD start.
+    interrupt_min_secs: float = 0.7
     interrupt_min_words: int = 2
     user_speech_timeout: float = 0.4
     inbound_greet_after_secs: float = 2.0
@@ -102,6 +105,7 @@ class Config:
             tts_languages=tuple(x.strip() for x in env.get("VOICE_TTS_LANGUAGES", "en,ar,de").split(",") if x.strip()) or ("en",),
             extra_languages=tuple(x.strip() for x in env.get("VOICE_EXTRA_LANGUAGES", "it,fr,es,pt,nl,tr").split(",") if x.strip()),
             turn_stop=env.get("VOICE_TURN_STOP", "timeout"),
+            interrupt_min_secs=float(env.get("VOICE_INTERRUPT_MIN_SECS", "0.7")),
             interrupt_min_words=max(1, int(env.get("VOICE_INTERRUPT_MIN_WORDS", "2"))),
             user_speech_timeout=float(env.get("VOICE_USER_SPEECH_TIMEOUT", "0.4")),
             inbound_greet_after_secs=float(env.get("VOICE_INBOUND_GREET_AFTER", "2.0")),
