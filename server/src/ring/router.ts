@@ -182,8 +182,9 @@ export function resolveSpoken(spoken: string, forms: Map<string, string>): strin
 
 const MESSAGE_LEAD = /^(?:to|that)\s+/i
 /** "voice NOTE mum", "voice message TO mum" — verb-phrase words the person
- *  may sit behind. Skipped one at a time, never more than this many. */
-const VOICE_PHRASE = new Set(['note', 'message', 'memo', 'to', 'for'])
+ *  may sit behind. Skipped one at a time, never more than this many. `of`:
+ *  the ring's STT wrote "Voice Yasin" as "Voice of Yasin" (^jade-hawk). */
+const VOICE_PHRASE = new Set(['note', 'message', 'memo', 'to', 'for', 'of'])
 const VOICE_PHRASE_MAX = 2
 /** "draft A MESSAGE TO mum", "draft a reply for mum" — three words at most. */
 const DRAFT_PHRASE = new Set(['a', 'message', 'text', 'reply', 'note', 'to', 'for'])

@@ -222,6 +222,7 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r("Voice mum, I'll be home in 30 mins")).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'yasmina-amar', spoken: 'mum', text: "I'll be home in 30 mins" } })
     expect(r('voice note nika running late')).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'nica', spoken: 'nika', text: 'running late' } })
     expect(r('Voice message to Sam. Hi Sam, calling about Tuesday.')).toMatchObject({ rule: 'voice', command: { contact: 'sam-miller', spoken: 'sam', text: 'Hi Sam, calling about Tuesday' } })
+    expect(r('Voice of Sam: Hi how are you?')).toMatchObject({ rule: 'voice', command: { contact: 'sam-miller', spoken: 'sam', text: 'Hi how are you' } }) // STT's "of" (^jade-hawk)
     expect(r('voicenote al are you there')).toMatchObject({ rule: 'voice', command: { kind: 'voice', contact: 'al', text: 'are you there' } })
     expect(r('audio owl ping')).toMatchObject({ rule: 'voice', command: { contact: 'al' } })
     expect(r('voice stranger hi')).toMatchObject({ rule: 'voice.unknown-target', command: { kind: 'unknown-target', verb: 'voice', target: 'stranger' } })
