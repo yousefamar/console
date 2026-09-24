@@ -138,7 +138,14 @@ impl Default for IdleNoise {
 ///   [+ `WA_VOICE_ONSET_PREROLL_DB`, default -30]: when the queue goes from empty
 ///   to non-empty, <n> ms of pre-roll go out BEFORE the queued speech (a 440 Hz
 ///   tone is the diagnostic: whether it is heard whole says whether a level gate
-///   sits between the wire and the phone's speaker; noise is the production shape).
+///   sits between the wire and the phone's speaker; noise is the production shape);
+/// - `WA_VOICE_SWEEP=<spec>,<spec>,…`: instead of one lever set per call, the
+///   mic clock rotates through these, one per talkspurt (advancing when an
+///   utterance ends, so an entry governs the idle gap before its onset too), and
+///   tags every `onset`/`preroll start` wire-log line with the entry in force.
+///   With the room capture (`wire.rs`) that turns ONE call into a full A/B.
+///   Spec atoms joined by `+`: `base` (the call's env levers), `dtx`,
+///   `floor:<dBFS>`, `tone:<ms>[@<dBFS>]`, `noise:<ms>[@<dBFS>]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Preroll {
     Off,
@@ -146,9 +153,11 @@ pub enum Preroll {
     Noise,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Levers {
     pub dtx: bool,
+    /// Idle comfort-noise floor in dBFS (ignored when `dtx`: idle frames are zeros).
+    pub idle_db: f32,
     pub preroll: Preroll,
     pub preroll_frames: usize,
     pub preroll_db: f32,
@@ -166,6 +175,7 @@ impl Levers {
         let preroll = if ms == 0 { Preroll::Off } else { kind };
         Self {
             dtx: flag("WA_VOICE_DTX"),
+            idle_db: IdleNoise::configured_level_db(),
             preroll,
             preroll_frames: if preroll == Preroll::Off { 0 } else { ms.div_ceil(60) },
             preroll_db: std::env::var("WA_VOICE_ONSET_PREROLL_DB")
@@ -174,6 +184,66 @@ impl Levers {
                 .unwrap_or(-30.0f32)
                 .clamp(-60.0, -10.0),
         }
+    }
+
+    /// The sweep schedule from `WA_VOICE_SWEEP`, or just `base` when unset. A
+    /// malformed entry disables the whole sweep (logged by the caller) rather
+    /// than silently running a different experiment from the one asked for.
+    pub fn sweep_from_env(base: Levers) -> Result<Vec<Levers>, String> {
+        let Some(spec) = std::env::var("WA_VOICE_SWEEP").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
+            return Ok(vec![base]);
+        };
+        spec.split(',').map(|e| Levers::parse(e, base)).collect()
+    }
+
+    /// One sweep entry. `base` supplies whatever the spec does not name.
+    pub fn parse(spec: &str, base: Levers) -> Result<Levers, String> {
+        let mut l = base;
+        for atom in spec.split('+').map(str::trim).filter(|a| !a.is_empty()) {
+            let (key, arg) = atom.split_once(':').map(|(k, a)| (k.trim(), Some(a.trim()))).unwrap_or((atom, None));
+            match (key.to_ascii_lowercase().as_str(), arg) {
+                ("base", None) => {}
+                ("dtx", None) => l.dtx = true,
+                ("floor", Some(db)) => {
+                    l.dtx = false;
+                    l.idle_db = db.parse::<f32>().map_err(|_| format!("{atom}: floor wants dBFS"))?.clamp(-100.0, -30.0);
+                }
+                ("tone" | "noise", Some(a)) => {
+                    let (ms, db) = a.split_once('@').unwrap_or((a, ""));
+                    let ms: usize = ms.trim().parse().map_err(|_| format!("{atom}: wants <ms>[@<dBFS>]"))?;
+                    if !db.trim().is_empty() {
+                        l.preroll_db = db.trim().parse::<f32>().map_err(|_| format!("{atom}: bad dBFS"))?.clamp(-60.0, -10.0);
+                    }
+                    l.preroll = if ms == 0 {
+                        Preroll::Off
+                    } else if key.eq_ignore_ascii_case("tone") {
+                        Preroll::Tone
+                    } else {
+                        Preroll::Noise
+                    };
+                    l.preroll_frames = if l.preroll == Preroll::Off { 0 } else { ms.div_ceil(60) };
+                }
+                _ => return Err(format!("{atom}: unknown lever (base, dtx, floor:<dB>, tone:<ms>[@<dB>], noise:<ms>[@<dB>])")),
+            }
+        }
+        Ok(l)
+    }
+
+    /// Canonical label for the wire log, e.g. `floor:-60`, `dtx+tone:300@-30`.
+    pub fn label(&self) -> String {
+        let mut parts = vec![if self.dtx {
+            "dtx".to_string()
+        } else if self.idle_db < -100.0 {
+            "floor:off".to_string()
+        } else {
+            format!("floor:{:.0}", self.idle_db)
+        }];
+        match self.preroll {
+            Preroll::Off => {}
+            Preroll::Tone => parts.push(format!("tone:{}@{:.0}", self.preroll_frames * 60, self.preroll_db)),
+            Preroll::Noise => parts.push(format!("noise:{}@{:.0}", self.preroll_frames * 60, self.preroll_db)),
+        }
+        parts.join("+")
     }
 
     /// The whole pre-roll as frames: a 440 Hz tone or low-passed noise at
@@ -238,15 +308,50 @@ enum MicState {
 
 /// The 60 ms mic clock's frame source: queued speech when there is any, comfort
 /// noise otherwise, and the configured pre-roll in front of each talkspurt.
+///
+/// `sweep` is the per-talkspurt schedule (one entry = the whole call, the
+/// production shape). It advances on the Speaking → Idle transition, so an entry
+/// governs the idle gap that precedes its onset as well as the onset itself —
+/// what the phone's receive path has adapted to by the time the first word
+/// arrives IS the experiment.
 pub struct MicSource {
     levers: Levers,
+    sweep: Vec<Levers>,
+    cursor: usize,
     idle: IdleNoise,
     state: MicState,
 }
 
 impl MicSource {
     pub fn new(levers: Levers) -> Self {
-        Self { levers, idle: IdleNoise::new(), state: MicState::Idle }
+        Self::with_sweep(vec![levers])
+    }
+
+    pub fn with_sweep(sweep: Vec<Levers>) -> Self {
+        let levers = sweep.first().copied().unwrap_or_else(Levers::from_env);
+        let sweep = if sweep.is_empty() { vec![levers] } else { sweep };
+        Self { levers, sweep, cursor: 0, idle: IdleNoise::with_level_db(levers.idle_db), state: MicState::Idle }
+    }
+
+    /// The entry in force, for the wire log (`lever=<label> #<i>/<n>`).
+    pub fn lever_tag(&self) -> String {
+        if self.sweep.len() > 1 {
+            format!("lever={} #{}/{}", self.levers.label(), self.cursor + 1, self.sweep.len())
+        } else {
+            format!("lever={}", self.levers.label())
+        }
+    }
+
+    fn advance_sweep(&mut self) {
+        if self.sweep.len() < 2 {
+            return;
+        }
+        self.cursor = (self.cursor + 1) % self.sweep.len();
+        let next = self.sweep[self.cursor];
+        if next.idle_db != self.levers.idle_db {
+            self.idle = IdleNoise::with_level_db(next.idle_db);
+        }
+        self.levers = next;
     }
 
     fn idle_frame(&mut self) -> Vec<i16> {
@@ -308,6 +413,7 @@ impl MicSource {
             if *empty_ticks >= HANGOVER_TICKS {
                 events.push(MicEvent::Idle { spoken_frames: *spoken_frames });
                 self.state = MicState::Idle;
+                self.advance_sweep();
             }
         }
         (self.idle_frame(), events)
@@ -921,10 +1027,21 @@ impl CallManager {
             let levers = Levers::from_env();
             info!(
                 "idle comfort noise at {} dBFS; levers {levers:?}",
-                if levers.dtx { "DTX (zeros)".to_string() } else { IdleNoise::configured_level_db().to_string() }
+                if levers.dtx { "DTX (zeros)".to_string() } else { levers.idle_db.to_string() }
             );
-            WIRE.line(&format!("levers {levers:?} idle_db={}", IdleNoise::configured_level_db()));
-            let mut source = MicSource::new(levers);
+            let sweep = match Levers::sweep_from_env(levers) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("WA_VOICE_SWEEP ignored ({e}); running the env levers for the whole call");
+                    WIRE.line(&format!("sweep ignored: {e}"));
+                    vec![levers]
+                }
+            };
+            WIRE.line(&format!(
+                "levers {levers:?} sweep=[{}]",
+                sweep.iter().map(Levers::label).collect::<Vec<_>>().join(",")
+            ));
+            let mut source = MicSource::with_sweep(sweep);
             let mut tick_no = 0u64;
             let mut last_tick = Instant::now();
             loop {
@@ -946,13 +1063,14 @@ impl CallManager {
                 for ev in events {
                     match ev {
                         MicEvent::PrerollStart { q_depth, frames } => {
-                            WIRE.line(&format!("preroll start q_depth={q_depth} frames={frames}"))
+                            WIRE.line(&format!("preroll start {} q_depth={q_depth} frames={frames}", source.lever_tag()))
                         }
-                        MicEvent::Onset { q_depth, first_frame_dbfs } => {
-                            WIRE.line(&format!("onset q_depth={q_depth} first_frame_dbfs={first_frame_dbfs:.1}"))
-                        }
+                        MicEvent::Onset { q_depth, first_frame_dbfs } => WIRE.line(&format!(
+                            "onset {} q_depth={q_depth} first_frame_dbfs={first_frame_dbfs:.1}",
+                            source.lever_tag()
+                        )),
                         MicEvent::Idle { spoken_frames } => {
-                            WIRE.line(&format!("idle after {spoken_frames} speech frames"))
+                            WIRE.line(&format!("idle after {spoken_frames} speech frames; next {}", source.lever_tag()))
                         }
                         MicEvent::PartialFrame { samples } => {
                             WIRE.line(&format!("partial frame {samples} samples padded"))
@@ -1123,7 +1241,7 @@ mod tests {
 
     #[test]
     fn preroll_is_whole_frames_at_the_asked_level_with_quiet_edges() {
-        let l = Levers { dtx: false, preroll: Preroll::Tone, preroll_frames: 5, preroll_db: -30.0 };
+        let l = Levers { dtx: false, idle_db: -60.0, preroll: Preroll::Tone, preroll_frames: 5, preroll_db: -30.0 };
         let frames = l.preroll_frames();
         assert_eq!(frames.len(), 5);
         assert!(frames.iter().all(|f| f.len() == FRAME_SAMPLES));
@@ -1131,11 +1249,11 @@ mod tests {
         let db = 20.0 * (rms(mid) / 32767.0).log10();
         assert!((-31.0..=-29.0).contains(&db), "tone level {db:.1} dBFS, wanted -30");
         assert!(frames[0][0].abs() < 50 && frames[4][FRAME_SAMPLES - 1].abs() < 50, "faded edges");
-        let n = Levers { dtx: false, preroll: Preroll::Noise, preroll_frames: 2, preroll_db: -35.0 };
+        let n = Levers { dtx: false, idle_db: -60.0, preroll: Preroll::Noise, preroll_frames: 2, preroll_db: -35.0 };
         let nf = n.preroll_frames();
         assert_eq!(nf.len(), 2);
         assert!(nf[1].iter().any(|&s| s != 0));
-        assert!(Levers { dtx: true, preroll: Preroll::Off, preroll_frames: 0, preroll_db: -30.0 }.preroll_frames().is_empty());
+        assert!(Levers { dtx: true, idle_db: -60.0, preroll: Preroll::Off, preroll_frames: 0, preroll_db: -30.0 }.preroll_frames().is_empty());
     }
 
     /// Marked frames, so a test can tell queued speech from generated noise.
@@ -1146,10 +1264,76 @@ mod tests {
     fn levers(preroll_frames: usize) -> Levers {
         Levers {
             dtx: false,
+            idle_db: -60.0,
             preroll: if preroll_frames == 0 { Preroll::Off } else { Preroll::Noise },
             preroll_frames,
             preroll_db: -30.0,
         }
+    }
+
+    #[test]
+    fn sweep_specs_parse_and_label_round_trip() {
+        let base = levers(0);
+        assert_eq!(Levers::parse("base", base).unwrap(), base);
+        let dtx = Levers::parse("dtx", base).unwrap();
+        assert!(dtx.dtx && dtx.preroll == Preroll::Off);
+        assert_eq!(dtx.label(), "dtx");
+        let floor = Levers::parse("floor:-45", base).unwrap();
+        assert!(!floor.dtx && floor.idle_db == -45.0);
+        assert_eq!(floor.label(), "floor:-45");
+        let tone = Levers::parse("tone:300", base).unwrap();
+        assert_eq!((tone.preroll, tone.preroll_frames, tone.preroll_db), (Preroll::Tone, 5, -30.0));
+        assert_eq!(tone.label(), "floor:-60+tone:300@-30");
+        let both = Levers::parse("dtx+noise:120@-40", base).unwrap();
+        assert!(both.dtx && both.preroll == Preroll::Noise && both.preroll_frames == 2 && both.preroll_db == -40.0);
+        assert_eq!(both.label(), "dtx+noise:120@-40");
+        assert!(Levers::parse("gate:3", base).is_err());
+        assert!(Levers::parse("floor:loud", base).is_err());
+        assert!(Levers::parse("tone:x", base).is_err());
+        // `floor` after `dtx` wins (and vice versa): the idle shape is one thing.
+        assert!(!Levers::parse("dtx+floor:-50", base).unwrap().dtx);
+    }
+
+    /// The schedule advances at the END of each talkspurt, so entry k governs the
+    /// idle gap before onset k as well as the onset itself; a single entry never
+    /// advances (the production shape is untouched by the sweep machinery).
+    #[test]
+    fn sweep_rotates_per_talkspurt_and_governs_the_gap_before_each_onset() {
+        let a = levers(0);
+        let b = Levers::parse("dtx", a).unwrap();
+        let c = Levers::parse("tone:300", a).unwrap();
+        let mut src = MicSource::with_sweep(vec![a, b, c]);
+        assert_eq!(src.lever_tag(), "lever=floor:-60 #1/3");
+        let mut q: VecDeque<Vec<i16>> = VecDeque::new();
+        let (idle, _) = src.next_frame(&mut q);
+        assert!(idle.iter().any(|&s| s != 0), "entry 1: comfort noise idle");
+        // Utterance 1 under `a`, then the hangover → Idle → entry 2 (dtx) governs the next gap.
+        q.extend(speech(2));
+        for _ in 0..(2 + HANGOVER_TICKS) {
+            src.next_frame(&mut q);
+        }
+        assert_eq!(src.lever_tag(), "lever=dtx #2/3");
+        let (idle, evs) = src.next_frame(&mut q);
+        assert!(evs.is_empty());
+        assert!(idle.iter().all(|&s| s == 0), "entry 2: exact zeros → the engine sends SID");
+        // Utterance 2 goes straight out (no pre-roll under dtx), then entry 3 arms a tone pre-roll.
+        q.extend(speech(1));
+        let (f, evs) = src.next_frame(&mut q);
+        assert!(is_speech(&f) && evs.iter().any(|e| matches!(e, MicEvent::Onset { .. })));
+        for _ in 0..HANGOVER_TICKS {
+            src.next_frame(&mut q);
+        }
+        assert_eq!(src.lever_tag(), "lever=floor:-60+tone:300@-30 #3/3");
+        q.extend(speech(1));
+        let (f, evs) = src.next_frame(&mut q);
+        assert!(!is_speech(&f) && evs.iter().any(|e| matches!(e, MicEvent::PrerollStart { frames: 5, .. })));
+        for _ in 0..(5 + HANGOVER_TICKS) {
+            src.next_frame(&mut q);
+        }
+        assert_eq!(src.lever_tag(), "lever=floor:-60 #1/3", "wraps around");
+        let mut single = MicSource::new(levers(0));
+        single.next_frame(&mut q);
+        assert_eq!(single.lever_tag(), "lever=floor:-60");
     }
 
     fn is_speech(f: &[i16]) -> bool {
@@ -1274,7 +1458,7 @@ mod tests {
         let tone: Vec<i16> = (0..n)
             .map(|i| (8000.0 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin()) as i16)
             .collect();
-        let levers = Levers { dtx: false, preroll: Preroll::Off, preroll_frames: 0, preroll_db: -30.0 };
+        let levers = Levers { dtx: false, idle_db: -60.0, preroll: Preroll::Off, preroll_frames: 0, preroll_db: -30.0 };
         let r = loopback(&tone, levers);
         assert_eq!(r.speech_frames, 17, "every input frame went through the clock: {r:?}");
         assert_eq!(r.frames, 17 + HANGOVER_TICKS + 4, "then the hangover and a few idle ticks");
@@ -1285,7 +1469,7 @@ mod tests {
         assert!(r.encode_ms_max < 60.0, "real-time capable: {r:?}");
         assert!((r.input_dbfs + 15.0).abs() < 2.0, "{r:?}");
         // With a pre-roll the clock adds those frames too — they carry signal, so they count as speech.
-        let with = Levers { dtx: false, preroll: Preroll::Noise, preroll_frames: 5, preroll_db: -30.0 };
+        let with = Levers { dtx: false, idle_db: -60.0, preroll: Preroll::Noise, preroll_frames: 5, preroll_db: -30.0 };
         let r2 = loopback(&tone, with);
         assert_eq!(r2.speech_frames, 17 + 5, "{r2:?}");
         // Silence in = only the idle floor out, nothing counted as speech.

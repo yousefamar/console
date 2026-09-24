@@ -7,13 +7,22 @@
 //!
 //! `WA_VOICE_WIRE_LOG=0` disables the log; `WA_VOICE_CAPTURE=1` enables the two
 //! wavs. Files: `~/.cache/console/voice-wire/<call_id>.log|-tx.wav|-rx.wav`.
+//!
+//! `WA_VOICE_ROOM_CAPTURE=<pipewire source>` (or `1` for the default source)
+//! additionally records this machine's microphone for the call's duration into
+//! `<call_id>-room.wav` (16 kHz mono, `pw-record`). With the phone on speaker
+//! next to the desk mic that is a recording of what the phone actually PLAYED
+//! — the ground truth the first-word investigation never had: align it against
+//! `-tx.wav` (`tools/onset_loss.py`) and the loss at every onset is a number,
+//! not a recollection.
 
 use std::fs::{self, File};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use log::{info, warn};
 use whatsapp_rust::TokioRuntime;
@@ -95,6 +104,55 @@ struct Open {
     log: Option<BufWriter<File>>,
     tx: Option<Wav>,
     rx: Option<Wav>,
+    room: Option<Child>,
+}
+
+/// `pw-record` on the configured source into `<call_id>-room.wav`. Never fatal:
+/// a missing binary or source is one warning and the call runs without it.
+fn spawn_room_capture(dir: &std::path::Path, call_id: &str) -> Option<(Child, String)> {
+    let target = std::env::var("WA_VOICE_ROOM_CAPTURE").ok().map(|v| v.trim().to_string())?;
+    if matches!(target.as_str(), "" | "0" | "off" | "false" | "no") {
+        return None;
+    }
+    let mut cmd = Command::new("pw-record");
+    if !matches!(target.as_str(), "1" | "default" | "on" | "true" | "yes") {
+        cmd.arg("--target").arg(&target);
+    }
+    cmd.args(["--rate", "16000", "--channels", "1", "--format", "s16"])
+        .arg(dir.join(format!("{call_id}-room.wav")))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match cmd.spawn() {
+        Ok(child) => Some((child, target)),
+        Err(e) => {
+            warn!("room capture: cannot start pw-record ({e}); call runs without it");
+            None
+        }
+    }
+}
+
+/// SIGINT lets pw-record finalise the wav header; a stuck recorder is killed
+/// after a grace period, off the caller's thread.
+fn stop_room_capture(mut child: Child) {
+    // SAFETY: plain kill(2) on a pid we spawned and still own.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+                _ => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return;
+                }
+            }
+        }
+    });
 }
 
 #[derive(Default)]
@@ -112,7 +170,8 @@ impl WireLog {
     pub fn open(&self, call_id: &str) {
         let want_log = env_flag("WA_VOICE_WIRE_LOG", true);
         let want_pcm = env_flag("WA_VOICE_CAPTURE", false);
-        if !want_log && !want_pcm {
+        let want_room = env_flag("WA_VOICE_ROOM_CAPTURE", false);
+        if !want_log && !want_pcm && !want_room {
             return;
         }
         let d = dir();
@@ -139,21 +198,32 @@ impl WireLog {
         } else {
             (None, None)
         };
+        let room = want_room.then(|| spawn_room_capture(&d, call_id)).flatten();
         info!(
-            "wire log for {call_id}: {} (log={}, pcm={})",
+            "wire log for {call_id}: {} (log={}, pcm={}, room={})",
             d.display(),
             log.is_some(),
-            tx.is_some()
+            tx.is_some(),
+            room.as_ref().map(|(_, t)| t.as_str()).unwrap_or("off")
         );
+        let (room, room_target) = match room {
+            Some((c, t)) => (Some(c), Some(t)),
+            None => (None, None),
+        };
+        let room_pid = room.as_ref().map(Child::id);
         *g = Some(Open {
             call_id: call_id.to_string(),
             t0: Instant::now(),
             log,
             tx,
             rx,
+            room,
         });
         drop(g);
         self.line(&format!("open call={call_id} unix_ms={}", unix_ms()));
+        if let (Some(pid), Some(t)) = (room_pid, room_target) {
+            self.line(&format!("room capture start pid={pid} target={t} file={call_id}-room.wav"));
+        }
     }
 
     pub fn close(&self, call_id: &str) {
@@ -165,6 +235,12 @@ impl WireLog {
             }
         };
         if let Some(mut o) = taken {
+            if let Some(child) = o.room.take() {
+                if let Some(l) = o.log.as_mut() {
+                    let _ = writeln!(l, "{:>9} room capture stop pid={}", o.t0.elapsed().as_millis(), child.id());
+                }
+                stop_room_capture(child);
+            }
             if let Some(l) = o.log.as_mut() {
                 let _ = writeln!(l, "{:>9} close", o.t0.elapsed().as_millis());
                 let _ = l.flush();

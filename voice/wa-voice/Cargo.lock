@@ -2858,6 +2858,7 @@ dependencies = [
  "bytes",
  "env_logger",
  "futures-util",
+ "libc",
  "log",
  "qrcode",
  "serde",

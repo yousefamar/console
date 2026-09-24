@@ -68,11 +68,17 @@ async fn main() -> Result<()> {
     .init();
 
     // Proof that voice.env loaded — /proc/…/environ can't show runtime set_var.
+    let levers = calls::Levers::from_env();
     info!(
-        "levers at startup: {:?}, idle {} dBFS, wire log {}",
-        calls::Levers::from_env(),
+        "levers at startup: {levers:?}, idle {} dBFS, wire log {}, room capture {}, sweep {}",
         calls::IdleNoise::configured_level_db(),
-        wire::enabled()
+        wire::enabled(),
+        std::env::var("WA_VOICE_ROOM_CAPTURE").unwrap_or_else(|_| "off".into()),
+        match calls::Levers::sweep_from_env(levers) {
+            Ok(s) if s.len() > 1 => s.iter().map(calls::Levers::label).collect::<Vec<_>>().join(","),
+            Ok(_) => "off".into(),
+            Err(e) => format!("INVALID ({e}) — ignored"),
+        }
     );
 
     let port: u16 = std::env::var("WA_VOICE_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(9878);
