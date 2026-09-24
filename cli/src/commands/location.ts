@@ -112,6 +112,10 @@ async function locationNow(args: string[], flags: GlobalFlags, refresh = false):
   for (const l of describe(d)) info(l)
 }
 
+// The Recorder reads a bare `YYYY-MM-DD` as midnight starting that day, so a day range needs its end pinned to 23:59:59.
+const dayStart = (s: string | undefined) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00` : s)
+const dayEnd = (s: string | undefined) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T23:59:59` : s)
+
 // con location history [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--limit N] — Recorder day range (default today).
 async function locationHistory(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = flagsOf(args, ['from', 'to', 'limit', 'user', 'device'], flags)
@@ -121,7 +125,7 @@ async function locationHistory(args: string[], flags: GlobalFlags): Promise<void
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/London' })
   const from = opts.from ?? today
   const to = opts.to ?? from
-  const d = await hubFetch<{ count?: number; data?: Array<Fix & { isolocal?: string }> } | Array<Fix & { isolocal?: string }>>('/owntracks/locations', { params: { user, device, from, to, format: 'json' } })
+  const d = await hubFetch<{ count?: number; data?: Array<Fix & { isolocal?: string }> } | Array<Fix & { isolocal?: string }>>('/owntracks/locations', { params: { user, device, from: dayStart(from)!, to: dayEnd(to)!, format: 'json' } })
   const rows = Array.isArray(d) ? d : d.data ?? []
   const limit = Number(opts.limit ?? 0) || 0
   const shown = limit ? rows.slice(-limit) : rows
@@ -229,10 +233,8 @@ async function locationEvents(args: string[], flags: GlobalFlags): Promise<void>
 // woken, no state changes. Tune a radius against a known week.
 async function locationReplay(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = flagsOf(args, ['from', 'to', 'fence', 'device', 'user'], flags)
-  const day = (s: string | undefined) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00` : s)
-  const toDay = (s: string | undefined) => (s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T23:59:59` : s)
   interface Replay { window: [number, number]; devices: string[]; fixes: number; events: Array<{ id: string; ts: number; fenceId: string; fenceName: string; event: string; dwellS: number; fix: { lat: number; lon: number; acc?: number; tst: number } }>; state: Record<string, { inside: boolean; since: number }> }
-  const d = await hubFetch<Replay>('/location/replay', { method: 'POST', body: { from: day(opts.from), to: toDay(opts.to), fence: opts.fence, device: opts.device, user: opts.user } })
+  const d = await hubFetch<Replay>('/location/replay', { method: 'POST', body: { from: dayStart(opts.from), to: dayEnd(opts.to), fence: opts.fence, device: opts.device, user: opts.user } })
   if (flags.json) { output(d, flags); return }
   info(`${d.fixes} fixes for ${d.devices.join(', ')} ${when(d.window[0] * 1000)} → ${when(d.window[1] * 1000)}: ${d.events.length} transition${d.events.length === 1 ? '' : 's'}${opts.fence ? ` for "${opts.fence}"` : ''} (dry run — nothing fired)`)
   for (const e of d.events) info(`${when(e.ts)}  ${e.event.toUpperCase().padEnd(5)} ${e.fenceId.padEnd(22)} after ${ago(e.dwellS).replace(' ago', '')} ${e.event === 'enter' ? 'away' : 'inside'}  ${coords(e.fix)}${e.fix.acc != null ? ` ±${Math.round(e.fix.acc)} m` : ''}`)

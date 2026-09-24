@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { evaluate, haversineM, leaveMarginM, fixTooCoarse, buildGeofenceEnvelope, slugify, fencesContaining, type Fix, type Geofence } from '../location/geofence.js'
+import { evaluate, haversineM, leaveMarginM, fixTooCoarse, resolveInside, buildGeofenceEnvelope, slugify, fencesContaining, type Fix, type Geofence } from '../location/geofence.js'
 import { GeofenceStore } from '../location/store.js'
 import { LocationWatcher, type LocationChange } from '../location/watcher.js'
 import { fixFromRecorder, type HistoryQuery, type LiveFeedHandlers } from '../location/recorder.js'
@@ -60,10 +60,10 @@ describe('geofence: evaluate', () => {
   })
   it('hysteresis: just past the radius stays inside, past the margin leaves', () => {
     const s0 = evaluate([fence()], {}, at(0, 100)).state
-    const edge = evaluate([fence()], s0, at(170, 200)) // 150 + 30 margin = 180
+    const edge = evaluate([fence()], s0, at(170, 200)) // 150 + 30 margin = 180, and the fix is ±12 m
     expect(edge.events).toEqual([])
     expect(edge.state.home!.inside).toBe(true)
-    const out = evaluate([fence()], edge.state, at(190, 300))
+    const out = evaluate([fence()], edge.state, at(195, 300))
     expect(out.events).toHaveLength(1)
     expect(out.events[0]).toMatchObject({ event: 'leave', dwellS: 200 })
     expect(out.state.home).toMatchObject({ inside: false, since: 300_000 })
@@ -73,6 +73,29 @@ describe('geofence: evaluate', () => {
     const r = evaluate([fence()], s0, at(5000, 200, { acc: 2000 }))
     expect(r.events).toEqual([])
     expect(r.state.home).toEqual(s0.home)
+  })
+  it('a transition needs the whole ±acc circle past its line (the home flap of 2026-09-24 17:00)', () => {
+    // Real fixes: 16:57:43 ENTER 87 m in at ±20 m, then 17:00:10 a network fix 186 m out at ±200 m —
+    // finer than the absolute gate (300 m for r 150) yet past the 180 m leave line. It must not flip.
+    const outside = evaluate([fence()], {}, { lat: 51.4547802, lon: -0.9667123, tst: 1790265341, acc: 17 }).state
+    expect(outside.home!.inside).toBe(false)
+    const enter = evaluate([fence()], outside, { lat: 51.4547368, lon: -0.9645321, tst: 1790265463, acc: 20 })
+    expect(enter.events.map((e) => e.event)).toEqual(['enter'])
+    const flap = evaluate([fence()], enter.state, { lat: 51.4547181, lon: -0.9662706, tst: 1790265610, acc: 200 })
+    expect(flap.events).toEqual([])
+    expect(flap.state.home).toMatchObject({ inside: true, since: 1790265463_000, tst: 1790265610 })
+    // the same spot at GPS accuracy is a real leave
+    const gps = evaluate([fence()], flap.state, { lat: 51.4547181, lon: -0.9662706, tst: 1790265700, acc: 2 })
+    expect(gps.events.map((e) => e.event)).toEqual(['leave'])
+    expect(gps.events[0]).toMatchObject({ dwellS: 237 })
+  })
+  it('enter needs the circle inside too: ±100 m at 80 m in is not an enter, ±20 m is', () => {
+    const s0 = evaluate([fence()], {}, at(2000, 100)).state
+    const coarse = evaluate([fence()], s0, at(80, 200, { acc: 100 }))
+    expect(coarse.events).toEqual([])
+    expect(coarse.state.home).toMatchObject({ inside: false, tst: 200 })
+    expect(evaluate([fence()], coarse.state, at(80, 300, { acc: 20 })).events.map((e) => e.event)).toEqual(['enter'])
+    expect(resolveInside(fence(), at(80, 1, { acc: undefined }), false)).toBe(true) // no accuracy = trust the point
   })
   it('`on` filters which transitions fire but state still moves', () => {
     const f = fence({ on: 'leave' })

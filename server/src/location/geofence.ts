@@ -2,10 +2,12 @@
 //
 // A fence is a circle (lat, lon, radius m). State per fence is inside/outside
 // plus the fix that set it. `evaluate` applies one fix to every fence with
-// hysteresis (leave needs radius + margin) and refuses to flip on fixes whose
-// accuracy is worse than the fence can resolve, so a wifi-fix at the edge of
-// a small fence does not flap. A fence with no prior state is initialised
-// silently: an event means a TRANSITION, never "here is where he already was".
+// hysteresis (leave needs radius + margin), refuses to flip on fixes whose
+// accuracy is worse than the fence can resolve, and only flips when the fix's
+// whole ±acc circle sits on the new side — so a wifi or cell fix straddling
+// the edge of a small fence does not flap. A fence with no prior state is
+// initialised silently: an event means a TRANSITION, never "here is where he
+// already was".
 
 export interface Fix {
   lat: number
@@ -90,6 +92,19 @@ export function fixTooCoarse(fence: Geofence, fix: Fix): boolean {
   return fix.acc != null && fix.acc > Math.max(fence.radius * 2, 150)
 }
 
+/**
+ * Which side of the fence the fix puts him on, given the side he was on. A
+ * transition needs the whole ±acc circle past the threshold: a ±200 m fix
+ * 186 m out cannot say he left a 150 m fence.
+ */
+export function resolveInside(fence: Geofence, fix: Fix, was: boolean | undefined): boolean {
+  const d = haversineM(fence.lat, fence.lon, fix.lat, fix.lon)
+  if (was === undefined) return d <= fence.radius
+  const acc = fix.acc ?? 0
+  if (was) return d - acc <= fence.radius + leaveMarginM(fence.radius)
+  return d + acc <= fence.radius
+}
+
 export function slugify(name: string): string {
   return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'fence'
 }
@@ -112,13 +127,12 @@ export function evaluate(fences: Geofence[], prev: Record<string, FenceState>, f
   const events: GeofenceEvent[] = []
   const nowMs = fix.tst * 1000
   for (const f of fences) {
-    const d = haversineM(f.lat, f.lon, fix.lat, fix.lon)
     const was = prev[f.id]
     if (fixTooCoarse(f, fix)) {
       if (was) state[f.id] = was
       continue
     }
-    const inside = was?.inside ? d <= f.radius + leaveMarginM(f.radius) : d <= f.radius
+    const inside = resolveInside(f, fix, was?.inside)
     if (!was) {
       state[f.id] = { inside, since: nowMs, tst: fix.tst }
       continue
