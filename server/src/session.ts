@@ -1525,10 +1525,9 @@ export class Session extends EventEmitter {
       // Remember which tool call each block index belongs to so the
       // input_json_delta stream below can be attributed.
       if (event.content_block.type === 'tool_use' && event.content_block.id && event.index !== undefined) {
-        this.streamingToolBlocks.set(event.index, {
-          toolUseId: event.content_block.id,
-          toolName: event.content_block.name ?? 'tool',
-        })
+        const toolName = event.content_block.name ?? 'tool'
+        this.streamingToolBlocks.set(event.index, { toolUseId: event.content_block.id, toolName })
+        this.emitHub({ type: 'tool_use_start', sessionId: this.id, toolUseId: event.content_block.id, toolName })
       }
       return
     }
@@ -1881,8 +1880,9 @@ export class Session extends EventEmitter {
       if (msg.type === 'text') { this.scanForAttention(msg.content); this.scanForHandoff(msg.content); this.noteTextSnippet(msg.content) }
       // Log non-ephemeral messages (skip status + all delta streams — including
       // tool_input_delta, which fires per-chunk while tool args stream in and
-      // would flood the rolling log)
-      if (msg.type !== 'status' && msg.type !== 'tool_input_delta') {
+      // would flood the rolling log — and tool_use_start, which the finalized
+      // tool_use supersedes)
+      if (msg.type !== 'status' && msg.type !== 'tool_input_delta' && msg.type !== 'tool_use_start') {
         this.logMessage(msg as LoggableHubMessage) // stamps absIndex pre-broadcast
       }
     }

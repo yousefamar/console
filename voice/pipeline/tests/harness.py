@@ -67,6 +67,7 @@ class FakeSidecar:
         self.hangup_at: float | None = None
         self.flushes = 0
         self.reply_latencies: list[float] = []
+        self.audio_times: list[float] = []
 
     async def send(self, obj):
         await self.ws.send(json.dumps(obj))
@@ -83,6 +84,7 @@ class FakeSidecar:
                 if msg and msg[0] == 0:
                     self.out.extend(msg[1:])
                     self.last_bot_audio = time.monotonic()
+                    self.audio_times.append(self.last_bot_audio)
                     if getattr(self, "speech_end_at", None) and getattr(self, "reply_latency", None) is None:
                         self.reply_latency = self.last_bot_audio - self.speech_end_at
                         self.reply_latencies.append(self.reply_latency)
@@ -214,6 +216,7 @@ class FakeHub:
         self.turn_requests: list[dict] = []
         self.interrupts = 0
         self.interrupted = asyncio.Event()
+        self.tool_sent_at: float | None = None
         self.app = web.Application()
         self.app.add_routes([
             web.post("/voice/session", self.session),
@@ -243,7 +246,9 @@ class FakeHub:
         if "arabic" in t:
             return [("text", "تمام. "), ("text", "أنا بتكلم معاك بالعربي المصري دلوقتي. "), ("text", "Back to English now. Anything else?")]
         if "calendar" in t or "tomorrow" in t:
-            return [("text", "Hold on, let me check the calendar. "), ("tool", "Bash"), ("sleep", 1.5), ("text", "Just the ten a.m. with Callum.")]
+            # As the real fork writes it: the pre-tool text block ends at the
+            # full stop, the post-tool block starts with no leading space.
+            return [("text", "Hold on, let me check the calendar."), ("tool", "Bash"), ("sleep", 1.5), ("text", "Just the ten a.m. with Callum.")]
         if "story" in t:
             return [("text", f"Once upon a time, part {i}. ") for i in range(1, 30)]
         return [("text", f"I heard you say: {text.strip()} "), ("text", "Anything else?")]
@@ -266,11 +271,16 @@ class FakeHub:
             if kind == "text":
                 if first is None:
                     first = time.monotonic()
-                for word in str(payload).split(" "):
-                    await resp.write((json.dumps({"type": "text", "text": word + " "}, ensure_ascii=False) + "\n").encode())
-                    chars += len(word) + 1
+                words = str(payload).split(" ")
+                for i, word in enumerate(words):
+                    chunk = word + (" " if i < len(words) - 1 else "")
+                    if not chunk:
+                        continue
+                    await resp.write((json.dumps({"type": "text", "text": chunk}, ensure_ascii=False) + "\n").encode())
+                    chars += len(chunk)
                     await asyncio.sleep(0.04)
             elif kind == "tool":
+                self.tool_sent_at = time.monotonic()
                 await resp.write((json.dumps({"type": "tool", "name": payload}) + "\n").encode())
             elif kind == "sleep":
                 await asyncio.sleep(float(payload))
@@ -415,6 +425,17 @@ async def main():
             "hangup waited for playout": side.hangup_at is not None and side.hangup_at >= side.last_bot_audio - 0.05,
             "transcript reason = hangup": payload.get("reason") == "hangup",
         }
+        if hub.tool_sent_at is not None:
+            # The fork's own "Hold on…" must play while the tool runs (the fake
+            # tool takes 1.5 s), not arrive bundled with the answer afterwards.
+            # A sentence aggregator that waits for a lookahead character holds
+            # it for the whole tool call (call 0074df98, 24 Sept).
+            after_tool = [t - hub.tool_sent_at for t in side.audio_times if t >= hub.tool_sent_at]
+            hold_on_audio = after_tool[0] if after_tool else None
+            bot_text = " ".join(t["text"] for t in turns if t["role"] == "assistant")
+            checks["hold-on audio started within 1 s of the tool event"] = hold_on_audio is not None and hold_on_audio <= 1.0
+            checks["hold-on and answer spoken as separate sentences"] = "calendar.Just" not in bot_text and "calendar." in bot_text
+            print(f"[harness] tool event → next bot audio: {hold_on_audio:.2f}s" if hold_on_audio is not None else "[harness] no bot audio after the tool event")
         if args.arabic:
             checks["arabic turn switched languages (router)"] = (payload.get("languageSwitches") or 0) >= 2
             last_user = [t["text"] for t in turns if t["role"] == "user"][-1:]

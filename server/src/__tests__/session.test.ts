@@ -658,6 +658,20 @@ describe('Session rich protocol', () => {
     expect(session.messageLog.some((m) => (m as { type: string }).type === 'tool_input_delta')).toBe(false)
   })
 
+  it('emits tool_use_start from content_block_start, before any arguments, and never logs it', async () => {
+    const session = new Session({ prompt: 'test' })
+    const messages = collectHubMessages(session)
+
+    sendStdoutJson({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_s2', name: 'Bash' } } })
+    await new Promise((r) => setTimeout(r, 10))
+
+    const starts = messages.filter((m) => m.type === 'tool_use_start')
+    expect(starts).toHaveLength(1)
+    expect(starts[0]).toMatchObject({ toolUseId: 'toolu_s2', toolName: 'Bash' })
+    expect(messages.some((m) => m.type === 'tool_input_delta')).toBe(false)
+    expect(session.messageLog.some((m) => (m as { type: string }).type === 'tool_use_start')).toBe(false)
+  })
+
   it('emits bg_task lifecycle from system task events', async () => {
     const session = new Session({ prompt: 'test' })
     const messages = collectHubMessages(session)

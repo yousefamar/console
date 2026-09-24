@@ -44,6 +44,8 @@ interface ActiveTurn {
   firstTextAt: number | null
   text: string
   interrupted: boolean
+  /** toolUseIds whose `tool` event already went out on tool_use_start. */
+  toolsStarted: Set<string>
   finish: (ev: TurnEvent) => void
 }
 
@@ -361,6 +363,7 @@ function sendTurn(call: LiveCall, text: string, sink: ((ev: TurnEvent) => void) 
       firstTextAt: null,
       text: '',
       interrupted: false,
+      toolsStarted: new Set(),
       finish: () => {},
     }
     const timer = setTimeout(() => turn.finish({ type: 'error', message: `fork turn timed out after ${Math.round(timeoutMs / 1000)} s` }), timeoutMs)
@@ -408,9 +411,23 @@ function routeForkMessage(call: LiveCall, m: HubMessage): void {
       turn.sink?.({ type: 'text', text: m.content })
       return
     }
+    case 'tool_use_start': {
+      // The model has stopped writing text and begun a tool call: the text so
+      // far is one spoken segment, and the pipeline must speak it NOW — the
+      // finalized tool_use only arrives once the arguments have streamed in
+      // (call 0074df98, 24 Sept: the "hold on" sat unspoken through the whole
+      // calendar lookup and came out glued to the answer).
+      if (!turn) return
+      turn.toolsStarted.add(m.toolUseId)
+      if (turn.sink && turn.text.trim()) record(call, 'assistant', turn.text.trim())
+      turn.text = ''
+      turn.sink?.({ type: 'tool', name: m.toolName })
+      return
+    }
     case 'tool_use': {
-      if (turn) {
-        // Text so far is one spoken segment; the tool splits it from what follows.
+      if (turn && !turn.toolsStarted.delete(m.toolUseId)) {
+        // No stream_event preceded this one (a stub, or a CLI without partial
+        // messages): split the segment here instead.
         if (turn.sink && turn.text.trim()) record(call, 'assistant', turn.text.trim())
         turn.text = ''
         turn.sink?.({ type: 'tool', name: m.toolName })

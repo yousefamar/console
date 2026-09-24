@@ -33,7 +33,8 @@ class StubSession extends EventEmitter {
   kill() { this.status = 'ended' }
   // what the CLI would stream back
   delta(t: string) { this.emit('hub_message', { type: 'text_delta', sessionId: this.id, content: t }) }
-  tool(name: string, input: Record<string, unknown> = {}) { this.emit('hub_message', { type: 'tool_use', sessionId: this.id, toolUseId: 'tu1', toolName: name, input }) }
+  tool(name: string, input: Record<string, unknown> = {}, toolUseId = 'tu1') { this.emit('hub_message', { type: 'tool_use', sessionId: this.id, toolUseId, toolName: name, input }) }
+  toolStart(name: string, toolUseId = 'tu1') { this.emit('hub_message', { type: 'tool_use_start', sessionId: this.id, toolUseId, toolName: name }) }
   result(ttftMs?: number) { this.status = 'idle'; this.emit('hub_message', { type: 'result', sessionId: this.id, cost: 0, tokens: {}, duration: 1, sessionIdClaude: 'c', ttftMs }) }
 }
 
@@ -129,6 +130,45 @@ describe('runTurn', () => {
       'tool: Bash: con cal events --from tomorrow',
       'assistant: Just the ten a.m. with Callum.',
     ])
+  })
+
+  it('the tool event goes out when the tool block STARTS streaming, not when its arguments have finished', async () => {
+    register(); await flush(); stub.result(); await flush()
+    const got: Array<{ type: string; at: number }> = []
+    let clock = 0
+    const p = runTurn('CALLABC123', "What's on tomorrow?", (ev) => got.push({ type: ev.type, at: clock }))
+    await flush()
+    stub.delta('Hold on, let me check the calendar.')
+    clock = 1; stub.toolStart('Bash')             // content_block_start: text is over, args not yet written
+    clock = 2; stub.tool('Bash', { command: 'con cal events --from tomorrow' }) // the finalized block, ~1 s later
+    stub.delta('Just the ten a.m. with Callum.'); stub.result()
+    await p
+    expect(got).toEqual([
+      { type: 'text', at: 0 },
+      { type: 'tool', at: 1 },   // exactly one, at the start
+      { type: 'text', at: 2 },
+      { type: 'result', at: 2 },
+    ])
+    const turns = getLiveCall('CALLABC123')!.turns.map((t) => `${t.role}: ${t.text}`)
+    expect(turns).toEqual([
+      "user: What's on tomorrow?",
+      'assistant: Hold on, let me check the calendar.',
+      'tool: Bash: con cal events --from tomorrow',
+      'assistant: Just the ten a.m. with Callum.',
+    ])
+  })
+
+  it('two tool calls in one turn each get their own boundary', async () => {
+    register(); await flush(); stub.result(); await flush()
+    const got: TurnEvent[] = []
+    const p = runTurn('CALLABC123', 'Check both', (ev) => got.push(ev))
+    await flush()
+    stub.delta('One sec.'); stub.toolStart('Bash', 'a'); stub.tool('Bash', { command: 'one' }, 'a')
+    stub.toolStart('Read', 'b'); stub.tool('Read', { file_path: '/x' }, 'b')
+    stub.delta('Done.'); stub.result()
+    await p
+    expect(got.map((e) => e.type)).toEqual(['text', 'tool', 'tool', 'text', 'result'])
+    expect(getLiveCall('CALLABC123')!.turns.map((t) => t.role)).toEqual(['user', 'assistant', 'tool', 'tool', 'assistant'])
   })
 
   it('an interrupted utterance is prefixed with what was heard, and interruptCall soft-interrupts the fork', async () => {

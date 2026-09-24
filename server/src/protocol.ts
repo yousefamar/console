@@ -77,6 +77,10 @@ export type HubMessage =
   | { type: 'thinking_delta'; sessionId: string; content: string }
   | { type: 'tool_use'; sessionId: string; toolUseId: string; toolName: string; input: Record<string, unknown> }
   | { type: 'tool_result'; sessionId: string; toolUseId: string; content: string; isError: boolean }
+  /** A tool_use block has begun streaming (content_block_start) — fires as
+   *  soon as the model stops writing text, before the arguments arrive; the
+   *  finalized tool_use follows once they have. Ephemeral. */
+  | { type: 'tool_use_start'; sessionId: string; toolUseId: string; toolName: string }
   /** The tool call's arguments streaming in (input_json_delta) — lets the UI
    *  show an Edit/Write being typed live, terminal-style. Ephemeral. */
   | { type: 'tool_input_delta'; sessionId: string; toolUseId: string; toolName: string; content: string }
