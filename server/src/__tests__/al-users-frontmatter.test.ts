@@ -81,4 +81,29 @@ describe('resolveUsername through the workspace', () => {
     await users.ensureUserKnown('16690310078559@lid', 'whatsapp', 'Yehia Amar')
     expect(notify).not.toHaveBeenCalled()
   })
+
+  // 24 Sep (^teal-tern): "Message Yassin" — Yasin had no note, and Yasmina's
+  // note lacked her @lid; both edits were invisible to the running hub because
+  // the map was built once at boot.
+  it('sees an identifier added to a note after boot once refreshed', async () => {
+    await writeFile(join(workspace, 'users', 'yehia-amar.md'), file(
+      'whatsapp:\n  - "447700900002"\n  - "16690310078559"\n  - "998877665544332"\nphone: "447700900002"\nallow:\n  - family',
+    ))
+    expect(users.identifiersFor('yehia-amar')).not.toContain('998877665544332')
+    await users.refreshUsers()
+    expect(users.identifiersFor('yehia-amar')).toContain('998877665544332')
+    expect(users.resolveUsername('998877665544332@lid')).toBe('yehia-amar')
+  })
+
+  it('does not auto-create a duplicate for a contact whose note was written by hand since boot', async () => {
+    await writeFile(join(workspace, 'users', 'yasin-amar.md'), file('whatsapp: "103393284649109"'))
+    const notify = vi.fn()
+    users.setUserNotifier(notify)
+    await users.ensureUserKnown('103393284649109@lid', 'whatsapp', 'Yasin Amar')
+    expect(notify).not.toHaveBeenCalled()
+    expect(users.resolveUsername('103393284649109@lid')).toBe('yasin-amar')
+    expect(users.identifiersFor('yasin-amar')).toEqual(['103393284649109'])
+    const { readdir } = await import('node:fs/promises')
+    expect((await readdir(join(workspace, 'users'))).sort()).toEqual(['yasin-amar.md', 'yehia-amar.md'])
+  })
 })

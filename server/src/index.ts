@@ -145,7 +145,7 @@ import { startSidecarRelay as startVoiceSidecarRelay } from './al/voice.js'
 import { setVoiceForkContext } from './al/voice-fork.js'
 import QRCode from 'qrcode'
 import { AL_NAME, isAlName } from './al/identity.js'
-import { loadUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
+import { loadUsers, refreshUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
 import * as alWa from './al/whatsapp.js'
 import * as waHistory from './al/wa-history.js'
 import { routeInbound, startConversationForks, forkSummaries } from './al/conversation-forks.js'
@@ -1479,6 +1479,8 @@ const yousefDmRoomFor = async (contact: string) => {
     if (hits.length === 1) return hits[0]!
     throw new Error(hits.length ? `${hits.length} chat rooms are named "${contact}"` : `no chat room named "${contact}"`)
   }
+  // The note may have been edited since boot (a lid added after a miss) — re-read before trusting the map.
+  if (contact !== AL_CONTACT) await refreshUsers()
   const known = contact === AL_CONTACT ? alWa.ownIdentifiers() : identifiersFor(contact)
   const ids = await expandIdentifiers(known, alWa.lidForNumber)
   const room = await ringContactRooms.resolve(contact, ids)

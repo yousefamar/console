@@ -6,7 +6,7 @@
 // identifier; without that, iPad-sent messages get treated as non-owner and
 // Al refuses to do anything (footgun #1).
 
-import { readdir, readFile, writeFile } from 'node:fs/promises'
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { WORKSPACE_DIR } from './identity.js'
@@ -20,6 +20,7 @@ export interface UserEntry {
 }
 
 let lookupMap: Map<string, UserEntry> | null = null
+let loadedSignature = ''
 let notifyCallback: ((text: string) => void) | null = null
 
 /** Inject a callback used by `ensureUserKnown` to ping Al about new contacts. */
@@ -123,9 +124,37 @@ export function identifiersFor(username: string | null): string[] {
   return out
 }
 
+/** Names + mtimes + sizes of every users/*.md — changes whenever a note is
+ *  added, removed or edited. A readdir plus ~20 stats. */
+async function usersSignature(): Promise<string> {
+  const usersDir = join(WORKSPACE_DIR, 'users')
+  let files: string[]
+  try {
+    files = (await readdir(usersDir)).filter((f) => f.endsWith('.md')).sort()
+  } catch {
+    return ''
+  }
+  const stats = await Promise.all(files.map((f) => stat(join(usersDir, f)).catch(() => null)))
+  return files.map((f, i) => `${f}:${stats[i]?.mtimeMs ?? 0}:${stats[i]?.size ?? 0}`).join('\n')
+}
+
 export async function loadUsers(): Promise<void> {
+  loadedSignature = await usersSignature()
   lookupMap = await buildLookupMap()
   console.log(`[al/users] loaded ${lookupMap.size} identifier(s) from workspace`)
+}
+
+/** Rebuild the map when any users/*.md changed since it was loaded. The notes
+ *  are edited by hand (a contact's @lid added after a DM room failed to
+ *  resolve) and by AL himself; a boot-only map made every such edit wait for
+ *  a hub restart. Cheap enough for the inbound path. */
+export async function refreshUsers(): Promise<void> {
+  if (!lookupMap) return
+  const sig = await usersSignature()
+  if (sig === loadedSignature) return
+  loadedSignature = sig
+  lookupMap = await buildLookupMap()
+  console.log(`[al/users] reloaded ${lookupMap.size} identifier(s) — users/*.md changed`)
 }
 
 export async function ensureUserKnown(
@@ -135,6 +164,9 @@ export async function ensureUserKnown(
 ): Promise<void> {
   if (!lookupMap) return
   const normalized = normalize(senderId)
+  if (lookupMap.has(normalized)) return
+  // A note written by hand since boot must not become a duplicate auto-created file.
+  await refreshUsers()
   if (lookupMap.has(normalized)) return
 
   const displayName = senderName || normalized
