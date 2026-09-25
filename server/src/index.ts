@@ -108,7 +108,7 @@ import { cutVoiceNote, audioEnvelope } from './ring/voice.js'
 import { ListWatcher } from './lists/watcher.js'
 import { execFile as execFileCb } from 'node:child_process'
 import { RingSchemaLoader } from './ring/schema-loader.js'
-import { describeSchema as describeRingSchema, AL_CONTACT } from './ring/schema.js'
+import { describeSchema as describeRingSchema, roomKey, AL_CONTACT } from './ring/schema.js'
 import { transcribeAudio, transcribeWords } from './al/transcribe.js'
 import type { RingCtx } from './ring/pipeline.js'
 import { formatDuration } from './glasses/timer.js'
@@ -1455,30 +1455,42 @@ const yousefWhatsAppJid = (): string | null => {
   if (env) return env
   return identifiersFor('yousef')[0] ?? null
 }
+const ringContacts = async (): Promise<string[]> => {
+  const users = await readdir(join(WORKSPACE_DIR, 'users')).catch(() => [] as string[])
+  return [AL_CONTACT, ...users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase())]
+}
+const isWhatsAppGroup = (r: { isDirect?: boolean; networkIcon?: string }) => !r.isDirect && (r.networkIcon ?? '').toLowerCase().includes('whatsapp')
 const ringEnv = async (): Promise<RouteEnv> => {
-  const [spaces, users] = await Promise.all([
+  const [spaces, contacts] = await Promise.all([
     listSpaces(noteStore).catch(() => [] as Awaited<ReturnType<typeof listSpaces>>),
-    readdir(join(WORKSPACE_DIR, 'users')).catch(() => [] as string[]),
+    ringContacts(),
   ])
+  const rooms = Object.values(chatRoomsStore.snapshot().data)
   return {
     // Only projects with a board can take a card — keeps ~70 vault slugs out of the fuzzy match.
     projects: spaces.filter((sp) => sp.kind === 'project' && sp.boardPath).map((sp) => sp.slug.toLowerCase()),
-    contacts: [AL_CONTACT, ...users.filter((f) => f.endsWith('.md')).map((f) => f.slice(0, -3).toLowerCase())],
-    rooms: Object.values(chatRoomsStore.snapshot().data).map((r) => r.name.trim().toLowerCase()),
+    contacts,
+    rooms: rooms.map((r) => roomKey(r.name)),
+    groups: rooms.filter(isWhatsAppGroup).map((r) => roomKey(r.name)),
   }
 }
+/** The one chat room whose name is `key` (lowercased) among `pool`; 0 or 2+ throw. */
+const chatRoomNamed = (key: string, pool = Object.values(chatRoomsStore.snapshot().data)) => {
+  const hits = pool.filter((r) => roomKey(r.name) === key)
+  if (hits.length === 1) return hits[0]!
+  throw new Error(hits.length ? `${hits.length} chat rooms are named "${key}"` : `no chat room named "${key}"`)
+}
 /** The recipient's room in Yousef's own account. A `rooms:` key from the
- *  schema note is a chat room by NAME (a group — "Control Room"); anyone else
- *  is a contact whose bridged WhatsApp DM is found by ghost member id. Beeper
- *  names a ghost by phone OR lid — expand every known phone to its lid via
- *  AL's socket so a users/<name>.md that only lists the number still finds a
- *  lid-keyed room (the class that hid AL's own DM). Throws when nothing resolves. */
+ *  schema note is a chat room by NAME (a group — "Control Room"), as is a
+ *  WhatsApp group the router matched by its own name (no note entry — anything
+ *  that is not a known contact); anyone else is a contact whose bridged
+ *  WhatsApp DM is found by ghost member id. Beeper names a ghost by phone OR
+ *  lid — expand every known phone to its lid via AL's socket so a
+ *  users/<name>.md that only lists the number still finds a lid-keyed room
+ *  (the class that hid AL's own DM). Throws when nothing resolves. */
 const yousefDmRoomFor = async (contact: string) => {
-  if (contact in ringSchema.current().verbs.message.rooms) {
-    const hits = Object.values(chatRoomsStore.snapshot().data).filter((r) => r.name.trim().toLowerCase() === contact)
-    if (hits.length === 1) return hits[0]!
-    throw new Error(hits.length ? `${hits.length} chat rooms are named "${contact}"` : `no chat room named "${contact}"`)
-  }
+  if (contact in ringSchema.current().verbs.message.rooms) return chatRoomNamed(contact)
+  if (contact !== AL_CONTACT && !(await ringContacts()).includes(contact)) return chatRoomNamed(contact, Object.values(chatRoomsStore.snapshot().data).filter(isWhatsAppGroup))
   // The note may have been edited since boot (a lid added after a miss) — re-read before trusting the map.
   if (contact !== AL_CONTACT) await refreshUsers()
   const known = contact === AL_CONTACT ? alWa.ownIdentifiers() : identifiersFor(contact)

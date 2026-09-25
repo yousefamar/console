@@ -20,7 +20,7 @@ import { parseReminder, parseClockTime, dueAt, formatDue, formatReminder, descri
 import { NoteStore } from '../notes.js'
 
 const AGENTS = [{ agentKey: 'console-general' }, { agentKey: 'al' }]
-const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools', 'al'], contacts: ['al', 'nica', 'sam-miller', 'yasmina-amar'], rooms: ['control room', 'al', 'family'] }
+const ENV: RouteEnv = { projects: ['console', 'astera', 'reflection-tools', 'al'], contacts: ['al', 'nica', 'sam-miller', 'yasmina-amar', 'max'], rooms: ['control room', 'al', 'family', 'camp carpool', 'notes', 'max tickets', 'intro', 'intro', 'buzz gym reading', 'buzz gym rading'], groups: ['control room', 'family', 'camp carpool', 'notes', 'max tickets', 'intro', 'intro', 'buzz gym reading', 'buzz gym rading'] }
 const SCHEMA: RingSchema = parseSchemaNote(seedSchemaNote()).schema
 SCHEMA.verbs.message.contacts = { al: ['owl', 'hal'], 'yasmina-amar': ['mum', 'sister', 'yasmina'], nica: ['nika', 'veronica'] }
 SCHEMA.verbs.message.rooms = { 'control room': ['control'], 'yes theory london fam': ['yes theory'] }
@@ -258,6 +258,21 @@ describe('routeByRules (schema-driven tree)', () => {
     expect(r('message control room')).toBeNull() // a recipient with nothing after it is no command — never "room" as the payload
     expect(r('message mum control the room')).toMatchObject({ command: { contact: 'yasmina-amar', text: 'control the room' } }) // a person first still wins
     expect(describeCommand(r('voice control room testing')!.command)).toBe('voice note → control room (control room): testing')
+  })
+  it('message|voice|draft <group> — a WhatsApp group by its OWN name when no contact or rooms: form matches (^spry-hawk)', () => {
+    // Dry run 2026-09-25: "message camp carpool …" died as `no target called "camp"` — only listed rooms resolved.
+    expect(r('message camp carpool leaving now')).toMatchObject({ rule: 'message.group', command: { kind: 'message', contact: 'camp carpool', spoken: 'camp carpool', text: 'leaving now' } })
+    expect(r('Voice camp carpool. Running ten minutes late.')).toMatchObject({ rule: 'voice.group', command: { kind: 'voice', contact: 'camp carpool', spoken: 'camp carpool', text: 'Running ten minutes late' } })
+    expect(r('draft a message to camp carpool see you at nine')).toMatchObject({ rule: 'draft.group', command: { kind: 'draft', contact: 'camp carpool', text: 'see you at nine' } })
+    expect(r('message camp car pool leaving now')).toMatchObject({ rule: 'message.group', command: { contact: 'camp carpool', spoken: 'camp car pool', text: 'leaving now' } }) // one edit across the whole name
+    expect(r('message camp carpool')).toBeNull() // nothing to send
+    expect(r('message carpool leaving now')).toMatchObject({ rule: 'message.unknown-target', command: { kind: 'unknown-target', target: 'carpool' } }) // a partial name is no group — the note's rooms: forms cover shorthands
+    expect(r('message max tickets are booked')).toMatchObject({ rule: 'message', command: { contact: 'max', text: 'tickets are booked' } }) // an explicit contact beats a longer implicit group name
+    expect(r('voice note mum hello')).toMatchObject({ rule: 'voice', command: { contact: 'yasmina-amar', text: 'hello' } }) // a phrase word never lands in a group called "Notes"
+    expect(r('message notes remember the milk')).toMatchObject({ rule: 'message.group', command: { contact: 'notes' } }) // …but message has no phrase words, so it is the group
+    expect(r('message intro hello')).toMatchObject({ rule: 'message.group', command: { contact: 'intro' } }) // two rooms of one name: the router resolves, the ctx refuses (2 chat rooms are named)
+    expect(r('message buzz gym reading anyone going')).toMatchObject({ rule: 'message.group', command: { contact: 'buzz gym reading' } }) // exact beats a one-edit sibling
+    expect(r('message buzz gym raading anyone going')).toMatchObject({ rule: 'message.unknown-target' }) // one edit from two groups: never guess
   })
   it('message/text/tell AL is a WhatsApp send FROM YOUSEF to AL\'s DM — he wants AL to reply on WhatsApp (never rerouted to al.direct)', () => {
     expect(r('message al are you there')).toMatchObject({ rule: 'message', command: { kind: 'message', contact: 'al', text: 'are you there' } })

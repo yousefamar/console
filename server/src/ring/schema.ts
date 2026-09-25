@@ -304,6 +304,13 @@ export function contactForms(contacts: Record<string, string[]>, allUsers: strin
   return out
 }
 
+/** A chat room's name as the ring compares it: lowercased, trimmed, one space
+ *  between words — the `rooms:` keys in the note and the router's group
+ *  fallback both meet the store's names through this. */
+export function roomKey(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
 /** Every way to name a `message`/`voice` recipient → its canonical: contacts
  *  (as `contactForms`) plus rooms, whose canonical is the chat room's name —
  *  often two words ("control room"), so forms may contain spaces. */
@@ -426,7 +433,7 @@ export interface SchemaDescription {
 
 export async function describeSchema(
   loaded: { schema: RingSchema; errors: string[]; stale: boolean; path: string },
-  env: { projects: string[]; contacts: string[]; rooms: string[]; agents: Array<{ agentKey: string | null }>; echoConfigured: boolean },
+  env: { projects: string[]; contacts: string[]; rooms: string[]; groups: string[]; agents: Array<{ agentKey: string | null }>; echoConfigured: boolean },
   exists: (vaultPath: string) => Promise<boolean>,
 ): Promise<SchemaDescription> {
   const v = loaded.schema.verbs
@@ -467,7 +474,7 @@ export async function describeSchema(
     verbs: [
       { verb: 'add', aliases: v.add.aliases, usage: 'add|log <target> <text>', targets: [...listTargets, ...projectTargets(v.add.projectColumn)] },
       { verb: 'start', aliases: v.start.aliases, usage: 'start <project> <text>', targets: projectTargets(`${v.start.column} (dispatches now)`) },
-      { verb: 'message', aliases: v.message.aliases, usage: 'message <person|room> <text>', targets: recipients, note: `also any of: ${env.contacts.join(', ') || '-'}` },
+      { verb: 'message', aliases: v.message.aliases, usage: 'message <person|room> <text>', targets: recipients, note: `also any of: ${env.contacts.join(', ') || '-'}; else any of ${env.groups.length} WhatsApp group(s) by name (exact or one edit)` },
       { verb: 'voice', aliases: v.voice.aliases, usage: 'voice [note] [to] <person|room> <speech>', targets: recipients, note: 'the recording itself, minus the command words, as a WhatsApp voice note from Yousef\'s account; contacts and rooms as message' },
       { verb: 'draft', aliases: v.draft.aliases, usage: 'draft [a message] [to] <person|room> <text>', targets: recipients, note: 'the text lands UNSENT in that chat\'s composer as a draft for Yousef to edit and send himself; contacts and rooms as message' },
       { verb: 'echo', aliases: v.echo.aliases, usage: 'echo <text>', targets: [], ...(env.echoConfigured ? {} : { note: 'NOTIFY_JID unset — echo has nowhere to send' }) },

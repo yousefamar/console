@@ -21,6 +21,11 @@ export interface RouteEnv {
   contacts: string[]
   /** Chat room names, lowercased — only for checking the note's `rooms:` resolve. */
   rooms: string[]
+  /** GROUP chat names (non-direct rooms), lowercased — the recipient of last
+   *  resort for `message|voice|draft` when no contact or `rooms:` form matches:
+   *  the spoken words against the group's own name, exact or one edit. DMs are
+   *  deliberately absent — a person is reached through users/<name>.md. */
+  groups: string[]
 }
 
 export type RingCommand =
@@ -189,6 +194,7 @@ const VOICE_PHRASE_MAX = 2
 /** "draft A MESSAGE TO mum", "draft a reply for mum" — three words at most. */
 const DRAFT_PHRASE = new Set(['a', 'message', 'text', 'reply', 'note', 'to', 'for'])
 const DRAFT_PHRASE_MAX = 3
+const NO_PHRASE = new Set<string>()
 
 // The STT decorates the HEAD of a command with punctuation — "Log dream.",
 // "Music, play", "Al: …", "Message Nica — I'm late", "Music… pause" — so every
@@ -413,18 +419,18 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
       }
       case 'message': {
         const hit = resolveRecipientAt(cased, 1, schema, env)
-        if (hit) return hit.rest ? { rule: 'message', command: { kind: 'message', contact: hit.contact, spoken: hit.spoken, text: hit.rest.replace(MESSAGE_LEAD, '') } } : null
+        if (hit) return hit.rest ? { rule: hit.group ? 'message.group' : 'message', command: { kind: 'message', contact: hit.contact, spoken: hit.spoken, text: hit.rest.replace(MESSAGE_LEAD, '') } } : null
         return unknown('message')
       }
       case 'voice': {
         const r = resolveRecipientBehindPhrase(cased, schema, env, VOICE_PHRASE, VOICE_PHRASE_MAX)
-        if (r.kind === 'hit') return r.rest ? { rule: 'voice', command: { kind: 'voice', contact: r.contact, spoken: r.spoken, text: r.rest } } : null
+        if (r.kind === 'hit') return r.rest ? { rule: r.group ? 'voice.group' : 'voice', command: { kind: 'voice', contact: r.contact, spoken: r.spoken, text: r.rest } } : null
         if (r.kind === 'none') return unknown('voice')
         return matched.exact ? { rule: 'voice.unknown-target', command: { kind: 'unknown-target', verb: 'voice', target: r.spoken, text } } : null
       }
       case 'draft': {
         const r = resolveRecipientBehindPhrase(cased, schema, env, DRAFT_PHRASE, DRAFT_PHRASE_MAX)
-        if (r.kind === 'hit') return r.rest ? { rule: 'draft', command: { kind: 'draft', contact: r.contact, spoken: r.spoken, text: r.rest.replace(MESSAGE_LEAD, '') } } : null
+        if (r.kind === 'hit') return r.rest ? { rule: r.group ? 'draft.group' : 'draft', command: { kind: 'draft', contact: r.contact, spoken: r.spoken, text: r.rest.replace(MESSAGE_LEAD, '') } } : null
         if (r.kind === 'none') return unknown('draft')
         return matched.exact ? { rule: 'draft.unknown-target', command: { kind: 'unknown-target', verb: 'draft', target: r.spoken, text } } : null
       }
@@ -439,21 +445,39 @@ export function routeByRules(rawText: string, schema: RingSchema, env: RouteEnv)
   return null
 }
 
+interface RecipientHit { contact: string; spoken: string; rest: string; /** Matched a WhatsApp group's own name, not a form from the note. */ group?: true }
+
+const longestRun = (names: Iterable<string>) => Math.max(1, ...[...names].map((f) => f.split(' ').length))
+
 /** The recipient named at head word `p`: the LONGEST run of words (up to the
  *  longest form in the note — "control room" is two) that is a contact or room
  *  form, then derived first names, then a fuzzy hit on a single word against
- *  the workspace's usernames. A recipient with nothing after it comes back
- *  with an empty `rest` — no command, and never a shorter match with the
- *  name's tail as the payload ("message control room" must not send "room"). */
-function resolveRecipientAt(cased: string, p: number, schema: RingSchema, env: RouteEnv): { contact: string; spoken: string; rest: string } | null {
+ *  the workspace's usernames. Only when all of that loses: the words against
+ *  the names of Yousef's WhatsApp GROUPS (`env.groups`), exact or one edit —
+ *  so a group never needs a `rooms:` entry just to be reachable ("message camp
+ *  carpool …" died as `no target called "camp"`, ^spry-hawk). Explicit forms
+ *  beat the implicit group at every length ("message max tickets …" is Max,
+ *  not a group called "Max Tickets"), and a single word that is one of the
+ *  verb's `phrase` words is never a group ("voice NOTE mum" must not land in a
+ *  group called "Notes"). A recipient with nothing after it comes back with
+ *  an empty `rest` — no command, and never a shorter match with the name's
+ *  tail as the payload ("message control room" must not send "room"). */
+function resolveRecipientAt(cased: string, p: number, schema: RingSchema, env: RouteEnv, phrase: Set<string> = NO_PHRASE): RecipientHit | null {
   const forms = recipientForms(schema.verbs.message, env.contacts)
-  const longest = Math.max(1, ...[...forms.keys()].map((f) => f.split(' ').length))
-  for (let k = longest; k >= 1; k--) {
+  for (let k = longestRun(forms.keys()); k >= 1; k--) {
     const head = headWords(cased, p + k)
     if (!head) continue
     const spoken = head.words.slice(p).join(' ')
     const contact = resolveSpoken(spoken, forms) ?? (k === 1 ? pickFuzzy(spoken, env.contacts) : null)
     if (contact) return { contact, spoken, rest: head.rest }
+  }
+  for (let k = longestRun(env.groups); k >= 1; k--) {
+    const head = headWords(cased, p + k)
+    if (!head) continue
+    const spoken = head.words.slice(p).join(' ')
+    if (k === 1 && phrase.has(spoken)) continue
+    const group = pickFuzzy(spoken, env.groups)
+    if (group) return { contact: group, spoken, rest: head.rest, group: true }
   }
   return null
 }
@@ -464,11 +488,11 @@ function resolveRecipientAt(cased: string, p: number, schema: RingSchema, env: R
  *  the first word that is neither a phrase word nor a recipient; `none` =
  *  the utterance ran out. */
 function resolveRecipientBehindPhrase(cased: string, schema: RingSchema, env: RouteEnv, phrase: Set<string>, max: number):
-  | { kind: 'hit'; contact: string; spoken: string; rest: string }
+  | ({ kind: 'hit' } & RecipientHit)
   | { kind: 'stranger'; spoken: string }
   | { kind: 'none' } {
   for (let p = 1, skipped = 0; ; p++, skipped++) {
-    const hit = resolveRecipientAt(cased, p, schema, env)
+    const hit = resolveRecipientAt(cased, p, schema, env, phrase)
     if (hit) return { kind: 'hit', ...hit }
     const head = headWords(cased, p + 1)
     if (!head?.rest) return { kind: 'none' }
