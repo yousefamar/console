@@ -11,7 +11,7 @@ import { fixFromRecorder, type HistoryQuery, type LiveFeedHandlers } from '../lo
 import type { EmitInput } from '../events/types.js'
 import { handleLocationRoutes, parseFenceBody, type LocationRouteCtx } from '../routes/location.js'
 import { levelFor, placeWords, ageWords, disclose, type ReverseGeo } from '../location/disclose.js'
-import { lateCheck, formatLateReport, VIRTUAL_RE, type CalEvent, type LateCtx } from '../location/late.js'
+import { lateCheck, formatLateReport, VIRTUAL_RE, TRAVEL_RE, type CalEvent, type LateCtx } from '../location/late.js'
 
 const HOME = { lat: 51.45537, lon: -0.96380 }
 const fence = (over: Partial<Geofence> = {}): Geofence => ({ id: 'home', name: 'Home', lat: HOME.lat, lon: HOME.lon, radius: 150, wake: ['al'], on: 'both', createdAt: 0, ...over })
@@ -536,6 +536,7 @@ const fakeRevgeo = async (lat: number, _lon: number, zoom: number): Promise<Reve
 const VENUES: Record<string, { name: string; address?: string; lat: number; lon: number }> = {
   'Paddington Station, London': { name: 'Paddington', address: 'Praed St, London W2 1HU', lat: 51.5154, lon: -0.1755 },
   'Reading Speakers Club, Orts Rd': { name: 'Reading Speakers Club', lat: HOME.lat + 0.001, lon: HOME.lon + 0.001 },
+  'Sparrows Campsite, Froyz Hall, Pennypot Corner, Halstead CO9 1RS': { name: 'Sparrows Campsite', address: 'Froyz Hall, Halstead CO9 1RS', lat: 51.9685, lon: 0.6075 },
 }
 let EVENTS: CalEvent[] = []
 
@@ -627,6 +628,98 @@ describe('late-check', () => {
     expect(r.state.e1).toBeUndefined()
     expect(await lateCheck(ctx([ev()]), null, null, {}, { nowMs: T0 })).toMatchObject({ skipped: 'no fix' })
     expect(await lateCheck(ctx([ev()]), at(0, 1), 3600, {}, { nowMs: T0 })).toMatchObject({ skipped: 'stale fix' })
+  })
+
+  // The real event that fired "13 min late" at 06:25 on 2026-09-25: its location is
+  // the DESTINATION and its start is the DEPARTURE time, so arrival-vs-start is meaningless.
+  const WILDING: CalEvent = {
+    id: 'g0slpk3684ug6l0f16nbqtc238',
+    summary: 'Drive to Wilding Camp (Reading → Halstead)',
+    location: 'Sparrows Campsite, Froyz Hall, Pennypot Corner, Halstead CO9 1RS',
+    start: { dateTime: '2026-09-25T08:00:00+01:00', timeZone: 'Europe/London' },
+    end: { dateTime: '2026-09-25T11:00:00+01:00', timeZone: 'Europe/London' },
+    status: 'confirmed',
+    attendees: null,
+    calendarId: 'yousefamar@gmail.com',
+  }
+  const bst = (hhmm: string) => Date.parse(`2026-09-25T${hhmm}:00+01:00`)
+  const drive = (events: CalEvent[]) => ctx(events, 108 * 60) // 1 h 48 by road: "arrives" 08:13 from a 06:25 fix
+
+  it('travel block (Wilding Camp): no arrival alert before departure; NOT LEFT once the start has passed with him still at the origin', async () => {
+    const home = at(0, 1)
+    const r1 = await lateCheck(drive([WILDING]), home, 60, {}, { nowMs: bst('06:25') })
+    expect(r1.reports).toEqual([]) // the 06:25 false alarm
+    expect(r1.considered).toBe(1)
+    expect(r1.state[WILDING.id]).toMatchObject({ travel: true, origin: { lat: home.lat, lon: home.lon } })
+    const r2 = await lateCheck(drive([WILDING]), home, 60, r1.state, { nowMs: bst('08:05') })
+    expect(r2.reports).toEqual([]) // 5 min behind departure: within threshold
+    const r3 = await lateCheck(drive([WILDING]), home, 60, r2.state, { nowMs: bst('08:13') })
+    expect(r3.reports).toHaveLength(1)
+    expect(r3.reports[0]).toMatchObject({ kind: 'not-left', eventId: WILDING.id, lateMin: 13, startsInMin: -13, etaMin: 108, distanceKm: 64.5, endIso: WILDING.end!.dateTime, attendees: [], reAlert: false })
+    expect(r3.reports[0]!.venue).toMatchObject({ name: 'Sparrows Campsite' })
+    const text = formatLateReport(r3.reports[0]!)
+    expect(text).toContain('NOT LEFT: "Drive to Wilding Camp (Reading → Halstead)" was due to leave 08:00, 13 min ago')
+    expect(text).toContain('heading for Sparrows Campsite, Froyz Hall')
+    expect(text).toContain('Drive ETA 108 min (64.5 km) → arrives ~10:01, block ends 11:00')
+    const r4 = await lateCheck(drive([WILDING]), home, 60, r3.state, { nowMs: bst('08:18') })
+    expect(r4.reports).toEqual([]) // de-duped until another threshold has passed
+    const r5 = await lateCheck(drive([WILDING]), home, 60, r4.state, { nowMs: bst('08:24') })
+    expect(r5.reports[0]).toMatchObject({ kind: 'not-left', lateMin: 24, reAlert: true })
+    expect(formatLateReport(r5.reports[0]!)).toContain('(re-alert: still there)')
+    // On the road: 1 km from the origin ends the check for good, however slow the drive.
+    const r6 = await lateCheck(drive([WILDING]), at(1000, 1), 60, r5.state, { nowMs: bst('08:30') })
+    expect(r6.reports).toEqual([])
+    expect(r6.state[WILDING.id]).toMatchObject({ departed: true })
+    const r7 = await lateCheck(drive([WILDING]), at(1000, 1), 60, r6.state, { nowMs: bst('09:30') })
+    expect(r7.reports).toEqual([])
+  })
+  it('travel block: he left on time, or was never seen before departure, or is already at the destination', async () => {
+    const home = at(0, 1)
+    const pre = await lateCheck(drive([WILDING]), home, 60, {}, { nowMs: bst('07:55') })
+    const gone = await lateCheck(drive([WILDING]), at(2000, 1), 60, pre.state, { nowMs: bst('08:12') })
+    expect(gone.reports).toEqual([])
+    expect(gone.state[WILDING.id]).toMatchObject({ departed: true })
+    // Hub was down before 08:00: the first post-departure fix becomes the origin, judged from the next tick on.
+    const first = await lateCheck(drive([WILDING]), home, 60, {}, { nowMs: bst('08:12') })
+    expect(first.reports).toEqual([])
+    expect(first.state[WILDING.id]).toMatchObject({ travel: true, origin: { lat: home.lat, lon: home.lon } })
+    const second = await lateCheck(drive([WILDING]), home, 60, first.state, { nowMs: bst('08:17') })
+    expect(second.reports[0]).toMatchObject({ kind: 'not-left', lateMin: 17 })
+    // Drove up the night before: sitting at the campsite is not "not left".
+    const camp = VENUES['Sparrows Campsite, Froyz Hall, Pennypot Corner, Halstead CO9 1RS']!
+    const there: Fix = { lat: camp.lat, lon: camp.lon, tst: 1, acc: 12 }
+    const t1 = await lateCheck(drive([WILDING]), there, 60, {}, { nowMs: bst('07:50') })
+    const t2 = await lateCheck(drive([WILDING]), there, 60, t1.state, { nowMs: bst('08:15') })
+    expect(t2.reports).toEqual([])
+    expect(t2.state[WILDING.id]).toMatchObject({ departed: true })
+    // Destination the geocoder does not know: still reported, without a route line.
+    const unknown = await lateCheck(drive([{ ...WILDING, location: 'Somewhere Google has never heard of' }]), home, 60, first.state, { nowMs: bst('08:17') })
+    expect(unknown.reports[0]).toMatchObject({ kind: 'not-left', lateMin: 17, etaMin: undefined })
+    expect(formatLateReport(unknown.reports[0]!)).toContain('No route: destination could not be geocoded')
+  })
+  it('travel by title: verb … to, or an arrow; a bare place name is a meeting', () => {
+    for (const t of ['Drive to Wilding Camp (Reading → Halstead)', 'Train to London', 'Flight to Cairo (MS786)', 'Walk to the station', 'Cycle to work', 'Reading → Halstead', 'LHR -> CAI', 'Travelling to Bristol', 'Flight from LHR to CAI']) expect(TRAVEL_RE.test(t), t).toBe(true)
+    for (const t of ['Meeting', 'Wilding Camp: Autumn Equinox', 'Talk to Sam about the drive', 'Dentist', 'Trip', 'Drive-in cinema', 'Tokyo Drift', 'Coffee with Tom']) expect(TRAVEL_RE.test(t), t).toBe(false)
+  })
+  it('travel by duration: a solo event as long as the route is a travel block; with others invited, or a different length, it is a meeting', async () => {
+    const solo = ev({ id: 's', summary: 'Halstead', attendees: [{ email: 'me@x', self: true }], end: { dateTime: new Date(T0 + (15 + 73) * 60_000).toISOString() } })
+    const rs = await lateCheck(ctx([solo]), at(0, 1), 60, {}, { nowMs: T0 })
+    expect(rs.reports).toEqual([])
+    expect(rs.state.s).toMatchObject({ travel: true, origin: { lat: HOME.lat } })
+    const near = await lateCheck(ctx([solo], 85 * 60), at(0, 1), 60, {}, { nowMs: T0 }) // 73 min block vs 85 min route: within 20 %
+    expect(near.state.s).toMatchObject({ travel: true })
+    const padded = ev({ id: 'p', summary: 'Halstead', attendees: [{ email: 'me@x', self: true }], end: { dateTime: new Date(T0 + (15 + 100) * 60_000).toISOString() } })
+    expect((await lateCheck(ctx([padded]), at(0, 1), 60, {}, { nowMs: T0 })).reports[0]).toMatchObject({ kind: 'late', eventId: 'p', lateMin: 58 })
+    const withOthers = ev({ id: 'o', summary: 'Halstead', end: { dateTime: new Date(T0 + (15 + 73) * 60_000).toISOString() } })
+    expect((await lateCheck(ctx([withOthers]), at(0, 1), 60, {}, { nowMs: T0 })).reports[0]).toMatchObject({ kind: 'late', eventId: 'o', attendees: ['a@b'] })
+    // The classification sticks: once the start has passed, the post-departure tick needs no route.
+    const stuck = await lateCheck(ctx([solo]), at(0, 1), 60, rs.state, { nowMs: T0 + 30 * 60_000 })
+    expect(stuck.reports[0]).toMatchObject({ kind: 'not-left', eventId: 's', lateMin: 15 })
+  })
+  it('state for events no longer listed is dropped', async () => {
+    const r = await lateCheck(ctx([ev()]), at(0, 1), 60, { gone: { lateMin: 20, at: 'x' }, e1: { lateMin: 58, at: 'x' } }, { nowMs: T0 })
+    expect(r.state.gone).toBeUndefined()
+    expect(r.state.e1).toMatchObject({ lateMin: 58 })
   })
 })
 

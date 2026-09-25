@@ -276,16 +276,30 @@ async function locationEta(args: string[], flags: GlobalFlags): Promise<void> {
   info(`${d.mode === 'DRIVE' ? 'Drive' : d.mode.toLowerCase()}: ${Math.round(d.durationSec / 60)} min, ${(d.distanceMeters / 1000).toFixed(1)} km${d.description ? `, via ${d.description}` : ''}; arrive ~${arrive} if leaving now (fix ${ago(d.from.ageS)}).`)
 }
 
-interface LateReport { eventId: string; calendarId?: string; summary: string; startIso: string; startsInMin: number; location: string; venue: { name: string }; mode: string; etaMin: number; distanceKm: number; arriveIso: string; lateMin: number; attendees: string[]; reAlert: boolean }
+// Mirror of server/src/location/late.ts `LateReport` / `formatLateReport` — keep in sync.
+interface LateReport { kind: 'late' | 'not-left'; eventId: string; calendarId?: string; summary: string; startIso: string; endIso?: string; startsInMin: number; location: string; venue?: { name: string }; mode: string; etaMin?: number; distanceKm?: number; arriveIso?: string; lateMin: number; attendees: string[]; reAlert: boolean }
 
 const hhmm = (iso: string) => new Date(iso).toLocaleTimeString('en-GB', { timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false })
 
 function formatLate(r: LateReport): string {
-  return [
-    `LATE: "${r.summary}" starts ${hhmm(r.startIso)} (in ${r.startsInMin} min) at ${r.location}`,
-    `  ${r.mode === 'DRIVE' ? 'Drive' : r.mode.toLowerCase()} ETA ${r.etaMin} min (${r.distanceKm} km) → arrives ~${hhmm(r.arriveIso)}, about ${r.lateMin} min late${r.reAlert ? ' (re-alert: got worse)' : ''}`,
+  const modeName = r.mode === 'DRIVE' ? 'Drive' : r.mode.toLowerCase()
+  const tail = [
     `  Attendees: ${r.attendees.length ? r.attendees.join(', ') : 'none besides Yousef'}`,
     `  Event id: ${r.eventId}${r.calendarId ? `  calendar: ${r.calendarId}` : ''}`,
+  ]
+  if (r.kind === 'not-left') {
+    return [
+      `NOT LEFT: "${r.summary}" was due to leave ${hhmm(r.startIso)}, ${r.lateMin} min ago; still where he was at departure time, heading for ${r.location}${r.reAlert ? ' (re-alert: still there)' : ''}`,
+      r.etaMin != null && r.arriveIso
+        ? `  ${modeName} ETA ${r.etaMin} min (${r.distanceKm} km) → arrives ~${hhmm(r.arriveIso)}${r.endIso ? `, block ends ${hhmm(r.endIso)}` : ''}`
+        : '  No route: destination could not be geocoded',
+      ...tail,
+    ].join('\n')
+  }
+  return [
+    `LATE: "${r.summary}" starts ${hhmm(r.startIso)} (in ${r.startsInMin} min) at ${r.location}`,
+    `  ${modeName} ETA ${r.etaMin} min (${r.distanceKm} km) → arrives ~${hhmm(r.arriveIso!)}, about ${r.lateMin} min late${r.reAlert ? ' (re-alert: got worse)' : ''}`,
+    ...tail,
   ].join('\n')
 }
 

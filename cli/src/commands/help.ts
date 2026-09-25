@@ -334,8 +334,12 @@ Commands:
                                       lateness grows by another threshold; state in
                                       ~/.config/console/location-late-alerts.json). Skips virtual/home
                                       venues, declined, cancelled, all-day; says nothing on a fix
-                                      older than 30 min. --guard = cron guard semantics: report + exit
-                                      0 only when late, else silent exit 1 (zero agent tokens).
+                                      older than 30 min. Travel blocks ("Drive/Train/Flight … to X",
+                                      "A → B", or a solo event as long as the route) get no arrival
+                                      check: they report NOT LEFT once the start has passed by the
+                                      threshold with him still where he was at departure time.
+                                      --guard = cron guard semantics: report + exit 0 only when late,
+                                      else silent exit 1 (zero agent tokens).
 
 How it works: the hub polls the OwnTracks Recorder (maps.amar.io) every 60 s
 for the latest fix, runs it through every fence with hysteresis (leave needs
