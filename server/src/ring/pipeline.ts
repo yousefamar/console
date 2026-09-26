@@ -12,6 +12,7 @@ import { appendRow, stamp } from '../lists/table.js'
 import { columnsFor, rawRow } from '../lists/enrichers.js'
 import { formatDuration } from '../glasses/timer.js'
 import { dueAt, formatDue, parseReminder, type Reminder } from './remind.js'
+import { assessCapture, describeTruncation, type Truncation } from './capture.js'
 
 export interface RingCtx {
   store: RingStore
@@ -137,15 +138,23 @@ export function buildRingForkSeed(schema: RingSchema): string {
   return [
     `[RING FORK] You are a fork of AL dedicated to Yousef's Pebble Index 01 smart ring — a voice-command device. The hub routes each transcript through a deterministic command tree (\`${RING_SCHEMA_NOTE}\`, printable with \`con ring schema\`):`,
     ...tree.map((l) => `  ${l}`),
-    'One kind of work reaches you here, as envelopes below:',
+    'Two kinds of envelope reach you here:',
     'UNCLAIMED — a transcript no verb matched (mis-heard word, phrasing the tree lacks, or a genuine free-form request). Work out what Yousef meant and DO it. Then judge: if this SHOULD have been a tree command (a mangled verb/target, a nickname/alias the note lacks, a log or list that does not exist yet), file a card on the console board so the tree gets fixed: `con spaces board console add "Ring schema gap: <exact transcript> → <what it should map to>"`. Do not edit the schema note yourself — Console general owns it. A one-off request that no command should cover needs no card.',
+    'LIKELY TRUNCATED — an unclaimed envelope whose header carries this flag: the recording opened after Yousef had started speaking (the Index has no pre-roll; hub STT still hears a clipped opener the ring dropped, or the text begins mid-clause). The start of the thought is missing — ask him for the whole thought (quote what was heard) and act on his answer; never act on or file the fragment, and it warrants no schema-gap card.',
     'You know everything parent-AL knew up to this branch point. You will be wound down automatically when idle; no action needed.',
   ].join('\n')
 }
 
-/** Per-delivery envelope for unclaimed text. */
-export function buildFallbackEnvelope(text: string, recordingId: string): string {
-  return `[RING — unclaimed voice command, recording ${recordingId}]\n${text}`
+/** Per-delivery envelope for unclaimed text. `truncated` (describeTruncation)
+ *  flags a capture that opened after Yousef had started speaking — the fork
+ *  is told to ask for the whole thought rather than act on the fragment. */
+export function buildFallbackEnvelope(text: string, recordingId: string, truncated?: string): string {
+  if (!truncated) return `[RING — unclaimed voice command, recording ${recordingId}]\n${text}`
+  return [
+    `[RING — unclaimed voice command, recording ${recordingId} — LIKELY TRUNCATED: ${truncated}]`,
+    text,
+    'The Index has no pre-roll (it opens the capture ~0.5 s after the click) and Yousef was already speaking, so the start of this thought is missing. Do NOT act on the fragment or file it anywhere — ask him for the full thought (quote what was heard) and act on his answer.',
+  ].join('\n')
 }
 
 export interface RouteDecision {
@@ -154,6 +163,8 @@ export interface RouteDecision {
   rule?: string
   /** The hub-STT re-hearing of the audio head that routing used. */
   head?: string
+  /** Unclaimed text whose capture looks to have opened mid-speech (ring/capture.ts). */
+  truncated?: Truncation
 }
 
 /** Whisper-style STT takes a free-text prompt that biases it toward the
@@ -227,12 +238,22 @@ export async function decide(ctx: RingCtx, transcription: string, audioPath?: st
     }
   }
   if (hit) return { command: hit.command, via: 'rule', rule: hit.rule }
+  // Nothing claimed it. Whether the OPENING was ever recorded decides how the
+  // fallback agent should treat it (ring/capture.ts): the head's word
+  // timestamps are fetched alongside the classifier, not after it — and
+  // UNPRIMED: the vocabulary prompt made Whisper drop bfc3's clipped "It's
+  // called" outright (heard "Chickweed" alone), while a plain hearing keeps it.
+  const headWords = audioPath ? ctx.voiceAudio.words(audioPath, '') : Promise.resolve(null)
+  let fragment = false
   if (schema.llmFallback) {
     const guess = await ctx.classify(transcription, schema, env)
     if (guess && guess.kind !== 'unknown') return { command: guess, via: 'llm' }
+    fragment = guess?.kind === 'unknown' && guess.fragment === true
   }
-  if (schema.fallback) return { command: { kind: 'fallback', agentKey: schema.fallback, text: transcription }, via: 'default' }
-  return { command: { kind: 'unknown', text: transcription }, via: 'none' }
+  const truncated = assessCapture(transcription, await headWords, fragment)
+  const flag = truncated ? { truncated } : {}
+  if (schema.fallback) return { command: { kind: 'fallback', agentKey: schema.fallback, text: transcription }, via: 'default', ...flag }
+  return { command: { kind: 'unknown', text: transcription }, via: 'none', ...flag }
 }
 
 /** `con ring say --dry`: what WOULD happen — the decision plus its one-liner,
@@ -283,15 +304,16 @@ export async function processDelivery(ctx: RingCtx, d: RingDelivery): Promise<Ri
 
   // Only the ring's own transcript gets its head re-heard: a hub-STT
   // transcript already IS the re-hearing.
-  const { command, via, rule, head } = await decide(ctx, transcription, source === 'ring' ? rec.audio?.path : null)
+  const { command, via, rule, head, truncated } = await decide(ctx, transcription, source === 'ring' ? rec.audio?.path : null)
+  if (truncated) { rec.truncated = truncated; ctx.store.update(rec) }
 
   const outcome = await execute(ctx, command, rec)
   rec.route = { command, via, ...(rule ? { rule } : {}), ...(head ? { head } : {}), ok: outcome.ok, ...(outcome.detail ? { detail: outcome.detail } : {}) }
   ctx.store.update(rec)
-  ctx.log(`[ring] ${id} ${via}${rule ? `/${rule}` : ''}${head ? ` (head re-heard: "${head}")` : ''} ${describeCommand(command)} → ${outcome.ok ? 'ok' : 'FAILED'}${outcome.detail ? ` (${outcome.detail})` : ''}`)
+  ctx.log(`[ring] ${id} ${via}${rule ? `/${rule}` : ''}${head ? ` (head re-heard: "${head}")` : ''} ${describeCommand(command)} → ${outcome.ok ? 'ok' : 'FAILED'}${outcome.detail ? ` (${outcome.detail})` : ''}${truncated ? ` — cut off? ${describeTruncation(truncated, rec.audio?.durationMs)}` : ''}`)
 
   const n = notification(command, outcome)
-  ctx.notify({ id, title: n.title + lateSuffix, body: n.body })
+  ctx.notify({ id, title: n.title + lateSuffix + (truncated ? ' · cut off?' : ''), body: n.body })
 
   // A miss is a bug in the tree or the code — file it where a fork will pick
   // it up, the moment it happens. Not for `unknown` (no fallback configured)
@@ -328,7 +350,7 @@ async function execute(ctx: RingCtx, c: RingCommand, rec: RingRecording): Promis
   try {
     switch (c.kind) {
       case 'fallback': {
-        const envelope = buildFallbackEnvelope(c.text, rec.id)
+        const envelope = buildFallbackEnvelope(c.text, rec.id, rec.truncated ? describeTruncation(rec.truncated, rec.audio?.durationMs) : undefined)
         const ok = c.agentKey === 'al' ? ctx.deliverToAl(envelope) : ctx.deliverToAgent(c.agentKey, envelope)
         return ok ? { ok } : { ok, detail: `${c.agentKey === 'al' ? 'AL' : `@${c.agentKey}`} is not live` }
       }

@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rename
 import { join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { RingCommand } from './router.js'
+import type { Truncation } from './capture.js'
 
 export interface RingRecording {
   id: string
@@ -23,6 +24,10 @@ export interface RingRecording {
    *  sooner than its own duration after it started, this one was received
    *  sooner. The real capture time is unknown (before receivedAt − duration). */
   syncedLate?: true
+  /** The capture opened after Yousef had started speaking (the Index has no
+   *  pre-roll), so the transcript's opening is missing — ring/capture.ts;
+   *  judged for unclaimed text only. */
+  truncated?: Truncation
   /** Set once routing ran; absent for a pure archive (nothing to route). */
   route?: {
     command: RingCommand

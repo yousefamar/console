@@ -35,6 +35,7 @@ export function buildClassifyPrompt(text: string, schema: RingSchema, env: Route
     '  {"kind":"remind","lead_in":"<opening words>"}   ← the speaker wants to be reminded of something later ("remind me…", "don\'t let me forget…"); lead_in ends where the thing to remember (or its time phrase) begins',
     '  {"kind":"music","action":"play"|"pause"|"next"|"previous","query":"<optional: the transcript\'s own words naming what to play, copied exactly>"}',
     '  {"kind":"unknown"}',
+    '  {"kind":"unknown","fragment":true}   ← unknown AND the transcript reads as the MIDDLE of an utterance: the recording evidently began after the speaker had started talking — it opens on a participle, preposition or conjunction, or a dependent clause with no main clause (e.g. "Called chickweed", "Instead of going out of my way or them going out of theirs"). A complete thought, however short, is plain unknown.',
     '',
     `Spoken aliases: add/log=${v.add.aliases.join('/') || '-'}; start=${v.start.aliases.join('/') || '-'}; message=${v.message.aliases.join('/') || '-'}; voice=${v.voice.aliases.join('/') || '-'}; draft=${v.draft.aliases.join('/') || '-'}; echo=${v.echo.aliases.join('/') || '-'}; remind=${v.remind.aliases.join('/') || '-'}. Target aliases: ${Object.entries(v.add.targets).map(([n, t]) => `${n}←${t.aliases.join('/') || '-'}`).join(', ')}. Contact nicknames: ${Object.entries(v.message.contacts).map(([u, f]) => `${u}←${f.join('/') || '-'}`).join(', ') || '-'}. Rooms (group chats): ${Object.entries(v.message.rooms).map(([r, f]) => `${r}←${f.join('/') || '-'}`).join(', ') || '-'}.`,
     '',
@@ -101,7 +102,7 @@ export function parseClassifyReply(reply: string, schema: RingSchema, env: Route
       if (query && !isVerbatim(query, text)) return null
       return { kind: 'music', action, ...(query ? { query } : {}) }
     }
-    case 'unknown': return { kind: 'unknown', text }
+    case 'unknown': return { kind: 'unknown', text, ...(obj.fragment === true ? { fragment: true as const } : {}) }
     default: return null
   }
 }

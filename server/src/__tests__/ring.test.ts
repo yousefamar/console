@@ -12,7 +12,8 @@ import { parseTable, ensureColumns, appendRow, setCells, removeRow, rowRecord, s
 import { ENRICHERS, columnsFor, rawRow, GROCERIES_ORDERED_LOG, type EnricherDeps } from '../lists/enrichers.js'
 import { ListWatcher } from '../lists/watcher.js'
 import { RingStore } from '../ring/store.js'
-import { processDelivery, buildFallbackEnvelope, buildRingForkSeed, buildMissCard, spliceHeadPayload, sttVocabulary, type RingCtx } from '../ring/pipeline.js'
+import { processDelivery, dryRun, buildFallbackEnvelope, buildRingForkSeed, buildMissCard, spliceHeadPayload, sttVocabulary, type RingCtx } from '../ring/pipeline.js'
+import { clippedOpener, assessCapture, describeTruncation } from '../ring/capture.js'
 import { ContactRoomResolver, ghostUserIds, identifierFromGhost, expandIdentifiers } from '../ring/chat-room.js'
 import { payloadStart, snapToGap, parseEnvelope, patchOpusVendor, oggCrc, pcmWaveform, type TimedWord, type Frame, type VoiceClip } from '../ring/voice.js'
 import { deliveryFromRequest } from '../routes/ring.js'
@@ -552,6 +553,39 @@ describe('add: target inside the first sentence', () => {
     expect(r('Log these are three dreams.')).toMatchObject({ rule: 'add.unknown-target' })
     expect(scanFirstSentence('one two three four five six seven eight nine ten dreams. payload', spokenForms(SCHEMA.verbs.add.targets))).toBeNull()
     expect(scanFirstSentence('these are dreems. payload', spokenForms(SCHEMA.verbs.add.targets))).toBeNull() // exact forms only
+  })
+})
+
+describe('truncated capture (ring/capture.ts)', () => {
+  // Whisper-style words, 0.3 s each from t0, the way the head clip comes back.
+  const W = (s: string, t0 = 0) => s.split(' ').map((word, i) => ({ word: i ? ` ${word}` : word, start: t0 + i * 0.3, end: t0 + (i + 1) * 0.3 }))
+
+  it('hub-only words at the top of the recording are a clipped opener the ring dropped (bfc3, 7d37, 8bd3)', () => {
+    expect(clippedOpener(W("It's called chickweed."), 'Called chickweed')).toBe("It's")
+    expect(clippedOpener(W('I actually sent her a fun fact'), 'Actually sent her a fun fact about the Ankylosaurus.')).toBe('I')
+    expect(clippedOpener(W("I'll look at the message that"), 'Look at the message that Salvan sent')).toBe("I'll")
+    expect(clippedOpener(W('Al message Yasin hi how are you'), 'Message Yassin: Hi how are you?')).toBe('Al') // spelling drift tolerated
+  })
+
+  it('a different word at the SAME position is a homophone; hub-dropped words, fillers and a late first word never flag', () => {
+    expect(clippedOpener(W("I'll separately send Veronica a message"), 'Al, separately send Veronica a message saying')).toBeNull()
+    expect(clippedOpener(W("I'll say hi"), 'Message Al, say hi.')).toBeNull()
+    expect(clippedOpener(W('Instead of either going out of my way'), 'Instead of being either going out of my way')).toBeNull()
+    expect(clippedOpener(W('Um, called chickweed'), 'Called chickweed')).toBeNull()
+    expect(clippedOpener(W("It's called chickweed", 0.6), 'Called chickweed')).toBeNull()
+    expect(clippedOpener([], 'Called chickweed')).toBeNull()
+  })
+
+  it('assessCapture: either signal flags; describeTruncation is one line; the classifier says fragment only on unknown', () => {
+    expect(assessCapture('Called chickweed', null, false)).toBeNull()
+    expect(assessCapture('Called chickweed', null, true)).toEqual({ fragment: true })
+    expect(assessCapture('Called chickweed', W("It's called chickweed"), false)).toEqual({ leading: "It's" })
+    expect(assessCapture('Called chickweed', W("It's called chickweed"), true)).toEqual({ leading: "It's", fragment: true })
+    expect(describeTruncation({ leading: "It's", fragment: true }, 2624)).toBe('2.6 s of audio; hub STT hears "It\'s" before the transcript\'s first word — the ring\'s STT dropped a clipped opener; the transcript reads as a mid-sentence fragment')
+    expect(describeTruncation({ fragment: true })).toBe('the transcript reads as a mid-sentence fragment')
+    expect(parseClassifyReply('{"kind":"unknown","fragment":true}', SCHEMA, ENV, 'Called chickweed')).toEqual({ kind: 'unknown', text: 'Called chickweed', fragment: true })
+    expect(parseClassifyReply('{"kind":"unknown","fragment":false}', SCHEMA, ENV, 'x')).toEqual({ kind: 'unknown', text: 'x' })
+    expect(buildClassifyPrompt('x', SCHEMA, ENV)).toContain('"fragment":true')
   })
 })
 
@@ -1125,6 +1159,7 @@ describe('RingStore + pipeline', () => {
   let notes: Map<string, string>
   let cards: string[]
   let heads: Array<{ path: string; vocabulary: string }>
+  let wordVocabs: string[]
   let durationMs: number | null
   let schema: RingSchema
   let ctx: RingCtx
@@ -1132,7 +1167,7 @@ describe('RingStore + pipeline', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'ring-'))
     store = new RingStore(dir)
-    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; drafts = new Map(); cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; reminders = []; heads = []; durationMs = null
+    toAl = []; toAgent = []; echoed = []; sentAsYousef = []; voiceSent = []; drafts = new Map(); cuts = []; timedWords = null; envelope = null; missCards = []; notified = []; music = []; cards = []; timers = []; reminders = []; heads = []; wordVocabs = []; durationMs = null
     notes = new Map()
     schema = structuredClone(SCHEMA)
     ctx = {
@@ -1152,7 +1187,7 @@ describe('RingStore + pipeline', () => {
         return { room: `${contact} (dm)`, appended: !!existing }
       },
       voiceAudio: {
-        words: async () => timedWords,
+        words: async (_path, vocabulary) => { wordVocabs.push(vocabulary); return timedWords },
         envelope: async () => envelope,
         cut: async (path, from) => { cuts.push({ path, from }); return { data: Buffer.from(`ogg-from-${from}`), contentType: 'audio/ogg', durationMs: Math.round((21.3 - from) * 1000) } },
       },
@@ -1429,6 +1464,43 @@ describe('RingStore + pipeline', () => {
     const msg = await deliverRing("Massive Nika. I'll be home in 30 minutes, maybe 40.") // "massive" is two edits off any verb — the rules miss
     expect(msg.route).toMatchObject({ rule: 'message', head: expect.stringContaining('Message Nica'), command: { contact: 'nica', text: "I'll be home in 30 minutes, maybe 40" } })
     expect(sentAsYousef.at(-1)).toEqual({ contact: 'nica', text: "I'll be home in 30 minutes, maybe 40" })
+  })
+
+  it('an unclaimed transcript whose capture opened mid-speech is flagged truncated — AL is told to ask, not file (^shy-orca)', async () => {
+    // 26 Sep 2026 11:43Z, 2.6 s: the ring heard "Called chickweed"; hub STT
+    // hears a partial "It's" at 0.00 s — the capture opened inside the word.
+    durationMs = 2624
+    timedWords = [{ word: "It's", start: 0, end: 0.18 }, { word: ' called', start: 0.18, end: 1 }, { word: ' chickweed.', start: 1, end: 1.84 }]
+    ctx.classify = async (text) => ({ kind: 'unknown', text, fragment: true })
+    const rec = await processDelivery(ctx, { transcription: 'Called chickweed', audio: M4A, recordedAt: Date.now() - 155_000, client: 'ring' })
+    expect(rec.truncated).toEqual({ leading: "It's", fragment: true })
+    expect(wordVocabs.at(-1)).toBe('') // unprimed: the vocabulary prompt made Whisper drop the clipped "It's called"
+    expect(rec.route).toMatchObject({ via: 'default', ok: true, command: { kind: 'fallback', agentKey: 'al' } })
+    expect(toAl.at(-1)).toBe(buildFallbackEnvelope('Called chickweed', rec.id, '2.6 s of audio; hub STT hears "It\'s" before the transcript\'s first word — the ring\'s STT dropped a clipped opener; the transcript reads as a mid-sentence fragment'))
+    expect(toAl.at(-1)).toMatch(/^\[RING — unclaimed voice command, recording .* — LIKELY TRUNCATED: 2\.6 s of audio/)
+    expect(toAl.at(-1)).toContain('ask him for the full thought')
+    expect(notified.at(-1)?.title).toBe('Ring → AL · cut off?')
+    expect(JSON.parse(readFileSync(join(dir, 'ring', 'recordings', `${rec.id}.json`), 'utf8')).truncated).toEqual({ leading: "It's", fragment: true })
+    expect(buildRingForkSeed(schema)).toContain('LIKELY TRUNCATED')
+
+    // 19 Sep 09:52Z, 5.8 s: hub and ring agree word for word; only the grammar says the start is missing.
+    durationMs = 5760
+    timedWords = [{ word: 'Instead', start: 0.6, end: 0.92 }, { word: ' of', start: 0.92, end: 1.24 }, { word: ' either', start: 1.24, end: 2.9 }]
+    const frag = await processDelivery(ctx, { transcription: 'Instead of being either going out of my way or them going out of their way', audio: M4A, recordedAt: Date.now() - 348_000, client: 'ring' })
+    expect(frag.truncated).toEqual({ fragment: true })
+    expect(toAl.at(-1)).toContain('LIKELY TRUNCATED: 5.8 s of audio; the transcript reads as a mid-sentence fragment')
+
+    // A whole thought with no hub-only opener: nothing flagged, the plain envelope.
+    ctx.classify = async () => null
+    timedWords = [{ word: 'What', start: 0, end: 0.3 }, { word: ' is', start: 0.3, end: 0.5 }, { word: ' the', start: 0.5, end: 0.6 }]
+    const clean = await processDelivery(ctx, { transcription: 'What is the weather like', audio: M4A, recordedAt: null, client: 'ring' })
+    expect(clean.truncated).toBeUndefined()
+    expect(toAl.at(-1)).toBe(buildFallbackEnvelope('What is the weather like', clean.id))
+    expect(notified.at(-1)?.title).toBe('Ring → AL')
+
+    // `con ring say --dry` has no audio, so only the classifier's verdict can flag.
+    ctx.classify = async (text) => ({ kind: 'unknown', text, fragment: true })
+    expect(await dryRun(ctx, 'Called chickweed')).toMatchObject({ via: 'default', truncated: { fragment: true } })
   })
 
   it('spliceHeadPayload + sttVocabulary', () => {

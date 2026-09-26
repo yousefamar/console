@@ -54,7 +54,9 @@ export type RingCommand =
   | { kind: 'remind'; text: string; when: ReminderWhen; spoken: string | null }
   /** A verb matched but its target didn't — actionable feedback, not a fallback. */
   | { kind: 'unknown-target'; verb: string; target: string; text: string }
-  | { kind: 'unknown'; text: string }
+  /** `fragment`: the classifier's verdict that the text is a mid-sentence
+   *  fragment — the capture opened late (ring/capture.ts). */
+  | { kind: 'unknown'; text: string; fragment?: true }
 
 export interface RouteMatch {
   command: RingCommand
@@ -66,7 +68,10 @@ export interface RouteMatch {
   weak?: true
 }
 
-const FILLERS = /^(?:hey|hi|ok|okay|um|uh|so|please|right|yeah)[,.]?\s+/i
+const FILLER_WORDS = ['hey', 'hi', 'ok', 'okay', 'um', 'uh', 'so', 'please', 'right', 'yeah']
+const FILLERS = new RegExp(`^(?:${FILLER_WORDS.join('|')})[,.]?\\s+`, 'i')
+/** A head filler by word key — what `normalise` strips off the front. */
+export const isFiller = (key: string): boolean => FILLER_WORDS.includes(key)
 
 /** Everything `normalise` does except case-folding, so payloads keep the
  *  speaker's capitalisation (a dream log shouldn't read all-lowercase).

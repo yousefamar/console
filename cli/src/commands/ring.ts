@@ -48,10 +48,10 @@ async function ringSetup(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function ringList(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
-  const data = await hubFetch<{ recordings: Array<{ id: string; recordedAt: number; syncedLate?: true; transcription: string | null; transcriptionSource: string | null; audio: { bytes: number; durationMs?: number } | null; route?: { via: string; rule?: string; ok: boolean; command: { kind: string } } }> }>('/ring/recordings', { params: { limit: opts.limit ?? '20' } })
+  const data = await hubFetch<{ recordings: Array<{ id: string; recordedAt: number; syncedLate?: true; truncated?: object; transcription: string | null; transcriptionSource: string | null; audio: { bytes: number; durationMs?: number } | null; route?: { via: string; rule?: string; ok: boolean; command: { kind: string } } }> }>('/ring/recordings', { params: { limit: opts.limit ?? '20' } })
   if (flags.json) { output(data, flags); return }
   for (const r of data.recordings) {
-    const when = new Date(r.recordedAt).toISOString().replace('T', ' ').slice(0, 19) + (r.syncedLate ? ' (synced late)' : '')
+    const when = new Date(r.recordedAt).toISOString().replace('T', ' ').slice(0, 19) + (r.syncedLate ? ' (synced late)' : '') + (r.truncated ? ' (cut off?)' : '')
     const route = r.route ? `${r.route.ok ? '✓' : '✗'} ${r.route.via}${r.route.rule ? `/${r.route.rule}` : ''}` : '—'
     const audio = r.audio ? `${Math.round(r.audio.bytes / 1024)}K${r.audio.durationMs ? ` ${Math.round(r.audio.durationMs / 1000)}s` : ''}` : 'no-audio'
     info(`${r.id}  ${when}  ${audio}  [${r.transcriptionSource ?? 'none'}] ${route}  ${r.transcription ?? ''}`)
@@ -86,9 +86,10 @@ async function ringSay(args: string[], flags: GlobalFlags): Promise<void> {
   const text = args.filter((a) => !a.startsWith('--')).join(' ').trim()
   if (!text) exitWithError('USAGE', 'Usage: con ring say "<transcript>" [--dry]', flags)
   if (dry) {
-    const d = await hubFetch<{ via: string; rule?: string; describe: string; command: unknown }>('/ring/dry-run', { method: 'POST', body: { transcription: text } })
+    const d = await hubFetch<{ via: string; rule?: string; describe: string; command: unknown; truncated?: { leading?: string; fragment?: true } }>('/ring/dry-run', { method: 'POST', body: { transcription: text } })
     if (flags.json) { output(d, flags); return }
-    info(`${d.via}${d.rule ? `/${d.rule}` : ''}  ${d.describe}`)
+    const cut = d.truncated ? [d.truncated.leading && `hub hears "${d.truncated.leading}" first`, d.truncated.fragment && 'reads as a fragment'].filter(Boolean).join(', ') : ''
+    info(`${d.via}${d.rule ? `/${d.rule}` : ''}  ${d.describe}${cut ? `  (cut off? ${cut})` : ''}`)
     return
   }
   output(await hubFetch('/ring/webhook', { method: 'POST', body: { transcription: text, client: 'cli' } }), flags)
