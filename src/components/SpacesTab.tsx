@@ -10,9 +10,10 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Camera, Cpu, Feather, FileText, FolderKanban, FolderX, GitBranch, ImagePlus, Kanban, Clock, ListTodo, Loader2, Mic, Moon, Play, Plus, Radio, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Camera, Cpu, Eye, EyeOff, Feather, FileText, FolderKanban, FolderX, GitBranch, ImagePlus, Kanban, Clock, ListTodo, Loader2, Mic, Moon, Play, Plus, Radio, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
+import { usePref } from '@/prefs'
 import { useAgentStore, type SessionInfo } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
@@ -1108,11 +1109,40 @@ function SpaceCentre({ space }: { space: SpaceSummary }) {
           ) : null}
           <ViewTab label="Docs" icon={<FileText size={10} />} active={!showBoard} onClick={() => setActiveView('docs')} />
         </div>
+        {showBoard && <HideBlockedToggle />}
       </div>
       {showBoard
         ? <BoardView />
         : (isActivePane ? <ScopedNotesEditor space={space} /> : null)}
     </>
+  )
+}
+
+// One switch for every board (hub-synced pref, follows the user across
+// devices). Appears only while the open board actually has blocked cards —
+// with none there is nothing to hide, and a pref left on stays effective
+// silently until the next card blocks.
+const HIDE_BLOCKED_PREF = 'spaces.hideBlocked'
+
+function HideBlockedToggle() {
+  const board = useSpacesStore((s) => s.board)
+  const [hideBlocked, setHideBlocked] = usePref<boolean>(HIDE_BLOCKED_PREF, false)
+  const count = board?.columns
+    .filter((c) => !DONE_COLUMN_RE.test(c.title))
+    .reduce((n, c) => n + c.cards.filter((card) => card.blocked).length, 0) ?? 0
+  if (count === 0) return null
+  return (
+    <button
+      onClick={() => setHideBlocked(!hideBlocked)}
+      className={clsx(
+        'ml-auto flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] transition-colors',
+        hideBlocked ? 'text-text-tertiary hover:text-text-secondary' : 'bg-red-500/10 text-red-500 hover:bg-red-500/15',
+      )}
+      title={hideBlocked ? `Show ${count} blocked card${count === 1 ? '' : 's'}` : `Hide ${count} blocked card${count === 1 ? '' : 's'}`}
+    >
+      {hideBlocked ? <EyeOff size={10} /> : <Eye size={10} />}
+      {count} blocked{hideBlocked && ' hidden'}
+    </button>
   )
 }
 
@@ -1169,6 +1199,7 @@ function BoardView() {
   // Filter the board to one assignee's cards — how a fork (or you) views ITS
   // OWN queue rather than the whole master board. null = everyone.
   const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null)
+  const [hideBlocked] = usePref<boolean>(HIDE_BLOCKED_PREF, false)
   // Assign picker target (card ref) — replaces the raw @key text prompt.
   const [assignTarget, setAssignTarget] = useState<{ ref: CardRef; card: BoardCard } | null>(null)
   // Card detail modal — the roomy editing surface (title, details, assignee,
@@ -1357,7 +1388,7 @@ function BoardView() {
             {/* Filter hides non-matching cards but `index` stays the column-
                 relative position — CardRef must address the REAL board. */}
             {col.cards.map((card, index) => (
-              (activeAssignee === null || (card.agentKey && rootOf(card.agentKey) === activeAssignee)) ? (
+              (activeAssignee === null || (card.agentKey && rootOf(card.agentKey) === activeAssignee)) && !(hideBlocked && card.blocked) ? (
                 <CardTile
                   key={card.blockId ?? `${col.title}:${index}`}
                   card={card}
