@@ -88,6 +88,24 @@ export type MatrixDelta = {
   mutedRoomIds?: string[]
 }
 
+export type PushRuleLike = { rule_id?: string; enabled?: boolean; actions?: unknown[] }
+
+/** roomIds whose enabled `room`-kind push rule silences them. A rule mutes
+ *  when its actions carry no `notify` — that covers the legacy `dont_notify`
+ *  (what Console and older bridges write) AND the spec's current empty
+ *  `actions: []`, which Beeper's own clients/bridges write today. Only the
+ *  former was recognised, so a room muted from the phone showed as un-muted
+ *  here while the homeserver counted zero notifications for it (^tall-ant). */
+export function mutedRoomsFromRules(roomRules: PushRuleLike[] | undefined): Set<string> {
+  const next = new Set<string>()
+  for (const r of roomRules ?? []) {
+    if (!r.rule_id || r.enabled === false) continue
+    const notifies = (r.actions ?? []).some((a) => a === 'notify' || a === 'coalesce')
+    if (!notifies) next.add(r.rule_id)
+  }
+  return next
+}
+
 // Lightweight server-side cache of room state so push notifications can carry
 // sender display names, avatars, and direct-chat flags without re-fetching
 // state on every message.
@@ -113,7 +131,7 @@ export class MatrixSync {
   private readonly roomState = new Map<string, RoomStateCache>()
   /** roomIds flagged as DMs in global account_data (`m.direct`). */
   private directRooms = new Set<string>()
-  /** roomIds with an active `room`-kind push rule set to `dont_notify`. */
+  /** roomIds silenced by an active `room`-kind push rule (`mutedRoomsFromRules`). */
   private mutedRooms = new Set<string>()
   /** Whether the most recent sync tick carried an `m.push_rules` event. */
   private pushRulesChangedThisTick = false
@@ -164,17 +182,11 @@ export class MatrixSync {
   private async refreshPushRules(): Promise<void> {
     if (!this.auth.getMatrixConfig()) return
     const rules = await this.matrix.getPushRules()
-    const roomRules = rules.global?.room ?? []
-    const next = new Set<string>()
-    for (const r of roomRules) {
-      if (r.enabled === false) continue
-      const actions = r.actions ?? []
-      const notifies = actions.some((a) => a === 'notify')
-      const mutes = actions.some((a) => a === 'dont_notify')
-      if (mutes && !notifies) next.add(r.rule_id)
-    }
-    this.mutedRooms = next
-    this.log(`[matrix-sync] push rules seeded: ${next.size} muted rooms`)
+    this.mutedRooms = mutedRoomsFromRules(rules.global?.room)
+    // The snapshot only learns mutes from m.push_rules CHANGES — seed it too,
+    // or a room muted while the hub was down stays un-muted until the next edit.
+    this.chatRoomsStore?.setMutedRoomIds(this.mutedRooms)
+    this.log(`[matrix-sync] push rules seeded: ${this.mutedRooms.size} muted rooms`)
   }
 
   stop(): void {
@@ -1134,18 +1146,7 @@ export class MatrixSync {
         // keeps our UI label in sync with whatever WhatsApp/Signal mutes
         // propagate via Beeper's double-puppet.
         const global = (e.content as { global?: { room?: unknown[] } }).global
-        const roomRules = Array.isArray(global?.room) ? global.room : []
-        const next = new Set<string>()
-        for (const r of roomRules as Array<{ rule_id?: string; enabled?: boolean; actions?: unknown[] }>) {
-          if (!r.rule_id || r.enabled === false) continue
-          const actions = r.actions ?? []
-          // dont_notify can appear as a bare string or nested object — treat
-          // any actions that don't include `notify` as muted.
-          const notifies = actions.some((a) => a === 'notify' || (typeof a === 'object' && a !== null && (a as { set_tweak?: string }).set_tweak === 'sound'))
-          const mutes = actions.some((a) => a === 'dont_notify')
-          if (mutes && !notifies) next.add(r.rule_id)
-        }
-        this.mutedRooms = next
+        this.mutedRooms = mutedRoomsFromRules(Array.isArray(global?.room) ? global.room as PushRuleLike[] : [])
         this.pushRulesChangedThisTick = true
       }
     }

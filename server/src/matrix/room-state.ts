@@ -282,10 +282,18 @@ export function computeRoomState(
 
   // Read receipts (ephemeral) — accumulate so we don't drop existing ones.
   const updatedReceipts: Record<string, ReadReceipt> = { ...(existing?.readReceipts ?? {}) }
+  // Newest read time from MY OWN receipts (Beeper double-puppets a read on the
+  // phone as one) — the read-elsewhere signal for rooms whose notification
+  // count carries none (muted, below).
+  let ownReadTs = 0
   for (const event of delta.ephemeral?.events ?? []) {
     if (event.type !== 'm.receipt') continue
     const content = event.content as Record<string, Record<string, Record<string, { ts?: number }>>>
     for (const [eventId, receiptTypes] of Object.entries(content)) {
+      for (const kind of ['m.read', 'm.read.private']) {
+        const mine = receiptTypes[kind]?.[ctx.myUserId]
+        if (mine) ownReadTs = Math.max(ownReadTs, mine.ts ?? 0)
+      }
       const readers = receiptTypes['m.read'] ?? receiptTypes['m.read.private'] ?? {}
       for (const [userId, data] of Object.entries(readers)) {
         if (userId === ctx.myUserId) continue
@@ -343,7 +351,15 @@ export function computeRoomState(
   // silently clear isUnread — that's how 22 unread rooms got lost from the
   // snapshot on 2026-06-08. Absent ⇒ no new unread information; preserve
   // the existing flags verbatim (see isUnread/unreadCount below).
-  const notifInfoPresent = delta.unread_notifications !== undefined
+  //
+  // A MUTED room's count is zero by construction — the homeserver never
+  // counts what its push rule told it not to notify — so an explicit 0 there
+  // says nothing about reading. Treated as "read elsewhere", it wiped every
+  // new message from Rayyan's muted DM within the second (his own ghost's
+  // receipt was the next delta) — ^tall-ant. For muted rooms the field is
+  // ignored and read-elsewhere comes from my own receipt instead.
+  const roomIsMuted = ctx.mutedRoomIds.has(roomId)
+  const notifInfoPresent = !roomIsMuted && delta.unread_notifications !== undefined
   const serverNotifCount = delta.unread_notifications?.notification_count ?? 0
   const serverHighlightCount = delta.unread_notifications?.highlight_count ?? 0
   const hasNewMessages = !!lastMsg
@@ -372,6 +388,7 @@ export function computeRoomState(
     )
     if (latestTs > 0) lastMessageTime = latestTs
   }
+  const readElsewhere = roomIsMuted && ownReadTs > 0 && ownReadTs >= lastMessageTime
 
   const computedName = getRoomName(allStateForRoom, roomId, ctx.myUserId)
   const hasFullMembers = allStateForRoom.some((e) => e.type === 'm.room.create')
@@ -413,7 +430,7 @@ export function computeRoomState(
     manualUnread: manualUnread || undefined,
     isUnread: manualUnread
       ? true
-      : latestIsFromMe
+      : latestIsFromMe || readElsewhere
       ? false
       : existing
         ? (!notifInfoPresent && !hasNewerMessagesFromOthers
@@ -426,7 +443,7 @@ export function computeRoomState(
         : (roomIsLowPriority
           ? (serverHighlightCount > 0)
           : (serverNotifCount > 0 && (hasNewMessages || hadMessages || lastMessageTime > 0))),
-    unreadCount: latestIsFromMe
+    unreadCount: latestIsFromMe || readElsewhere
       ? 0
       : existing
         ? (!notifInfoPresent && !hasNewerMessagesFromOthers

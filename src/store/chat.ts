@@ -941,7 +941,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   preloadAllRooms: async () => {
     const rooms = await db.chatRooms
-      .filter((r) => r.isUnread && !r.snoozedUntil)
+      .filter((r) => r.isUnread && !r.snoozedUntil && !r.isMuted)
       .toArray()
 
     for (const room of rooms) {

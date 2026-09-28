@@ -201,3 +201,70 @@ describe('computeRoomState — a new bridge portal\'s first message (^rare-deer)
     expect(next.name).toBe('George 🌳')
   })
 })
+
+describe('computeRoomState — a muted room\'s notification_count is not a read signal (^tall-ant)', () => {
+  // The homeserver counts zero notifications for a muted room BY CONSTRUCTION,
+  // so an explicit 0 there is not "read on another client". Rayyan's muted DM
+  // flipped to read within a second of every message: his own ghost's receipt
+  // arrived as the next delta, carrying the ever-zero count.
+  const muted: ComputeContext = { myUserId: '@me:hs', mutedRoomIds: new Set(['!r:hs']) }
+  const msg = (sender: string, ts: number) => ({
+    type: 'm.room.message', sender, origin_server_ts: ts, content: { body: 'x', msgtype: 'm.text' },
+  })
+  const receipt = (userId: string, ts: number, kind: 'm.read' | 'm.read.private' = 'm.read') => ({
+    type: 'm.receipt', content: { '$ev:hs': { [kind]: { [userId]: { ts } } } },
+  })
+  const unreadMuted = () => baseRoom({ isMuted: true, isUnread: true, unreadCount: 1, lastMessageTime: 2000 })
+
+  it('a new message from the contact marks it unread despite the zero count', () => {
+    const delta: SyncRoomDelta = { timeline: { events: [msg('@other:hs', 2000)] }, unread_notifications: { notification_count: 0 } }
+    const next = computeRoomState('!r:hs', baseRoom({ isMuted: true }), delta, muted)
+    expect(next.isUnread).toBe(true)
+    expect(next.unreadCount).toBe(1)
+  })
+
+  it('the contact\'s own receipt (explicit zero, no new message) leaves it unread', () => {
+    const delta: SyncRoomDelta = { ephemeral: { events: [receipt('@other:hs', 2500)] }, unread_notifications: { notification_count: 0 } }
+    const next = computeRoomState('!r:hs', unreadMuted(), delta, muted)
+    expect(next.isUnread).toBe(true)
+    expect(next.unreadCount).toBe(1)
+  })
+
+  it('my own receipt at or after the newest message is the read-elsewhere signal', () => {
+    const delta: SyncRoomDelta = { ephemeral: { events: [receipt('@me:hs', 2000)] }, unread_notifications: { notification_count: 0 } }
+    const next = computeRoomState('!r:hs', unreadMuted(), delta, muted)
+    expect(next.isUnread).toBe(false)
+    expect(next.unreadCount).toBe(0)
+  })
+
+  it('my own private receipt counts too', () => {
+    const delta: SyncRoomDelta = { ephemeral: { events: [receipt('@me:hs', 2100, 'm.read.private')] } }
+    expect(computeRoomState('!r:hs', unreadMuted(), delta, muted).isUnread).toBe(false)
+  })
+
+  it('my own receipt older than the newest message does not read it', () => {
+    const delta: SyncRoomDelta = { ephemeral: { events: [receipt('@me:hs', 1500)] } }
+    expect(computeRoomState('!r:hs', unreadMuted(), delta, muted).isUnread).toBe(true)
+  })
+
+  it('a message and my receipt for it in one delta arrive read', () => {
+    const delta: SyncRoomDelta = { timeline: { events: [msg('@other:hs', 3000)] }, ephemeral: { events: [receipt('@me:hs', 3001)] } }
+    const next = computeRoomState('!r:hs', baseRoom({ isMuted: true }), delta, muted)
+    expect(next.isUnread).toBe(false)
+    expect(next.lastMessageTime).toBe(3000)
+  })
+
+  it('a manual unread survives my own receipt', () => {
+    const existing = baseRoom({ isMuted: true, isUnread: true, manualUnread: true, unreadCount: 1 })
+    const delta: SyncRoomDelta = { ephemeral: { events: [receipt('@me:hs', 5000)] } }
+    expect(computeRoomState('!r:hs', existing, delta, muted).isUnread).toBe(true)
+  })
+
+  it('an un-muted room still reads on an explicit zero — the own-receipt rule is muted-only', () => {
+    const existing = baseRoom({ isUnread: true, unreadCount: 1 })
+    const delta: SyncRoomDelta = { unread_notifications: { notification_count: 0 } }
+    expect(computeRoomState('!r:hs', existing, delta, ctx).isUnread).toBe(false)
+    const receiptOnly: SyncRoomDelta = { ephemeral: { events: [receipt('@me:hs', 9000)] } }
+    expect(computeRoomState('!r:hs', existing, receiptOnly, ctx).isUnread).toBe(true)
+  })
+})
