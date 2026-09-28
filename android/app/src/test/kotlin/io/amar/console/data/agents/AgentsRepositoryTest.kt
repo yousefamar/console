@@ -259,6 +259,23 @@ class AgentsRepositoryTest {
         assertFalse(repo.hasOlder("s1"))
     }
 
+    @Test
+    fun `a list push keeps permissionMode and lastCachedIndex from the row it replaces`() = runTest {
+        // SessionInfo never carries either field (permissionMode arrives on
+        // session_init only), so the 10 s sessions_list used to null the
+        // plan-mode badge and reset the cache high-water on every push.
+        db.agents().upsertSessions(listOf(session("s1", logLen = 3).copy(permissionMode = "plan", lastCachedIndex = 2)))
+        db.agents().insertMessages((0L until 3L).map { AgentMessageRow(sessionId = "s1", absIndex = it, kind = "text", payloadJson = "{}") })
+        logs["s1"] = FakeLog(total = 3)
+
+        repo.applySessionsList(listOf(sessionInfo("s1", 3)))
+
+        val row = db.agents().byId("s1")!!
+        assertEquals("plan", row.permissionMode)
+        assertEquals(2L, row.lastCachedIndex)
+        assertTrue(logs["s1"]!!.requests.isEmpty()) // nothing to catch up
+    }
+
     private fun sessionInfo(id: String, logLen: Long) = kotlinx.serialization.json.buildJsonObject {
         put("id", kotlinx.serialization.json.JsonPrimitive(id))
         put("name", kotlinx.serialization.json.JsonPrimitive("S$id"))

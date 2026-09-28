@@ -728,7 +728,14 @@ class AgentsRepository(
         }
         for ((oldId, newId) in idRemap) remapSession(oldId, newId)
 
-        val rows = sessions.mapNotNull { sessionRow(it) }
+        // SessionInfo carries neither permissionMode (only `session_init` does)
+        // nor our own cache high-water, so a list row must inherit both from
+        // the row it replaces — the 10 s push otherwise blanked the plan-mode
+        // badge and reset lastCachedIndex to -1 (^prim-tern follow-up).
+        val prior = (if (idRemap.isEmpty()) existing else db.agents().allSessions()).associateBy { it.id }
+        val rows = sessions.mapNotNull { sessionRow(it) }.map { r ->
+            prior[r.id]?.let { p -> r.copy(permissionMode = p.permissionMode, lastCachedIndex = p.lastCachedIndex) } ?: r
+        }
         db.agents().upsertSessions(rows)
         db.agents().deleteAbsent(rows.map { it.id })
         // SessionInfo.todos is authoritative on every list push.
@@ -871,13 +878,13 @@ class AgentsRepository(
             modelLabel = s["model"]?.jsonPrimitive?.content,
             hibernated = s["hibernated"]?.jsonPrimitive?.booleanOrNull ?: false,
             cwd = s["cwd"]?.jsonPrimitive?.content,
-            lastCachedIndex = -1L, // filled after catch-up
+            lastCachedIndex = -1L, // fresh row only — applySessionsList carries the prior value forward
             messageLogLength = logLen,
             lastReadIndex = lastRead,
             parentClaudeSessionId = s["parentClaudeSessionId"]?.jsonPrimitive?.content,
             claudeSessionId = s["claudeSessionId"]?.jsonPrimitive?.content,
             modelOverride = s["modelOverride"]?.jsonPrimitive?.content,
-            permissionMode = null, // set on session_init; keep null in list rows
+            permissionMode = null, // set on session_init — applySessionsList carries the prior value forward
             gitBranch = s["gitBranch"]?.jsonPrimitive?.content,
             gitDirty = s["gitDirty"]?.jsonPrimitive?.booleanOrNull ?: false,
             gitAdded = git?.get("added")?.jsonPrimitive?.intOrNull ?: -1,

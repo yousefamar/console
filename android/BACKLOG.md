@@ -42,6 +42,19 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **The plan-mode badge no longer vanishes 10 s after it appears** (^prim-tern
+  hand-back left it as "harmless" — it was not). `sessionRow` builds a list row
+  with `permissionMode = null` and `lastCachedIndex = -1`, and every
+  `sessions_list` push upserts those rows whole — but the hub ships
+  `permissionMode` ONLY on `session_init` (SessionInfo never carries it), so the
+  amber badge in `AgentStatusBar` + the `permMode` in `AgentsScreens` were
+  blanked on the next push, and the cache high-water the catch-up loop had just
+  stamped went back to −1. `applySessionsList` now carries both fields forward
+  from the row being replaced (post-remap). Root cause class: a whole-row
+  upsert from a wire shape that is a SUBSET of the entity — any Room field not
+  in SessionInfo must be inherited, never defaulted. Test:
+  `a list push keeps permissionMode and lastCachedIndex from the row it replaces`.
+
 ## Shipped
 
 ### v105 (2026-09-22)

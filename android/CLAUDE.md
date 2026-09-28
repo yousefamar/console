@@ -121,6 +121,12 @@ while the app is foregrounded (plus short background borrows), so a remote
   up; a remote `/clear` `user_prompt` resets the same way (v104 looked
   "not working" on the phone because Console mobile had been `/clear`ed from
   the SPA and the phone kept the old rows on top).
+- A `sessions_list` row is a whole-row Room upsert built from `SessionInfo`,
+  which is a SUBSET of `AgentSessionRow` — `permissionMode` arrives only on
+  `session_init`, `lastCachedIndex` is ours. `applySessionsList` inherits every
+  such field from the row it replaces; defaulting them in `sessionRow` blanked
+  the plan-mode badge 10 s after every `session_init`. Adding a column the hub
+  does not ship in `SessionInfo` = add it to that carry-forward.
 - Outbox results: `Done | Retry | Fail | Conflict | NotReady`. Transport-down is
   `NotReady` (row returns to pending, retry budget untouched) — treating it as
   `Retry` burned all 3 retries during reconnect storms and parked rows as
