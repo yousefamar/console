@@ -733,6 +733,7 @@ export class MatrixSync {
    *  Broadcast immediately so every device flips the badge in lockstep. */
   async markUnread(args: { roomId: string }): Promise<{ ok: true }> {
     if (!args?.roomId) throw new Error('roomId required')
+    this.requireRoom(args.roomId)
     this.chatRoomsStore?.setRoomUnread(args.roomId)
     return { ok: true }
   }
@@ -741,8 +742,18 @@ export class MatrixSync {
    *  it either) — but hub-owned so every device snoozes / unsnoozes together. */
   async snooze(args: { roomId: string; untilMs?: number }): Promise<{ ok: true }> {
     if (!args?.roomId) throw new Error('roomId required')
+    this.requireRoom(args.roomId)
     this.chatRoomsStore?.setRoomSnoozedUntil(args.roomId, args.untilMs)
     return { ok: true }
+  }
+
+  /** Hub-only room state (unread/snooze/draft) has no room to land on when the
+   *  snapshot never saw the id — a silent no-op there is how a CLI call can
+   *  report success and change nothing. 404 instead. */
+  private requireRoom(roomId: string): void {
+    if (this.chatRoomsStore && !this.chatRoomsStore.getRoom(roomId)) {
+      throw Object.assign(new Error(`unknown room: ${roomId}`), { status: 404 })
+    }
   }
 
   /** Set or clear a room's unsent draft — hub-owned so every device shows
@@ -939,16 +950,15 @@ export class MatrixSync {
       // 4. Broadcast. Only carry `mutedRoomIds` when push rules changed this
       // tick — clients treat a defined array as authoritative across all
       // known rooms, so omitting it when unchanged avoids needless IDB writes.
+      const pushRulesChanged = isInitial || this.pushRulesChangedThisTick
+      this.pushRulesChangedThisTick = false
       const delta: MatrixDelta = {
         nextBatch: resp.next_batch,
         rooms,
         invites: invites.length ? invites : undefined,
         leaves: leaves.length ? leaves : undefined,
-        mutedRoomIds: (isInitial || this.pushRulesChangedThisTick)
-          ? Array.from(this.mutedRooms)
-          : undefined,
+        mutedRoomIds: pushRulesChanged ? Array.from(this.mutedRooms) : undefined,
       }
-      this.pushRulesChangedThisTick = false
       const roomCount = Object.keys(rooms).length
       if (isInitial) {
         this.bus.broadcast('matrix', 'initial', delta)
@@ -968,10 +978,13 @@ export class MatrixSync {
           mutedRoomIds: this.mutedRooms,
         })
       }
-      if (this.chatRoomsStore && this.pushRulesChangedThisTick) {
+      if (this.chatRoomsStore && pushRulesChanged) {
         // Re-sync mute flag across all rooms whenever push rules changed —
         // handled in addition to the per-room delta above so muted-state flips
-        // on rooms that didn't appear in this tick still propagate.
+        // on rooms that didn't appear in this tick still propagate. (Read the
+        // flag captured ABOVE the reset — this block was dead code while it
+        // re-read the already-cleared field, so an unmute never reached the
+        // snapshot until that room's next delta; ^tall-ant.)
         this.chatRoomsStore.setMutedRoomIds(this.mutedRooms)
       }
       if (this.chatRoomsStore) {

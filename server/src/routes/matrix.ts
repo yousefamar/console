@@ -33,6 +33,22 @@ function mimeFromFilename(filename: unknown): string | undefined {
   return ext ? SEND_FILE_MIME[ext] : undefined
 }
 
+/** `until` for POST /matrix/rooms/:id/snooze → epoch ms; `undefined` clears
+ *  the snooze; `null` = unparseable. Accepts ISO datetimes, `+30m|+2h|+1d`
+ *  relatives, epoch ms, and `none|clear|0` (or absent) to unsnooze. */
+export function parseSnoozeUntil(until: unknown, now = Date.now()): number | undefined | null {
+  if (until === undefined || until === null || until === '' || until === 0) return undefined
+  if (typeof until === 'number') return Number.isFinite(until) && until > 0 ? until : null
+  if (typeof until !== 'string') return null
+  const s = until.trim()
+  if (/^(none|clear|0)$/i.test(s)) return undefined
+  const rel = /^\+(\d+)([mhd])$/i.exec(s)
+  if (rel) return now + Number(rel[1]) * { m: 60_000, h: 3_600_000, d: 86_400_000 }[rel[2]!.toLowerCase() as 'm' | 'h' | 'd']
+  if (/^\d{10,}$/.test(s)) return Number(s)
+  const t = Date.parse(s)
+  return Number.isNaN(t) ? null : t
+}
+
 function networkFromUserId(userId: string, re: RegExp): string | undefined {
   const m = userId.match(re)
   if (!m) return undefined
@@ -383,27 +399,42 @@ export function handleMatrixRoutes(
       const messages = await matrix.getRoomMessages(roomId, { limit: 1 })
       const latestEvent = (messages as any).chunk?.[0]
 
+      // Through matrixSync so the hub-owned snapshot flips now, like the SPA's
+      // RPC — a raw receipt alone left `con chat mark-read` waiting on the
+      // sync round-trip (and a muted room's count never comes back).
       if (latestEvent?.event_id) {
-        await matrix.setReadMarker(roomId, latestEvent.event_id)
-        await matrix.sendReadReceipt(roomId, latestEvent.event_id)
+        await matrixSync.markRead({ roomId, eventId: latestEvent.event_id, lastReadTs: latestEvent.origin_server_ts })
       }
 
       json({ ok: true })
     })
   }
 
-  // POST /matrix/rooms/:id/unread (client-side state only — no Matrix API for this)
+  // POST /matrix/rooms/:id/unread — hub-owned sticky flag (no Matrix API).
+  // Was a stub answering `ok` without touching anything: `con chat
+  // mark-unread` reported success for months and did nothing (^tall-ant).
   const unreadMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/unread$/)
   if (unreadMatch && req.method === 'POST') {
-    json({ ok: true, note: 'Unread state is client-managed' })
-    return true
+    return handleAsync(async () => {
+      const roomId = decodeURIComponent(unreadMatch[1]!)
+      await matrixSync.markUnread({ roomId })
+      json({ ok: true })
+    })
   }
 
-  // POST /matrix/rooms/:id/snooze (client-side state only)
+  // POST /matrix/rooms/:id/snooze {until} — same hub-owned state as the SPA's
+  // `chat-rooms.snooze`. `until` = ISO datetime | `+30m|+2h|+1d` | `none` (clear).
   const snoozeMatch = path.match(/^\/matrix\/rooms\/([^/]+)\/snooze$/)
   if (snoozeMatch && req.method === 'POST') {
-    json({ ok: true, note: 'Snooze state is client-managed' })
-    return true
+    return handleAsync(async () => {
+      const roomId = decodeURIComponent(snoozeMatch[1]!)
+      const raw = await readBody(req)
+      const until = raw ? (JSON.parse(raw) as { until?: unknown }).until : undefined
+      const untilMs = parseSnoozeUntil(until)
+      if (untilMs === null) { json({ error: `bad until "${String(until)}" — ISO datetime, +30m/+2h/+1d, or none` }, 400); return }
+      await matrixSync.snooze({ roomId, untilMs })
+      json({ ok: true, snoozedUntil: untilMs ?? null })
+    })
   }
 
   // GET /matrix/drafts — every room holding an unsent draft
