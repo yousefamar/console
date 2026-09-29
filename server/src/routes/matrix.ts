@@ -177,19 +177,28 @@ export function handleMatrixRoutes(
         const stateEvents = [...(room as any).state.events, ...(room as any).timeline.events.filter((e: any) => e.state_key !== undefined)]
 
         const name = computeRoomName(stateEvents, roomId, myUserId)
-        const unread = (room as any).unread_notifications?.notification_count || 0
+        // Read state from the hub-owned snapshot where it knows the room — the
+        // homeserver's count is zero forever for a muted room and never
+        // reflects a manual mark-unread, so `con chat rooms --filter unread`
+        // disagreed with what Console shows (^tall-ant). Raw count as fallback.
+        const canonical = matrixSync.roomSnapshot(roomId)
+        const rawUnread = (room as any).unread_notifications?.notification_count || 0
+        const unread = canonical ? (canonical.unreadCount ?? (canonical.isUnread ? 1 : 0)) : rawUnread
+        const isUnread = canonical ? canonical.isUnread : rawUnread > 0
         const memberCount = (room as any).summary?.['m.joined_member_count'] || 0
         const network = detectBridgeNetwork(stateEvents)
 
         // Apply filters
-        if (filter === 'unread' && unread === 0) continue
+        if (filter === 'unread' && !isUnread) continue
         if (networkFilter && network !== networkFilter) continue
 
         rooms.push({
           id: roomId,
           name,
           network,
+          isUnread,
           unreadCount: unread,
+          isMuted: canonical?.isMuted ?? false,
           memberCount,
           lastActivity: (room as any).timeline.events.at(-1)?.origin_server_ts,
         })

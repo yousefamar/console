@@ -23,7 +23,7 @@ import type { SyncBus } from '../sync-bus.js'
 import type { PushServer } from '../push.js'
 import type { ChatRoomsStore } from './chat-rooms-store.js'
 import type { MessageArchive } from './message-archive.js'
-import { isConversationEvent, previewBody, type SyncRoomDelta } from './room-state.js'
+import { isConversationEvent, previewBody, type RoomState, type SyncRoomDelta } from './room-state.js'
 import type { EmitInput, HubEvent } from '../events/types.js'
 import { health } from '../health.js'
 
@@ -745,6 +745,13 @@ export class MatrixSync {
     this.requireRoom(args.roomId)
     this.chatRoomsStore?.setRoomSnoozedUntil(args.roomId, args.untilMs)
     return { ok: true }
+  }
+
+  /** The hub-owned snapshot row for a room (undefined when the snapshot has
+   *  never seen it). The canonical read state — the homeserver's count is
+   *  not (muted rooms count zero forever). */
+  roomSnapshot(roomId: string): RoomState | undefined {
+    return this.chatRoomsStore?.getRoom(roomId)
   }
 
   /** Hub-only room state (unread/snooze/draft) has no room to land on when the
