@@ -14,7 +14,10 @@ message.id: fork-session copies duplicate the parent's transcript lines.
 """
 import json, glob, os, time, collections, datetime, statistics
 
-CUT = time.time() - 7 * 86400
+# Window: last 7 days, or SPEND_FROM/SPEND_TO (YYYY-MM-DD, local, TO exclusive) for a fixed week.
+def _day(s): return datetime.datetime.fromisoformat(s).timestamp()
+END = _day(os.environ['SPEND_TO']) if os.environ.get('SPEND_TO') else time.time()
+CUT = _day(os.environ['SPEND_FROM']) if os.environ.get('SPEND_FROM') else END - 7 * 86400
 files = [f for f in glob.glob(os.path.expanduser('~/.claude/projects/*/*.jsonl')) if os.path.getmtime(f) > CUT]
 
 # $/MTok: (base_input, read, write_5m, write_1h, output)
@@ -43,6 +46,7 @@ cold_tok = collections.Counter()
 save_ttl = 0.0                       # 5–60m cold writes if they'd been warm reads instead
 over60_sizes = []
 first_req_sizes = []
+le5_cause = collections.Counter(); le5_files = collections.Counter()   # ≤5m cold: why + who
 
 BUCKETS = [
     (300,     'gap ≤ 5 min (cache-invalidating change, not a TTL lapse)'),
@@ -53,7 +57,7 @@ BUCKETS = [
 ]
 
 for f in files:
-    last = None
+    last = None; last_model = None
     with open(f) as fh:
         for line in fh:
             try: j = json.loads(line)
@@ -64,7 +68,7 @@ for f in files:
             if not u: continue
             mid = m.get('id')
             ts = parse(j.get('timestamp') or '')
-            if ts and ts < CUT: continue   # files hold lines far older than their mtime
+            if ts and (ts < CUT or ts >= END): continue   # files hold lines far older than their mtime
             if mid:
                 if mid in seen:
                     last = ts or last   # keep gap clock honest on dup lines
@@ -84,6 +88,7 @@ for f in files:
             usd['output'] += op * r_out / 1e6
             gap = (ts - last) if (ts and last) else None
             last = ts or last
+            cur_model = m.get('model'); prev_model = last_model; last_model = cur_model or last_model
             if cw / max(cr + cw, 1) > 0.5:
                 usd['cold-write'] += wr_usd
                 if gap is None:
@@ -91,6 +96,9 @@ for f in files:
                     first_req_sizes.append(cw)
                 else:
                     b = next(lbl for lim, lbl in BUCKETS if gap < lim)
+                    if gap < 300:
+                        le5_cause['model switched' if prev_model and cur_model != prev_model else 'same model'] += wr_usd
+                        le5_files[os.path.basename(f)[:8]] += wr_usd
                     if 300 <= gap < 3600:
                         save_ttl += wr_usd - (cw * 0.25 / 1e6 if 'fable-5-1' in (m.get('model') or '') else cw * r_rd / 1e6)
                     if gap >= 3600: over60_sizes.append(cw)
@@ -105,6 +113,8 @@ for k in ('cold-write', 'warm-write', 'read', 'output', 'input'):
 print('\nwhy each cold request was cold ($ = write cost at real rates):')
 for k, v in cold_usd.most_common():
     print(f'  {v/max(sum(cold_usd.values()),1)*100:5.1f}%  ${v:7,.0f}  {cold_n[k]:5,} reqs  {cold_tok[k]/max(cold_n[k],1)/1000:6.0f}k avg  {k}')
+if le5_cause:
+    print('\n≤5m cold writes by cause: ' + ', '.join(f'{k} ${v:,.0f}' for k, v in le5_cause.most_common()) + '; top sessions: ' + ', '.join(f'{k} ${v:,.0f}' for k, v in le5_files.most_common(5)))
 print(f'\nif every 5–60min cold request had instead been a warm read (1h TTL, no hibernate <60m): saves ${save_ttl:,.0f}/wk')
 if over60_sizes:
     print(f'>60min rewrites: median {statistics.median(over60_sizes)/1000:.0f}k, mean {statistics.mean(over60_sizes)/1000:.0f}k tokens — the microcompact/diet lever')
