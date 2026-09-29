@@ -1147,8 +1147,16 @@ export async function checkChatSnoozes(): Promise<void> {
     .belowOrEqual(now)
     .toArray()
 
+  if (snoozed.length === 0) return
   for (const room of snoozed) {
     if (!room.snoozedUntil) continue
     await db.chatRooms.update(room.id, { snoozedUntil: undefined })
   }
+  // Clear the hub row too — it owns snoozedUntil, and a value left there is
+  // re-applied by every later patch/reconcile, re-hiding the room until the
+  // next sweep (^tall-ant). No untilMs = clear (never send null).
+  try {
+    const { hubBus } = await import('@/sync-bus')
+    for (const room of snoozed) await hubBus.rpc('chat-rooms', 'snooze', { roomId: room.id })
+  } catch { /* offline — the next sweep retries */ }
 }

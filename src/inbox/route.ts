@@ -297,8 +297,15 @@ export function threadIsLive(t: DbThread, now: number): boolean {
   return !t.snoozedUntil || t.snoozedUntil <= now
 }
 
+/** Snoozed = a snooze that has not run out. The hub row keeps `snoozedUntil`
+ *  past its time until the minute sweep clears it, so a truthiness test hides
+ *  a due room (Rayyan's, ^tall-ant). One predicate for Inbox, Chat list, preload. */
+export function isSnoozedNow(r: { snoozedUntil?: number }, now = Date.now()): boolean {
+  return !!r.snoozedUntil && r.snoozedUntil > now
+}
+
 export function roomIsLive(r: DbChatRoom, now: number): boolean {
-  if (r.snoozedUntil && r.snoozedUntil > now) return false
+  if (isSnoozedNow(r, now)) return false
   // An unsent draft (mine, or one an agent left for review) is an
   // obligation like an unread message — muted/low-priority don't hide it.
   if (r.draft) return true

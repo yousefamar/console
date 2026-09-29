@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { db } from '@/db'
 import { enqueue } from '@/db/sync-queue'
 import type { DbChatRoom, DbChatMessage } from '@/matrix/types'
+import { isSnoozedNow } from '@/inbox/route'
 import type { MatrixRoomEvent } from '@/matrix/types'
 import { useUiStore } from './ui'
 import { getSnoozeTime } from '@/utils/date'
@@ -941,7 +942,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   preloadAllRooms: async () => {
     const rooms = await db.chatRooms
-      .filter((r) => r.isUnread && !r.snoozedUntil && !r.isMuted)
+      .filter((r) => r.isUnread && !isSnoozedNow(r) && !r.isMuted)
       .toArray()
 
     for (const room of rooms) {

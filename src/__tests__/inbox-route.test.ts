@@ -4,7 +4,7 @@ import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem } from '@/store/feeds'
 import { DEFAULT_RULES, itemKey, type InboxRules } from '@/inbox/types'
 import {
-  blockedAgentKeys, blockedCardsFor, feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, nextAfterHandle, normalizeRules, ownedCardText, reviewHandbacksFor, roomIsLive, roomToItem,
+  blockedAgentKeys, blockedCardsFor, feedItemToItem, feedKindsPresent, filterByFeedKind, filterByFeedMode, isOverdue, isSnoozedNow, nextAfterHandle, normalizeRules, ownedCardText, reviewHandbacksFor, roomIsLive, roomToItem,
   sessionContext, sessionIsLive, sessionToItem, sortFeed, sortInbox, threadIsLive, threadToItem,
   type AgentSessionLike,
 } from '@/inbox/route'
@@ -529,5 +529,16 @@ describe('itemKey', () => {
     const thread = { id: 't1', historyId: '1', snippet: '', subject: 's', from: 'A', fromEmail: 'a@x.io', date: 1, messageCount: 1, isUnread: true, labelIds: ['INBOX'], hasAttachments: false } as DbThread
     expect(threadToItem(thread, DEFAULT_RULES).key).toBe(itemKey('mail', 't1'))
     expect(itemKey('chat', '!r:beeper.local')).toBe('chat:!r:beeper.local')
+  })
+})
+
+describe('isSnoozedNow (^tall-ant)', () => {
+  // The hub row keeps snoozedUntil past its time until the minute sweep clears
+  // it; a truthiness test hid a due room from the Chat list.
+  it('a future snooze hides, a past one does not, none does not', () => {
+    expect(isSnoozedNow({ snoozedUntil: NOW + 1 }, NOW)).toBe(true)
+    expect(isSnoozedNow({ snoozedUntil: NOW }, NOW)).toBe(false)
+    expect(isSnoozedNow({ snoozedUntil: NOW - 86_400_000 }, NOW)).toBe(false)
+    expect(isSnoozedNow({}, NOW)).toBe(false)
   })
 })

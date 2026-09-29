@@ -8,6 +8,7 @@ import { usePullToRefresh } from '@/hooks/usePullToRefresh'
 import { hubBus } from '@/sync-bus'
 import { ChatRoomListItem } from './ChatRoomListItem'
 import { db } from '@/db'
+import { isSnoozedNow } from '@/inbox/route'
 import type { DbChatRoom } from '@/matrix/types'
 
 function isFavourite(room: DbChatRoom) {
@@ -65,7 +66,9 @@ export function ChatRoomList() {
         .filter((r) => {
           const isFav = r.tags?.includes('m.favourite') ?? false
           if (isFav) return true
-          if (r.snoozedUntil) return false
+          // An EXPIRED snooze is not a snooze (the Inbox agrees) — the hub row
+          // can carry a stale value until the sweep clears it (^tall-ant).
+          if (isSnoozedNow(r)) return false
           // An unsent draft is an obligation — the room stays listed until
           // it is sent or discarded, muted/low-priority or not.
           if (r.draft) return true
@@ -92,7 +95,7 @@ export function ChatRoomList() {
     [liveChatRooms],
   )
   const inboxRooms = useMemo(() =>
-    (liveChatRooms ?? []).filter((r) => (r.isUnread || !!r.draft) && !r.snoozedUntil && !isFavourite(r)),
+    (liveChatRooms ?? []).filter((r) => (r.isUnread || !!r.draft) && !isSnoozedNow(r) && !isFavourite(r)),
     [liveChatRooms],
   )
 
