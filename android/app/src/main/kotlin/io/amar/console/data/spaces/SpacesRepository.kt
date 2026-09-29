@@ -1,6 +1,7 @@
 package io.amar.console.data.spaces
 
 import io.amar.console.core.HubClient
+import io.amar.console.core.HubPrefs
 import io.amar.console.sync.SyncBusClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -10,6 +11,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
@@ -306,6 +308,11 @@ class SpacesRepository(
 
     suspend fun setBlocked(project: String, card: CardView, blocked: Boolean, note: String? = null): Boolean =
         setBlockedByQuery(project, cardAddress(card), blocked, note)
+
+    /** Hub-synced `spaces.hideBlocked` (one pref for every board, follows the
+     *  user across devices — the SPA's HideBlockedToggle, ^gold-ant). */
+    suspend fun setHideBlocked(hide: Boolean) =
+        HubPrefs.setPref(hub, BoardFilters.HIDE_BLOCKED_PREF, JsonPrimitive(hide))
 
     /** Block/unblock by address (`^id` or unique text) — for cards known only
      *  from `blockedCards` (the Inbox's Unblock strip, ^mild-ibis). Unblocking

@@ -42,6 +42,21 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **Board: `spaces.hideBlocked` honoured on the phone** (^green-toad; SPA
+  ^gold-ant a5b523d2). The SPA gained a hub-synced pref that hides `#blocked`
+  cards on every board plus an `N blocked` / `N blocked hidden` toggle chip; the
+  phone read the pref nowhere, so a board tidied on the desktop still showed
+  every blocked card here. `BoardFilters` (`data/spaces/`) is the pure half —
+  `blockedCount(board)` over non-Done columns, `visibleCards(column, hide)`,
+  `chipLabel` — with `BoardFiltersTest`; `SpacesRepository.setHideBlocked`
+  writes the pref through `HubPrefs.setPref` (optimistic + shallow-merge PUT,
+  the DND precedent); `HideBlockedChip` sits right-aligned in the Board/Agents/
+  Docs tab row (red Visibility when showing, muted VisibilityOff when hiding),
+  rendered only while the open board has a blocked card outside Done; `BoardView`
+  filters each column through `visibleCards` before the assignee filter. The
+  Inbox's blocked strip is untouched — blocked cards stay reachable there. A
+  desktop toggle reaches the phone on its next reconcile (`HubPrefs.refresh`).
+
 - **The plan-mode badge no longer vanishes 10 s after it appears** (^prim-tern
   hand-back left it as "harmless" — it was not). `sessionRow` builds a list row
   with `permissionMode = null` and `lastCachedIndex = -1`, and every

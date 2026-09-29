@@ -55,6 +55,8 @@ import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewKanban
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -76,6 +78,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -85,6 +89,8 @@ import io.amar.console.data.agents.isStrayCwd
 import io.amar.console.data.agents.shortCwd
 import io.amar.console.data.db.AgentSessionRow
 import io.amar.console.data.db.areaList
+import io.amar.console.core.HubPrefs
+import io.amar.console.data.spaces.BoardFilters
 import io.amar.console.data.spaces.KanbanCodec
 import io.amar.console.data.spaces.SpacesRepository
 import kotlinx.coroutines.launch
@@ -757,6 +763,7 @@ fun SpaceDetailScreen(
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             val tabs = buildList {
                 if (sp?.boardPath != null) add("board" to "Board")
@@ -774,6 +781,10 @@ fun SpaceDetailScreen(
                 ) {
                     Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
                 }
+            }
+            if (tab == "board") {
+                Spacer(Modifier.weight(1f))
+                HideBlockedChip(spacesRepo)
             }
         }
         when (tab) {
@@ -795,6 +806,45 @@ fun SpaceDetailScreen(
 // ------------------------------------------------------------------------- //
 // Board — horizontally paged columns, Done hidden (stays in file)
 // ------------------------------------------------------------------------- //
+
+/** SPA `HideBlockedToggle` (^gold-ant): one hub pref for every board, shown
+ *  only while the open board has a blocked card outside Done — with none there
+ *  is nothing to hide, and a pref left on stays effective silently. */
+@Composable
+private fun HideBlockedChip(spacesRepo: SpacesRepository) {
+    val board by spacesRepo.board.collectAsState()
+    // Collect prefs so the chip re-renders on toggle; value read via HubPrefs.
+    val prefs by HubPrefs.prefs.collectAsState()
+    val hideBlocked = HubPrefs.bool(BoardFilters.HIDE_BLOCKED_PREF)
+    val count = board?.let { BoardFilters.blockedCount(it) } ?: 0
+    if (count == 0) return
+    val scope = rememberCoroutineScope()
+    val plural = if (count == 1) "" else "s"
+    Surface(
+        onClick = { scope.launch { spacesRepo.setHideBlocked(!hideBlocked) } },
+        shape = RoundedCornerShape(6.dp),
+        color = if (hideBlocked) Color.Transparent else MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+        modifier = Modifier.semantics {
+            contentDescription = if (hideBlocked) "Show $count blocked card$plural" else "Hide $count blocked card$plural"
+        },
+    ) {
+        Row(
+            Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            val tint = if (hideBlocked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
+            Icon(
+                if (hideBlocked) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                contentDescription = null, tint = tint, modifier = Modifier.size(12.dp),
+            )
+            Text(
+                BoardFilters.chipLabel(count, hideBlocked),
+                style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1,
+            )
+        }
+    }
+}
 
 @Composable
 private fun BoardView(
@@ -835,6 +885,11 @@ private fun BoardView(
     }
     fun cardVisible(c: SpacesRepository.CardView): Boolean =
         rootFilter == null || rootOf(c.agentKey, allSessions) == rootFilter
+    // spaces.hideBlocked (hub pref, ^gold-ant) — the chip lives in the tab row
+    // above; the filter applies here. Blocked cards stay reachable through the
+    // Inbox's blocked strip regardless.
+    val prefs by HubPrefs.prefs.collectAsState()
+    val hideBlocked = HubPrefs.bool(BoardFilters.HIDE_BLOCKED_PREF)
     val spacesList by spacesRepo.spaces.collectAsState()
     val queuedCount = spacesList.firstOrNull { it.slug == slug && it.kind == kind }?.queuedCount ?: 0
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -921,7 +976,7 @@ private fun BoardView(
                             Icon(Icons.Filled.Add, "Add card", modifier = Modifier.size(16.dp))
                         }
                     }
-                    val shown = col.cards.filter { cardVisible(it) }
+                    val shown = BoardFilters.visibleCards(col, hideBlocked).filter { cardVisible(it) }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
                         items(shown.size) { i ->
                             val card = shown[i]
