@@ -29,3 +29,7 @@ Gotchas that produced wrong answers the first time (2026-09-08 ^odd-toad, 2026-0
 - Char→token proxy (chars/3.7) is only used for the RELATIVE split of a prompt; never sum
   it as an absolute.
 Scale the cost-weight shares to the real AWS figure from `GET /dashboard/costs`.
+- A remote MCP plugin (Stripe, 2026-09-22) made ~1% of consecutive requests rewrite the whole
+  history with the system prefix still cached (tools arrive after a spawn's first request and
+  flap mid-session — `deferred_tools_delta` attachments). Looked exactly like a TTL regression
+  because it landed the same evening; split by `version`/TTL and by plugin install time first.
