@@ -46,6 +46,7 @@ import { promisify } from 'node:util'
 import { join } from 'node:path'
 import { tmpdir, homedir } from 'node:os'
 import { AUTH_WHATSAPP_DIR } from './identity.js'
+import * as identity from './wa-identity.js'
 import { transcribeAudio } from './transcribe.js'
 import { encodeVoiceNote } from '../ring/voice.js'
 import { formatHistoryLine, formatTime, type HistoryEntry } from './wa-history.js'
@@ -185,18 +186,36 @@ export function ownIdentifiers(): string[] {
   return [jidDigits(sock?.user?.id), jidDigits(sock?.user?.lid)].filter((d): d is string => !!d)
 }
 
-/** The lid (digits) WhatsApp maps a phone number to, from the socket's
- *  persisted lid-mapping store — populated as AL sees the contact. Null when
- *  unknown or offline. */
+/** The lid (digits) WhatsApp maps a phone number to: the hub's own lid↔phone
+ *  map first, then the socket's store (which asks WhatsApp via USync for a
+ *  number it has never seen). Null when unknown or offline. */
 export async function lidForNumber(digits: string): Promise<string | null> {
+  const known = identity.lidForPn(digits)
+  if (known) return known
   const repo = sock?.signalRepository
   if (!repo || !digits) return null
   try {
-    const lid = await repo.lidMapping.getLIDForPN(`${digits}@s.whatsapp.net`)
-    return jidDigits(lid ?? undefined)
+    const lid = jidDigits((await repo.lidMapping.getLIDForPN(`${digits}@s.whatsapp.net`)) ?? undefined)
+    if (lid) identity.learnPair(lid, digits, 'usync')
+    return lid
   } catch {
     return null
   }
+}
+
+/** The identity module's last resort for a JID neither store has seen: a
+ *  phone-shaped id (≤13 digits) goes to USync, a lid to the local reverse
+ *  store. Capped at 3 s — this runs while a phone is ringing. */
+function installRemoteLookup(): void {
+  identity.setRemoteLookup(async (d) => {
+    const repo = sock?.signalRepository
+    if (!repo || !connected) return null
+    const ask = d.length <= 13
+      ? repo.lidMapping.getLIDForPN(`${d}@s.whatsapp.net`).then((lid) => ({ lid: jidDigits(lid ?? undefined), pn: d }))
+      : repo.lidMapping.getPNForLID(`${d}@lid`).then((pn) => ({ lid: d, pn: jidDigits(pn ?? undefined) }))
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000))
+    return Promise.race([ask, timeout])
+  })
 }
 
 export function getQrDataUrl(): string | null {
@@ -258,6 +277,16 @@ export async function startWhatsApp(cb: WhatsAppCallbacks): Promise<void> {
   sock.ev.on('creds.update', () => {
     saveCreds().catch((err) => console.error('[al/wa] saveCreds failed:', (err as Error)?.message))
   })
+
+  // Every pair Baileys learns (USync, a peer's message, history sync) reaches
+  // the hub's lid↔phone map as it happens — the store on disk dies with a
+  // logout, the map does not.
+  sock.ev.on('lid-mapping.update', ({ lid, pn }) => {
+    try { identity.learnPair(lid, pn, 'baileys-live') } catch (err) {
+      console.error('[al/wa] lid-mapping.update handler threw:', (err as Error)?.message)
+    }
+  })
+  installRemoteLookup()
 
   sock.ev.on('connection.update', (update) => {
     try {

@@ -42,8 +42,8 @@ export const WORKSPACE_DIR =
   process.env.AL_WORKSPACE_DIR ||
   join(homedir(), 'sync', 'brain', 'root', 'projects', 'al', 'workspace')
 
-/** Baileys auth state — owned by Console post-cutover. */
-export const AUTH_WHATSAPP_DIR = join(homedir(), '.config', 'console', 'auth_whatsapp')
+/** Baileys auth state — owned by Console post-cutover. Env override for tests. */
+export const AUTH_WHATSAPP_DIR = process.env.CONSOLE_AUTH_WHATSAPP_DIR || join(homedir(), '.config', 'console', 'auth_whatsapp')
 
 /** Persistent record of which Claude session is AL. */
 export const AL_SESSION_FILE = join(homedir(), '.config', 'console', 'al-session.json')

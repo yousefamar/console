@@ -147,6 +147,7 @@ import { setVoiceForkContext } from './al/voice-fork.js'
 import QRCode from 'qrcode'
 import { AL_NAME, isAlName } from './al/identity.js'
 import { loadUsers, refreshUsers, setUserNotifier, ensureUserKnown, resolveUsername, identifiersFor, normalize as normalizeJid } from './al/users.js'
+import { loadIdentityMap } from './al/wa-identity.js'
 import * as alWa from './al/whatsapp.js'
 import * as waHistory from './al/wa-history.js'
 import { routeInbound, startConversationForks, forkSummaries } from './al/conversation-forks.js'
@@ -2871,6 +2872,9 @@ httpServer.listen(port, host, () => {
     // safely rather than crashing.
     ;(async () => {
       try {
+        // The lid↔phone map first: users/*.md notes list one JID of a contact,
+        // the map supplies the other as the lookup is built.
+        loadIdentityMap()
         await loadUsers()
         setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
         const alSession = await ensureAlSession(agentCtx)

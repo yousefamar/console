@@ -29,7 +29,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import WebSocket from 'ws'
 import { WORKSPACE_DIR, readIfExists } from './identity.js'
-import { identifiersFor, normalize, parseFrontmatter, resolveUserFile, resolveUsername } from './users.js'
+import { identifiersFor, normalize, parseFrontmatter, refreshUsers, resolveUserLive, resolveUsername } from './users.js'
+import { pnForLid } from './wa-identity.js'
 import * as waHistory from './wa-history.js'
 import { buildCallEnvelope } from './voice-fork.js'
 
@@ -91,8 +92,11 @@ export interface CallerInfo {
 export async function lookupCaller(rawJid: string): Promise<CallerInfo> {
   const phone = normalize(rawJid)
   const jid = rawJid.includes('@') ? rawJid : `${phone}@s.whatsapp.net`
-  const user = resolveUsername(rawJid)
-  const file = resolveUserFile(rawJid)
+  // Live: a note edited a minute ago counts, and a caller whose note only
+  // lists their @lid is found through the lid↔phone map (Rebaz, 30 Sept 2026).
+  const entry = await resolveUserLive(rawJid)
+  const user = entry?.username ?? null
+  const file = entry?.filePath ?? null
   const content = file ? await readIfExists(file) : null
   const frontmatter = content ? parseFrontmatter(content, file ?? undefined) : {}
   const trust = typeof frontmatter.trust === 'string' ? frontmatter.trust : null
@@ -393,7 +397,11 @@ export function hasPriorChat(jidOrPhone: string): boolean {
   return waHistory.recentThread([jidOrPhone, ...ids], { limit: 1 }).length > 0
 }
 
-/** `to` may be a phone, a JID or a users/ slug. Returns a phone JID or null. */
+const isPhoneShaped = (id: string): boolean => /^\d{6,13}$/.test(id)
+
+/** `to` may be a phone, a JID or a users/ slug. Returns a phone JID or null.
+ *  A lid (given directly, or all a note lists) becomes the phone the lid↔phone
+ *  map ties it to — calls are placed to phone JIDs. */
 export function resolveCallTarget(to: string): string | null {
   const t = to.trim()
   if (!t) return null
@@ -401,16 +409,19 @@ export function resolveCallTarget(to: string): string | null {
     const phone = normalisePhone(t).replace(/^\+/, '')
     return phone ? `${phone}@s.whatsapp.net` : null
   }
-  if (t.includes('@')) return /^\d+@(s\.whatsapp\.net|lid)$/.test(t) ? t : null
-  // A users/<slug>: first phone-shaped identifier wins.
-  const slug = t.toLowerCase()
-  for (const id of identifiersFor(slug)) {
-    if (/^\d{6,15}$/.test(id) && id.length <= 13) return `${id}@s.whatsapp.net`
+  if (t.includes('@')) {
+    if (!/^\d+@(s\.whatsapp\.net|lid)$/.test(t)) return null
+    const pn = t.endsWith('@lid') ? pnForLid(t) : null
+    return pn ? `${pn}@s.whatsapp.net` : t
   }
-  return null
+  // A users/<slug>: first phone-shaped identifier wins, else a lid's phone.
+  const ids = identifiersFor(t.toLowerCase())
+  const phone = ids.find(isPhoneShaped) ?? ids.map((id) => pnForLid(id)).find((pn): pn is string => !!pn)
+  return phone ? `${phone}@s.whatsapp.net` : null
 }
 
 export async function requestOutboundCall(to: string, task: string, cfg = loadVoiceConfig()): Promise<{ ok: true; callId: string; to: string; displayName?: string } | { ok: false; status: number; error: string }> {
+  await refreshUsers()
   const jid = resolveCallTarget(to)
   if (!jid) return { ok: false, status: 400, error: `cannot resolve "${to}" to a WhatsApp number (phone, JID or users/ slug)` }
   if (!hasPriorChat(jid)) return { ok: false, status: 403, error: `refusing to call ${jid}: AL has no prior WhatsApp chat with this number (cold calls risk the account)` }

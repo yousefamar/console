@@ -36,6 +36,7 @@ import * as voice from '../al/voice.js'
 import * as voiceFork from '../al/voice-fork.js'
 import { record as recordHistory, amend as amendHistory, lastOutbound, findOutbound } from '../al/wa-history.js'
 import { resolveUsername } from '../al/users.js'
+import { alternateFor } from '../al/wa-identity.js'
 import { injectToAl } from '../al/al-session.js'
 import { WORKSPACE_DIR } from '../al/identity.js'
 import QRCode from 'qrcode'
@@ -374,6 +375,8 @@ export function handleAlRoutes(
 interface Contact {
   username: string
   identifiers: { whatsapp?: string[]; phone?: string[]; slack?: string[] }
+  /** The other half of each WhatsApp lid↔phone pair the note does not list yet. */
+  linked?: string[]
   filePath: string
 }
 
@@ -399,15 +402,17 @@ async function listContacts(query: string): Promise<Contact[]> {
       if (Array.isArray(v)) identifiers[key] = v
       else if (typeof v === 'string') identifiers[key] = [v]
     }
-    const contact: Contact = { username, identifiers, filePath }
+    const waIds = [...(identifiers.whatsapp ?? []), ...(identifiers.phone ?? [])]
+    const linked = [...new Set(waIds.map((id) => alternateFor(id)).filter((alt): alt is string => !!alt && !waIds.includes(alt)))]
+    const contact: Contact = { username, identifiers, ...(linked.length ? { linked } : {}), filePath }
     if (!query) {
       out.push(contact)
       continue
     }
     const haystack = [
       username,
-      ...(identifiers.whatsapp ?? []),
-      ...(identifiers.phone ?? []),
+      ...waIds,
+      ...linked,
       ...(identifiers.slack ?? []),
     ].join(' ').toLowerCase()
     if (haystack.includes(query)) out.push(contact)
