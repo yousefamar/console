@@ -10,7 +10,7 @@ import { topicMatches, type HubEvent } from '../events/types.js'
 import type { Session } from '../session.js'
 import type { HubMessage } from '../protocol.js'
 import type { PushMessage } from '../push.js'
-import { describeWake, findByClaudeSessionId, wakeOrQueue } from '../agents/wake.js'
+import { describeWake, findByClaudeSessionId, reapForkAfterTurn, wakeOrQueue } from '../agents/wake.js'
 import { ListenerStore } from './store.js'
 import { inWindow, nextWindowStart, parseDays, parseHours, parseWhere, whereMatches, pathGet, formatWhere } from './matcher.js'
 import { runShell, type ShellRunner } from './shell.js'
@@ -82,8 +82,6 @@ export interface TestResult {
 }
 
 const ONE_HOUR = 3_600_000
-const FORK_SETTLE_MS = 2_000
-const FORK_IDLE_CAP_MS = 30 * 60_000
 
 async function defaultPost(url: string, body: string, headers: Record<string, string>, method: string): Promise<{ ok: boolean; detail: string }> {
   const delays = [0, 2_000, 5_000]
@@ -768,39 +766,8 @@ export class ListenerEngine {
     const fork = this.ctx.spawnFork(source, l, model)
     if (!fork) return { ok: false, detail: `cannot fork ${source.name ?? source.id} — it has no claudeSessionId yet` }
     wakeOrQueue(fork, `${buildForkIdentity(fork, source, l)}\n\n${content}`, this.ctx.broadcast)
-    this.reapForkAfterTurn(l, fork)
+    reapForkAfterTurn(fork, { label: `[listeners] ${l.id} fork ${fork.name ?? fork.id}`, closeFork: this.ctx.closeFork, log: this.ctx.log })
     return { ok: true, detail: `forked → ${fork.name ?? fork.id}${model ? ` on ${model}` : ''} (of ${source.name ?? source.id})` }
-  }
-
-  /** Close the fork 2 s after its first `result`. A fork that raised the
-   *  attention marker asked for Yousef and stays; one silent for 30 min
-   *  (a permission prompt nobody answers) is left alive and logged, never
-   *  killed mid-work. */
-  private reapForkAfterTurn(l: Listener, fork: Session): void {
-    const label = `${l.id} fork ${fork.name ?? fork.id}`
-    let cap: ReturnType<typeof setTimeout> | undefined
-    const armCap = () => {
-      if (cap) clearTimeout(cap)
-      cap = setTimeout(() => {
-        fork.off('hub_message', onMsg)
-        this.ctx.log(`[listeners] ${label}: no result after ${FORK_IDLE_CAP_MS / 60_000} min idle — left alive, close it by hand`)
-      }, FORK_IDLE_CAP_MS)
-      cap.unref?.()
-    }
-    const onMsg = (m: HubMessage) => {
-      armCap()
-      if (m.type !== 'result') return
-      fork.off('hub_message', onMsg)
-      if (cap) clearTimeout(cap)
-      setTimeout(() => {
-        if (fork.status === 'ended') return
-        if (fork.needsAttention) { this.ctx.log(`[listeners] ${label}: asked for Yousef — left alive`); return }
-        this.ctx.closeFork!(fork)
-        this.ctx.log(`[listeners] ${label}: turn done ($${m.cost.toFixed(3)}) — closed`)
-      }, FORK_SETTLE_MS).unref?.()
-    }
-    armCap()
-    fork.on('hub_message', onMsg)
   }
 
   // ── skips / auto-disable (the cron policy) ─────────────────────────────

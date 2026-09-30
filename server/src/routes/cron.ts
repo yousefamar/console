@@ -68,6 +68,8 @@ export function handleCronRoutes(
           prompt: String(parsed.prompt ?? ''),
           recurring: parsed.recurring !== false,
           ...(parsed.guard ? { guard: String(parsed.guard) } : {}),
+          ...(parsed.fork ? { fork: true } : {}),
+          ...(parsed.model ? { model: String(parsed.model) } : {}),
         })
         json(res, 200, task)
       } catch (e) {

@@ -83,16 +83,21 @@ function isArn(id: string): boolean {
 
 /**
  * The CLI's own 1M opt-in suffix, appended to the profile ARN for models whose
- * native window is 1M. On Bedrock the CLI only BELIEVES a model is 1M when its
- * catalog flags `native_1m_3p.bedrock` (Sonnet 5 alone, as of 2.1.257) — Fable
- * and Opus ≥ 4.7 are catalogued 1M but downgraded to a 200k belief here, so
- * `get_context_usage` reported `maxTokens: 200000` for sessions genuinely
- * holding 600k+ (live-verified 2026-09-02: the deployment serves 1M, and the
- * CLI's autocompact fired at ~990k). `[1m]` short-circuits that gate
- * (`PL(e)`: `if (Xc(e)) return 1e6`); the CLI strips it before the request.
- * Spawn-verified against every 1M profile in the table.
+ * native window is 1M — now OFF by default (Yousef, 2026-09-30, ^spry-bear).
+ *
+ * On Bedrock the CLI only BELIEVES a model is 1M when its catalog flags
+ * `native_1m_3p.bedrock`; without the hint it believes 200k and its own
+ * autocompact fires at ~180k instead of ~990k. That belief is the lever the
+ * cost review reached for: with `[1m]` on (2 Sep → 30 Sep) 40 of 147 sessions in
+ * a week grew past 600k and 16 sat at the 1M ceiling, and every >65-min wake of
+ * such a session rewrote 500k–1M of cache at $20/MTok — cold rewrites were 54%
+ * of the bill, ≈$2.9k/wk of it above a ~150k cap (research/cost-review-2026-09-30.md §1).
+ * The deployment still serves 1M; the CLI just compacts before using it.
+ * Break-glass: `CONSOLE_CONTEXT_1M=1` in the hub env restores the hint
+ * fleet-wide (per-spawn read, no restart needed for the next spawn).
  */
 function withContextHint(profileArn: string, model: string): string {
+  if (process.env.CONSOLE_CONTEXT_1M !== '1') return profileArn
   return nativeContextWindow(model) === 1_000_000 ? `${profileArn}[1m]` : profileArn
 }
 

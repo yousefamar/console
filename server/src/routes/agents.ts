@@ -354,16 +354,18 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
   return session
 }
 
-/** A listener's `--fork` wake: the ticket-fork's FRESH mode, minus the board.
- *  Same cwd/project/lineage as `source` so CLAUDE.md, auto-memory and the
- *  sidebar nesting come for free; key `<sourceKey>-<listenerId>-fork`, no
- *  cache pin (one turn, then the engine closes it). The envelope must follow
- *  immediately — a pinned fresh spawn emits no init until its first message. */
-export function forkSessionForListener(ctx: AgentContext, source: Session, listenerId: string, model?: string | null): Session | null {
+/** A machine wake's `--fork` (listener or cron): the ticket-fork's FRESH mode,
+ *  minus the board. Same cwd/project/lineage as `source` so CLAUDE.md,
+ *  auto-memory and the sidebar nesting come for free; key
+ *  `<sourceKey>-<label>-fork`, no cache pin (one turn, then the caller's reap
+ *  closes it). The envelope must follow immediately — a pinned fresh spawn
+ *  emits no init until its first message. `label` is the rule's id
+ *  (`L6U0dVA`, `4E562Sg`); `kind` names it in the sidebar. */
+export function forkSessionForWake(ctx: AgentContext, source: Session, kind: 'Listener' | 'Cron', label: string, model?: string | null): Session | null {
   if (!source.claudeSessionId) return null
   const base = (source.name ?? 'agent').replace(/(\s*\(fork\))+$/, '')
-  const forkKey = mintAgentKey(ctx, `${source.agentKey ?? base} ${listenerId} fork`)
-  const title = `Listener ${listenerId} (fork)`
+  const forkKey = mintAgentKey(ctx, `${source.agentKey ?? base} ${label} fork`)
+  const title = `${kind} ${label} (fork)`
   const session = createSession(ctx, {
     prompt: '',
     cwd: source.cwd,
@@ -660,7 +662,7 @@ function captureNextTurn(ctx: AgentContext, session: Session, prompt: string, in
  *  that digest into the parent, then close the child. Parent = fork lineage
  *  (`parentClaudeSessionId`, same conversation ancestry) — the only hierarchy.
  *  A SUMMARY — not the transcript — keeps the parent's context clean. */
-export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000, opts: { request?: string; absorb?: 'wake' | 'queue' } = {}): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
+export async function mergeIntoParent(ctx: AgentContext, childSessionId: string, timeoutMs = 120_000, opts: { request?: string; absorb?: 'wake' | 'queue'; summary?: string } = {}): Promise<{ ok: boolean; error?: string; summary?: string; parentId?: string }> {
   const child = ctx.sessions.get(childSessionId)
   if (!child) return { ok: false, error: `session not found: ${childSessionId}` }
   if (child.status === 'running') return { ok: false, error: 'child is busy; wait for its current turn to finish, then merge' }
@@ -672,8 +674,11 @@ export async function mergeIntoParent(ctx: AgentContext, childSessionId: string,
 
   // `opts.request` lets a caller phrase the hand-back for its own kind of
   // fork (a voice call: finish promised follow-ups, then summarise).
+  // `opts.summary` skips the child's summary turn altogether — a silent board
+  // wind-down already holds the hand-back (the card's approved notes), and a
+  // parked fork rewrites its whole context to say the same thing again.
   const request = opts.request ?? buildMergeRequest(parent.name ?? 'your parent')
-  const summary = await captureNextTurn(ctx, child, request, timeoutMs)
+  const summary = opts.summary ?? await captureNextTurn(ctx, child, request, timeoutMs)
   if (!summary) return { ok: false, error: 'child produced no summary (timed out) — left alive so nothing is lost' }
 
   // 'queue' never steers a busy parent: the digest waits for its current

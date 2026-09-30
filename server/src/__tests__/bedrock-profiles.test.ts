@@ -41,24 +41,42 @@ describe('taggedModelId', () => {
     }
   })
 
-  it('appends the CLI [1m] hint for 1M-window models only', () => {
-    // On Bedrock the CLI downgrades Fable/Opus to a 200k belief (no
-    // `native_1m_3p.bedrock` in its catalog) unless the model string carries
-    // `[1m]` — without the suffix the context meter read 200k for sessions
-    // genuinely holding 600k+. Haiku is a real 200k model: no hint.
+  it('omits the CLI [1m] hint by default so autocompact fires at ~180k', () => {
+    // With the hint the CLI believed 1M and compacted at ~990k; sessions grew
+    // to the ceiling and every >65-min wake rewrote 500k-1M of cache
+    // (cost review 2026-09-30). Default is now the CLI's 200k belief.
     for (const id of [
       'us.anthropic.claude-opus-5',
       'us.anthropic.claude-fable-5-1',
-      'us.anthropic.claude-fable-5',
-      'us.anthropic.claude-opus-4-8',
-      'us.anthropic.claude-opus-4-7',
       'us.anthropic.claude-sonnet-5',
+      'us.anthropic.claude-haiku-4-5-20251001-v1:0',
     ]) {
-      expect(taggedModelId(id), id).toMatch(/\[1m\]$/)
+      expect(taggedModelId(id), id).not.toMatch(/\[1m\]$/)
     }
-    expect(taggedModelId('us.anthropic.claude-haiku-4-5-20251001-v1:0')).not.toMatch(/\[1m\]$/)
-    // The stale first-party pin form inherits the hint from its model too.
-    expect(taggedModelId('claude-opus-4-8')).toMatch(/\[1m\]$/)
+  })
+
+  it('CONSOLE_CONTEXT_1M=1 restores the hint for 1M-window models only', () => {
+    const prev = process.env.CONSOLE_CONTEXT_1M
+    process.env.CONSOLE_CONTEXT_1M = '1'
+    try {
+      for (const id of [
+        'us.anthropic.claude-opus-5',
+        'us.anthropic.claude-fable-5-1',
+        'us.anthropic.claude-fable-5',
+        'us.anthropic.claude-opus-4-8',
+        'us.anthropic.claude-opus-4-7',
+        'us.anthropic.claude-sonnet-5',
+      ]) {
+        expect(taggedModelId(id), id).toMatch(/\[1m\]$/)
+      }
+      // Haiku is a real 200k model: no hint even when opted in.
+      expect(taggedModelId('us.anthropic.claude-haiku-4-5-20251001-v1:0')).not.toMatch(/\[1m\]$/)
+      // The stale first-party pin form inherits the hint from its model too.
+      expect(taggedModelId('claude-opus-4-8')).toMatch(/\[1m\]$/)
+    } finally {
+      if (prev === undefined) delete process.env.CONSOLE_CONTEXT_1M
+      else process.env.CONSOLE_CONTEXT_1M = prev
+    }
   })
 
   it('translates the models the default Bedrock chain actually uses', () => {
@@ -152,12 +170,9 @@ describe('aliasProfileEnv', () => {
     ]) {
       expect(env[key], key).toMatch(ARN_RE)
     }
-    // 1M aliases carry the CLI hint so subagents/compaction see the real window;
-    // the Haiku-backed ones must not.
-    expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toMatch(/\[1m\]$/)
-    expect(env.ANTHROPIC_DEFAULT_FABLE_MODEL).toMatch(/\[1m\]$/)
-    expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).not.toMatch(/\[1m\]$/)
-    expect(env.ANTHROPIC_SMALL_FAST_MODEL).not.toMatch(/\[1m\]$/)
+    // No alias carries the 1M hint by default (see withContextHint); the
+    // Haiku-backed ones never do.
+    for (const key of Object.keys(env)) expect(env[key], key).not.toMatch(/\[1m\]$/)
   })
 
   it('omits keys whose model has no profile rather than emitting a bad id', () => {

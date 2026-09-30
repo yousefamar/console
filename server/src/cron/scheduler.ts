@@ -22,7 +22,7 @@ import { promisify } from 'node:util'
 import type { Session } from '../session.js'
 import type { HubMessage } from '../protocol.js'
 import type { PushMessage } from '../push.js'
-import { describeWake, wakeOrQueue } from '../agents/wake.js'
+import { describeWake, reapForkAfterTurn, wakeOrQueue } from '../agents/wake.js'
 
 const execFileP = promisify(execFile)
 
@@ -40,6 +40,15 @@ export interface HubCronTask {
    *  the token-free polling primitive: e.g. a script that diffs a URL and exits
    *  0 only on change. */
   guard?: string
+  /** `--fork`: each fire wakes a FRESH single-turn fork of the owning session
+   *  (same cwd/CLAUDE.md/auto-memory, none of its transcript) instead of the
+   *  session itself, and the fork is closed when its turn ends. The lever for
+   *  crons whose host sits at 500k–1M context: a wake there is a $10–20 cache
+   *  rewrite before any work; a fresh fork is ~$1 (cost review 2026-09-30 §5).
+   *  The owning session must still be live (it lends cwd, project, lineage). */
+  fork?: boolean
+  /** Model alias/id for the fork (`haiku` for a cheap check). Only with `fork`. */
+  model?: string
   createdAt: number
   lastFiredAt?: number
   /** Last time the guard ran (fired or skipped) — distinct from lastFiredAt,
@@ -102,6 +111,18 @@ function newId(): string {
   return randomBytes(5).toString('base64url').slice(0, 8)
 }
 
+/** What a `--fork` fire's fresh session must know about itself: it is a
+ *  throwaway fork of the cron's owner, its argv names its csid (twin-delivery
+ *  check, same as a ticket-fork), and it ends with this turn — so anything
+ *  durable goes on a card / `con event emit` / a notification, never only in
+ *  its own transcript. */
+export function buildCronForkIdentity(fork: Pick<Session, 'agentKey' | 'claudeSessionId'>, source: Pick<Session, 'name' | 'agentKey' | 'cwd'>, task: Pick<HubCronTask, 'id' | 'trigger'>): string {
+  return [
+    `[CRON FORK] You are a fresh, single-turn fork of "${source.name ?? source.agentKey ?? 'the owner'}"${source.agentKey ? ` (@${source.agentKey})` : ''} spawned by hub cron ${task.id} (trigger \`${task.trigger}\`) for the prompt below. Your agentKey is \`${fork.agentKey}\`; your claudeSessionId is \`${fork.claudeSessionId}\` (\`ps -o args= -p $PPID\` shows \`--session-id ${fork.claudeSessionId}\` — if it does not, this wake reached the wrong process: say so and stop).`,
+    `You have the owner's cwd, CLAUDE.md and auto-memory but NONE of its conversation. You are closed when this turn ends: put anything durable on a board card, in a file, in \`con event emit\`, or in a notification — never only in your own transcript. Do not remove or edit this cron (it is the owner's); if it should change, note that on a card.`,
+  ].join('\n')
+}
+
 export class HubCronScheduler {
   private state: State = { tasks: [], icsToken: '' }
   private jobs = new Map<string, Cron>()
@@ -116,6 +137,9 @@ export class HubCronScheduler {
     private broadcast: (msg: HubMessage) => void,
     private log: (m: string) => void = () => {},
     private notify: (msg: PushMessage) => void = () => {},
+    /** `--fork` plumbing: mint a fresh fork beside the owning session, and
+     *  close it after its turn. Absent (tests, early boot) → fork tasks skip. */
+    private forkHooks?: { spawnFork: (source: Session, task: HubCronTask) => Session | null; closeFork: (fork: Session) => void },
   ) {
     this.load()
   }
@@ -195,7 +219,7 @@ export class HubCronScheduler {
     return this.state.tasks.filter((t) => t.claudeSessionId === filter.claudeSessionId)
   }
 
-  add(input: { claudeSessionId: string; trigger: string; prompt: string; recurring: boolean; guard?: string }): HubCronTask {
+  add(input: { claudeSessionId: string; trigger: string; prompt: string; recurring: boolean; guard?: string; fork?: boolean; model?: string }): HubCronTask {
     if (!input.claudeSessionId) throw new Error('claudeSessionId is required')
     if (!input.prompt?.trim()) throw new Error('prompt is required')
     // Validate the trigger by attempting to construct a Cron — throws on bad input
@@ -209,6 +233,8 @@ export class HubCronScheduler {
       recurring: input.recurring,
       prompt: input.prompt,
       ...(input.guard?.trim() ? { guard: input.guard.trim() } : {}),
+      ...(input.fork ? { fork: true } : {}),
+      ...(input.fork && input.model?.trim() ? { model: input.model.trim() } : {}),
       createdAt: Date.now(),
       consecutiveSkips: 0,
     }
@@ -455,7 +481,18 @@ export class HubCronScheduler {
       : task.prompt
     delete task.guardOutput
 
-    task.lastOutcome = describeWake(wakeOrQueue(session, content, this.broadcast))
+    if (task.fork) {
+      // The host's context stays untouched — a fresh session at its cwd takes
+      // the prompt and is closed once its turn ends (same as a listener --fork).
+      if (!this.forkHooks) return this.recordSkip(task, 'fork wakes are not wired on this hub')
+      const fork = this.forkHooks.spawnFork(session, task)
+      if (!fork) return this.recordSkip(task, `cannot fork ${session.name ?? session.id} — it has no claudeSessionId yet`)
+      wakeOrQueue(fork, `${buildCronForkIdentity(fork, session, task)}\n\n${content}`, this.broadcast)
+      reapForkAfterTurn(fork, { label: `[cron] ${task.id} fork ${fork.name ?? fork.id}`, closeFork: this.forkHooks.closeFork, log: this.log })
+      task.lastOutcome = `forked → ${fork.name ?? fork.id}${task.model ? ` on ${task.model}` : ''}`
+    } else {
+      task.lastOutcome = describeWake(wakeOrQueue(session, content, this.broadcast))
+    }
 
     task.lastFiredAt = Date.now()
     task.consecutiveSkips = 0

@@ -813,9 +813,12 @@ export const COMMANDS: CommandDef[] = [
       once:    { type: 'boolean', description: 'Force one-shot even for cron expressions' },
       guard:   { type: 'string', description: 'Shell command run at each trigger; wake the agent only when it exits 0. Runs via bash -c in the session cwd, 60s cap. Its stdout is appended to the prompt.' },
       'guard-file': { type: 'string', description: 'Read the guard script from a file instead of --guard (for multi-line scripts).' },
+      fork:    { type: 'boolean', description: 'Each fire wakes a FRESH single-turn fork of the session (its cwd, CLAUDE.md, auto-memory — none of its transcript), closed after the turn. Use it whenever the owning session holds 500k+ of context: waking THAT rewrites the whole prompt ($10–20) before the check starts; a fork is ~$1. The owner must still be live.' },
+      model:   { type: 'string', description: 'With --fork: model alias/id for the fork (haiku for a cheap mechanical check).' },
     },
     examples: [
       'con cron add --session $UUID --trigger "*/5 * * * *" --prompt "check CI"',
+      'con cron add --session $UUID --trigger "0 7 * * *" --fork --model haiku --guard "bash ~/exec/usage-check.sh" --prompt "Daily usage check — the guard output above has the delta; note anything actionable on the board."',
       'con cron add --session $UUID --trigger "+30m" --prompt "remind me to push the release branch"',
       'con cron add --session $UUID --trigger "2026-05-04T09:00:00" --prompt "stand-up notes"',
       'con cron add --session $UUID --trigger "0 * * * *" --guard-file ~/exec/autscape-changed.sh --prompt "The Autscape schedule changed — summarise what is new vs the saved copy."',

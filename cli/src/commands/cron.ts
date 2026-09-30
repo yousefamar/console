@@ -15,6 +15,8 @@ interface HubCronTask {
   trigger: string
   recurring: boolean
   prompt: string
+  fork?: boolean
+  model?: string
   createdAt: number
   lastFiredAt?: number
   lastAttemptAt?: number
@@ -57,7 +59,7 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
   const opts = parseFlags(args)
   const claudeSessionId = String(opts.session ?? process.env.CONSOLE_CLAUDE_SESSION_ID ?? '')
   if (!claudeSessionId) {
-    exitWithError('USAGE', 'Usage: con cron add --session <claudeSessionId> --trigger "<cron-or-iso-or-+15m>" --prompt "<text>" [--once] [--guard "<shell cmd>" | --guard-file <path>]', flags); return
+    exitWithError('USAGE', 'Usage: con cron add --session <claudeSessionId> --trigger "<cron-or-iso-or-+15m>" --prompt "<text>" [--once] [--guard "<shell cmd>" | --guard-file <path>] [--fork [--model <alias>]]', flags); return
   }
   if (claudeSessionId.startsWith(HUB_SESSION_ID_PREFIX)) {
     exitWithError('USAGE', 'Use claudeSessionId (UUID) from `con agent list --json | jq \'.[].claudeSessionId\'`, not the hub session id.', flags); return
@@ -90,9 +92,18 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
     recurring = false
   }
 
+  // --fork: each fire wakes a FRESH single-turn fork of the session (its cwd,
+  // CLAUDE.md and auto-memory; none of its transcript), closed after the turn.
+  // The right shape for a cron whose owner holds 500k+ of context — waking the
+  // owner rewrites all of it ($10–20) before the check even starts; a fork is
+  // ~$1. --model pins the fork's model (haiku for a cheap mechanical check).
+  const fork = opts.fork === 'true'
+  const model = opts.model ? String(opts.model) : undefined
+  if (model && !fork) { exitWithError('USAGE', '--model only applies with --fork (the owning session keeps its own model)', flags); return }
+
   const task = await hubFetch<HubCronTask>('/cron', {
     method: 'POST',
-    body: { claudeSessionId, trigger, prompt, recurring, ...(guard ? { guard } : {}) },
+    body: { claudeSessionId, trigger, prompt, recurring, ...(guard ? { guard } : {}), ...(fork ? { fork: true } : {}), ...(model ? { model } : {}) },
   })
   output(task, flags)
   const streamed = guard && recurring ? streamedChannelHint(guard) : null

@@ -35,13 +35,14 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, forkSessionForListener, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths, boardDefaultOwner } from './kanban/board.js'
 import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, sessionCarriesBlockId, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
+import { probeSilentWindDown, summaryFromCardLines } from './kanban/winddown.js'
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
 import { ForkCostLedger, aggregate as aggregateForkCost } from './agents/fork-cost.js'
@@ -886,6 +887,12 @@ const cronScheduler = new HubCronScheduler(
   (msg) => broadcast(msg),
   (m) => log(m),
   (msg) => pushServer.broadcast(msg),
+  // `--fork` fires: a fresh single-turn fork beside the owner, closed after
+  // its turn — the same plumbing listeners use (agentCtx is bound by fire time).
+  {
+    spawnFork: (source, task) => forkSessionForWake(agentCtx, source, 'Cron', task.id, task.model),
+    closeFork: (fork) => closeSession(agentCtx, fork),
+  },
 )
 cronScheduler.start()
 
@@ -903,7 +910,7 @@ const listenerEngine = new ListenerEngine({
     const card = await boardOps.add(project, text, { column: opts.column, agentKey: opts.agentKey, top: true })
     return `"${card.text}" → ${card.column}`
   },
-  spawnFork: (source, l, model) => forkSessionForListener(agentCtx, source, l.id, model),
+  spawnFork: (source, l, model) => forkSessionForWake(agentCtx, source, 'Listener', l.id, model),
   closeFork: (fork) => closeSession(agentCtx, fork),
   lastFixAt: () => { const f = geofenceStore.lastFix(); return f ? f.tst * 1000 : undefined },
   log: (m) => log(m),
@@ -1136,6 +1143,32 @@ const boardWatcher = new BoardWatcher(noteStore, {
         return
       }
       const w = worker
+      // Silent first: a fork whose worktree is clean+merged (or never existed)
+      // has nothing left to do that the hub cannot do itself, and its
+      // hand-back is already on the card — fold that in and close it without
+      // resuming a parked 300–600k context (kanban/winddown.ts). Gated boards
+      // and anything not provably clean take the wake below. Live pref
+      // `boards.silentWindDown: false` restores the always-wake behaviour.
+      const trySilent = prefsStore.get<boolean>('boards.silentWindDown') !== false && !t.deployGate && w.status !== 'running'
+      if (trySilent) {
+        void probeSilentWindDown(w.cwd, t.blockId).then(async (probe) => {
+          if (probe.silent) {
+            const r = await mergeIntoParent(agentCtx, w.id, undefined, { absorb: 'queue', summary: summaryFromCardLines(t.text, t.lines) })
+            if (r.ok) {
+              broadcast({ type: 'session_merged', forkId: w.id, parentId: r.parentId!, summary: r.summary! })
+              log(`[boards] ^${t.blockId} wound down silently (${probe.reason}${probe.removed.length ? `; removed ${probe.removed.join(', ')}` : ''}): fork ${w.id} folded into ${r.parentId} without a wake`)
+              return
+            }
+            log(`[boards] ^${t.blockId} silent wind-down could not merge (${r.error}) — waking the fork instead`)
+          } else {
+            log(`[boards] ^${t.blockId} wind-down needs the fork (${probe.reason}) — waking it`)
+          }
+          wakeAndMerge()
+        })
+        return
+      }
+      wakeAndMerge()
+      function wakeAndMerge() {
       wakeSession(agentCtx, w, buildWindDownEnvelope({
         boardAbsPath: join(noteStore.vaultPath, t.boardPath),
         text: t.text, blockId: t.blockId, deployGate: t.deployGate,
@@ -1174,6 +1207,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       }
       armCap()
       w.on('hub_message', onMsg)
+      }
       return
     }
     // Under Review does NOT wake anyone: Yousef is the reviewer and sees it

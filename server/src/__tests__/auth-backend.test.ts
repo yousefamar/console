@@ -101,7 +101,9 @@ describe('presetEnv', () => {
     const once = computeSettingsWithBackend(current, 'bedrock')
     const twice = computeSettingsWithBackend(once, 'bedrock')
     expect((once.env as Record<string, string>).MY_KEY).toBe('keep')
-    expect((once.env as Record<string, string>).ANTHROPIC_DEFAULT_FABLE_MODEL).toMatch(/^arn:aws:bedrock:.*\[1m\]$/)
+    // The stale bare id is re-baked to the tagged ARN; no `[1m]` hint by default
+    // (bedrock-profiles.ts withContextHint — the 200k belief is the cost lever).
+    expect((once.env as Record<string, string>).ANTHROPIC_DEFAULT_FABLE_MODEL).toMatch(/^arn:aws:bedrock:[^[]*$/)
     expect(twice).toEqual(once)
   })
 
