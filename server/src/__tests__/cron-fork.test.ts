@@ -34,7 +34,7 @@ describe('cron --fork', () => {
     const owner = fakeSession('session_1', CSID, 'Astera general')
     const fork = fakeSession('session_9', '22222222-2222-2222-2222-222222222222', 'Cron abc (fork)')
     const closed: string[] = []
-    const spawnFork = vi.fn(() => fork)
+    const spawnFork = vi.fn((_source: unknown, _task: unknown) => fork)
     const s = new HubCronScheduler(join(dir, 'cron.json'), () => new Map([[owner.id, owner as never]]), () => {}, () => {}, () => {},
       { spawnFork: spawnFork as never, closeFork: (f) => closed.push((f as unknown as { id: string }).id) })
     const t = s.add({ claudeSessionId: CSID, trigger: '0 * * * *', prompt: 'daily usage check', recurring: true, fork: true, model: 'haiku', guard: 'echo DELTA; exit 0' })
@@ -91,5 +91,21 @@ describe('cron --fork', () => {
     expect(text).toContain('hub cron abc (trigger `0 7 * * *`)')
     expect(text).toContain('--session-id f0f0')
     expect(text).toContain('Do not remove or edit this cron')
+  })
+})
+
+describe('cron update (con cron edit)', () => {
+  it('flips fork/model in place without touching the schedule; --no-fork drops the model', () => {
+    const owner = fakeSession('session_1', CSID, 'Owner')
+    const s = new HubCronScheduler(join(dir, 'cron.json'), () => new Map([[owner.id, owner as never]]), () => {})
+    const t = s.add({ claudeSessionId: CSID, trigger: '0 7 * * *', prompt: 'p', recurring: true })
+    expect(s.update(t.id, { fork: true, model: 'haiku' })).toMatchObject({ id: t.id, fork: true, model: 'haiku', trigger: '0 7 * * *' })
+    expect(s.update(t.id, { model: 'sonnet' })).toMatchObject({ fork: true, model: 'sonnet' })
+    const back = s.update(t.id, { fork: false })!
+    expect(back.fork).toBeUndefined()
+    expect(back.model).toBeUndefined()
+    expect(s.update(t.id, { model: 'haiku' })!.model).toBeUndefined()   // model never sticks without fork
+    expect(s.update('nope', { fork: true })).toBeNull()
+    expect(owner.sent).toHaveLength(0)
   })
 })

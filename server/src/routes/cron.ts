@@ -154,6 +154,31 @@ export function handleCronRoutes(
       json(res, 200, { removed: scheduler.remove(id, { actor: actor ?? 'unknown', reason: force ? 'forced' : undefined }) })
       return true
     }
+    if (req.method === 'PATCH' && !verb) {
+      // Same ownership rule as DELETE (an agent edits only its own tasks
+      // unless ?force=1), but no owner wake: an edit removes nothing.
+      const actor = (req.headers['x-console-agent'] as string | undefined)?.trim() || undefined
+      const task = scheduler.get(id)
+      if (!task) { json(res, 404, { error: `no cron task ${id}` }); return true }
+      const force = url.searchParams.get('force') === '1'
+      if (actor && !force) {
+        const own = [...deps.getSessions().values()].some((s) => s.agentKey === actor && s.claudeSessionId === task.claudeSessionId)
+        if (!own) {
+          json(res, 403, { error: `task ${id} belongs to session "${nameForSession(task.claudeSessionId, deps)}", not to ${actor}. Pass --force (?force=1) only if you are certain.`, owner: task.claudeSessionId })
+          return true
+        }
+      }
+      readBody(req).then((body) => {
+        try {
+          const parsed = JSON.parse(body || '{}') as { fork?: boolean; model?: string | null }
+          const updated = scheduler.update(id, { ...(typeof parsed.fork === 'boolean' ? { fork: parsed.fork } : {}), ...(parsed.model !== undefined ? { model: parsed.model } : {}) })
+          json(res, 200, updated)
+        } catch (e) {
+          json(res, 400, { error: (e as Error).message })
+        }
+      }).catch((e) => json(res, 500, { error: (e as Error).message }))
+      return true
+    }
     if (req.method === 'POST' && verb === 'run') {
       void scheduler.runOnce(id).then((r) => json(res, 200, r)).catch((e) => json(res, 500, { error: (e as Error).message }))
       return true

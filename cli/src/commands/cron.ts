@@ -38,11 +38,12 @@ export async function cron(verb: string | undefined, args: string[], flags: Glob
     case 'rm':
     case 'delete':
       return removeCmd(args, flags)
+    case 'edit': return editCmd(args, flags)
     case 'run': return runCmd(args, flags)
     case 'upcoming': return upcomingCmd(args, flags)
     case 'ics-url': return icsUrlCmd(flags)
     default:
-      exitWithError('USAGE', `Unknown cron command: ${verb ?? ''}. Try: list, add, remove, run, upcoming, ics-url.`, flags)
+      exitWithError('USAGE', `Unknown cron command: ${verb ?? ''}. Try: list, add, edit, remove, run, upcoming, ics-url.`, flags)
   }
 }
 
@@ -108,6 +109,24 @@ async function addCmd(args: string[], flags: GlobalFlags): Promise<void> {
   output(task, flags)
   const streamed = guard && recurring ? streamedChannelHint(guard) : null
   if (streamed) info(`Hint: this guard polls ${streamed}, which the hub already streams as events — \`con listen add --on ${streamedTopic(streamed)} …\` reacts in seconds with no polling. See \`con help listen\`.`)
+}
+
+// con cron edit <id> --fork|--no-fork [--model <alias>] [--force] — flip a task's
+// wake shape in place. No owner wake (unlike remove + re-add), which matters
+// because the tasks worth converting are exactly the ones whose owner holds
+// 500k+ of context.
+async function editCmd(args: string[], flags: GlobalFlags): Promise<void> {
+  const opts = parseFlags(args)
+  const id = args.find((a) => !a.startsWith('--') && a !== 'true')
+  if (!id) { exitWithError('USAGE', 'Usage: con cron edit <task-id> --fork|--no-fork [--model <alias>] [--force]', flags); return }
+  const body: { fork?: boolean; model?: string | null } = {}
+  if (opts.fork === 'true') body.fork = true
+  if (opts['no-fork'] === 'true') { body.fork = false; body.model = null }
+  if (opts.model !== undefined) body.model = String(opts.model)
+  if (body.fork === undefined && body.model === undefined) { exitWithError('USAGE', 'Nothing to change: pass --fork, --no-fork and/or --model <alias>', flags); return }
+  const force = opts.force === 'true' ? '?force=1' : ''
+  const task = await hubFetch<HubCronTask>(`/cron/${encodeURIComponent(id)}${force}`, { method: 'PATCH', body })
+  output(task, flags)
 }
 
 /** A recurring guard that re-reads a channel the event bus carries is a listener in disguise. */

@@ -253,6 +253,25 @@ export class HubCronScheduler {
    *  whose prompt contained "merge") was invisible because nothing logged it.
    *  A removal by someone other than the owning session also wakes that
    *  session with a one-line notice, so the owner can re-register. */
+  /** Flip a task's wake shape in place (`fork` / `model`) — no reschedule, no
+   *  owner wake: converting a cron that fires into a 500k+ host to a fresh
+   *  fork must not itself cost that host a rewrite (remove + re-add would).
+   *  `model` only sticks with `fork`; `fork: false` drops the model too. */
+  update(id: string, patch: { fork?: boolean; model?: string | null }): HubCronTask | null {
+    const task = this.state.tasks.find((t) => t.id === id)
+    if (!task) return null
+    if (patch.fork !== undefined) {
+      if (patch.fork) task.fork = true
+      else { delete task.fork; delete task.model }
+    }
+    if (patch.model !== undefined) {
+      if (patch.model && task.fork) task.model = patch.model.trim()
+      else delete task.model
+    }
+    this.persistSync()
+    return task
+  }
+
   remove(id: string, opts: { actor?: string; reason?: string } = {}): boolean {
     const idx = this.state.tasks.findIndex((t) => t.id === id)
     if (idx === -1) return false
