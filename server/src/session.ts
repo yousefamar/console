@@ -57,6 +57,19 @@ function resolveAgentModel(): string {
 
 /** kill(): SIGTERM → SIGKILL if the subprocess is still alive after this. */
 const KILL_ESCALATE_MS = 5_000
+/** Agent processes (and every test run, build and dev server they spawn) run
+ *  at this nice so the hub, the voice path (wa-voice + al-voice-pipeline at
+ *  nice 0) and Yousef's desktop win under contention — on 30 Sept 2026 two
+ *  calls were unusable at load 16 from forks' test runs. Only matters when
+ *  cores are contended; agents share equally among themselves as before.
+ *  `CONSOLE_AGENT_NICE=0` disables. Raising nice needs no privilege; the
+ *  `nice` binary execs claude in place, so the pid is the claude process. */
+export function agentNice(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.CONSOLE_AGENT_NICE?.trim()
+  if (raw === undefined || raw === '') return 10
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 0 && n <= 19 ? n : 10
+}
 /** How many times a single session may auto-restart chasing a working model
  *  before giving up — guards against a restart loop if every model fails. */
 const MAX_MODEL_RESTARTS = 6
@@ -446,8 +459,10 @@ export class Session extends EventEmitter {
     }
 
     const cwd = this.cwd
+    const nice = agentNice()
+    const [bin, argv] = nice > 0 ? ['nice', ['-n', String(nice), 'claude', ...args]] : ['claude', args]
 
-    this.process = spawn('claude', args, {
+    this.process = spawn(bin, argv, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {

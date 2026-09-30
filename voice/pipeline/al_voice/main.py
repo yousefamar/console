@@ -44,27 +44,49 @@ def signal_frames(pcm: bytes, floor_dbfs: float = -50.0) -> int:
     return n
 
 
-def loopback_verdict(rep: dict[str, Any], pcm: bytes) -> tuple[bool, str | None]:
+ENCODE_BUDGET_MS = 60.0
+"""A frame is 60 ms of audio; the encoder must sustain less than that per frame."""
+LOOPBACK_RETRY_AFTER = 1.0
+LOOPBACK_REPORT_KEYS = (
+    "frames", "speechFrames", "encodedFrames", "meanSpeechPacket", "meanIdlePacket",
+    "encodeMsMean", "encodeMsP90", "encodeMsMax", "encodeMsMaxFrame", "encodeSlowFrames", "inputDbfs",
+)
+
+
+def loopback_verdict(rep: dict[str, Any], pcm: bytes) -> tuple[bool, str | None, str | None]:
     """Did the clip go through the sidecar's clock + encoder as a call would
-    send it? Every clip frame that carries signal must have come out of the
-    mic clock as signal (a spoken clip has quiet edges and pauses — those are
-    not missing frames), every tick's frame must have become a packet, and
-    encoding must be real-time. Packet SIZE is not judged: MLow is
-    content-adaptive (a pure tone codes smaller than the -60 dBFS floor)."""
+    send it? Returns (ok, why, check): `check` names the threshold that failed
+    (`clip`, `mic_clock`, `packets`, `encode_speed`) and `why` quotes the
+    threshold against what was measured. Every clip frame that carries signal
+    must have come out of the mic clock as signal (a spoken clip has quiet
+    edges and pauses — those are not missing frames), every tick's frame must
+    have become a packet, and encoding must be real-time SUSTAINED: the p90
+    per-frame encode time is judged, not the worst frame — one pre-empted
+    frame out of 47 (80 ms in call 00AB3AFC, load 3.4) is jitter a call rides
+    out, six late frames is a codec that cannot keep up. Packet SIZE is not
+    judged: MLow is content-adaptive (a pure tone codes smaller than the
+    -60 dBFS floor)."""
     expected = signal_frames(pcm)
     frames = int(rep.get("frames") or 0)
     speech = int(rep.get("speechFrames") or 0)
     encoded = int(rep.get("encodedFrames") or 0)
     encode_ms_max = float(rep.get("encodeMsMax") or 0)
+    # A sidecar from before the p90 report only knows the max.
+    encode_ms_p90 = float(rep["encodeMsP90"]) if rep.get("encodeMsP90") is not None else encode_ms_max
+    encode_ms_mean = float(rep.get("encodeMsMean") or 0)
     if expected == 0:
-        return False, "the probe clip itself is silent"
+        return False, "the probe clip itself is silent", "clip"
     if speech < expected - 1:
-        return False, f"only {speech} of the clip's {expected} signal frames came out of the mic clock"
+        return False, f"only {speech} of the clip's {expected} signal frames came out of the mic clock (threshold: all but one)", "mic_clock"
     if frames == 0 or encoded < frames:
-        return False, f"encoder produced packets for {encoded} of {frames} frames"
-    if encode_ms_max >= 60:
-        return False, f"encoder too slow for real time ({encode_ms_max:.0f} ms for one 60 ms frame)"
-    return True, None
+        return False, f"encoder produced packets for {encoded} of {frames} frames (threshold: every frame)", "packets"
+    if encode_ms_p90 >= ENCODE_BUDGET_MS:
+        return False, (
+            f"encoder too slow for real time: p90 {encode_ms_p90:.0f} ms per frame against the {ENCODE_BUDGET_MS:.0f} ms budget "
+            f"(mean {encode_ms_mean:.0f} ms, worst {encode_ms_max:.0f} ms at frame {rep.get('encodeMsMaxFrame', '?')}, "
+            f"{rep.get('encodeSlowFrames', '?')} of {frames} frames over budget)"
+        ), "encode_speed"
+    return True, None, None
 
 
 class CallManager:
@@ -131,27 +153,41 @@ class CallManager:
         """The pre-call audio loopback: the hold-on clip (Yousef's clone, the
         very PCM a call would send) through the sidecar socket, its mic clock
         and the MLow encoder, packet sizes back. Everything short of the
-        network. Cached 60 s unless `fresh`."""
+        network. Cached 60 s unless `fresh`. A failed ENCODE-SPEED verdict is
+        re-run once after `LOOPBACK_RETRY_AFTER` — a box under a burst of load
+        is a transient, the other checks are not."""
         now = time.monotonic()
         cached = self._loopback_probe
         if not fresh and cached and now - cached.get("_at", 0) < 60:
             return {k: v for k, v in cached.items() if not k.startswith("_")}
-        out: dict[str, Any] = {"ok": False, "ms": None, "error": None}
+        out: dict[str, Any] = {"ok": False, "ms": None, "error": None, "check": None, "attempts": 0}
         clip = self.clips.get("hold_on", "en")
         if clip is None:
-            out["error"] = "no hold_on.en clip to send"
+            out["error"], out["check"] = "no hold_on.en clip to send", "clip"
         elif not self.sidecar.connected:
-            out["error"] = "sidecar socket down"
+            out["error"], out["check"] = "sidecar socket down", "sidecar"
         else:
-            t0 = time.monotonic()
-            try:
-                rep = await self.sidecar.loopback(clip[1])
-                out["ms"] = int((time.monotonic() - t0) * 1000)
-                out.update({k: rep.get(k) for k in ("frames", "speechFrames", "encodedFrames", "meanSpeechPacket", "meanIdlePacket", "encodeMsMax", "inputDbfs")})
-                out["ok"], out["error"] = loopback_verdict(rep, clip[1])
-            except Exception as e:  # noqa: BLE001
-                out["ms"] = int((time.monotonic() - t0) * 1000)
-                out["error"] = f"loopback command: {e!r}"
+            for attempt in (1, 2):
+                out["attempts"] = attempt
+                t0 = time.monotonic()
+                try:
+                    rep = await self.sidecar.loopback(clip[1])
+                    out["ms"] = int((time.monotonic() - t0) * 1000)
+                    out.update({k: rep.get(k) for k in LOOPBACK_REPORT_KEYS})
+                    out["ok"], out["error"], out["check"] = loopback_verdict(rep, clip[1])
+                except Exception as e:  # noqa: BLE001
+                    out["ms"] = int((time.monotonic() - t0) * 1000)
+                    out["ok"], out["error"], out["check"] = False, f"loopback command: {e!r}", "sidecar"
+                if out["ok"] or out["check"] != "encode_speed" or attempt == 2:
+                    break
+                out["firstAttempt"] = out["error"]
+                logger.warning(f"audio loopback attempt 1 failed on encode speed ({out['error']}); retrying in {LOOPBACK_RETRY_AFTER} s")
+                await asyncio.sleep(LOOPBACK_RETRY_AFTER)
+            if out["ok"] and float(out.get("encodeMsMax") or 0) >= ENCODE_BUDGET_MS:
+                logger.warning(
+                    f"audio loopback passed with one stalled frame: {out['encodeMsMax']:.0f} ms at frame {out.get('encodeMsMaxFrame')} "
+                    f"(p90 {out.get('encodeMsP90')}, mean {out.get('encodeMsMean')}) — the box is being pre-empted"
+                )
         self._loopback_probe = {**out, "_at": now}
         if not out["ok"]:
             logger.warning(f"audio loopback FAILED: {out}")
@@ -189,7 +225,7 @@ class CallManager:
             raise HTTPException(503, "hub unreachable — the call's AL fork cannot be started")
         loop = await self.loopback_health(fresh=True)
         if not loop.get("ok"):
-            raise HTTPException(503, f"pre-call audio loopback failed: {loop.get('error')} — not dialling into a call nobody would hear")
+            raise HTTPException(503, f"pre-call audio loopback failed [{loop.get('check')}]: {loop.get('error')} — not dialling into a call nobody would hear")
         # Dial first: the sidecar mints the call id. The fork + pipeline then
         # warm up during the ring (typically 5-10 s).
         ack = await self.sidecar.call(jid)
@@ -265,9 +301,9 @@ class CallManager:
             return
         loop = await self.loopback_health(fresh=True)
         if not loop.get("ok"):
-            logger.error(f"[{call_id}] pre-call audio loopback failed ({loop.get('error')}) — rejecting {jid} rather than answering into silence")
+            logger.error(f"[{call_id}] pre-call audio loopback failed [{loop.get('check')}] ({loop.get('error')}) — rejecting {jid} rather than answering into silence")
             await self.sidecar.reject(call_id)
-            await self._report_unanswered(call_id, jid, "failed", f"PIPELINE SETUP FAILED: pre-call audio loopback: {loop.get('error')}")
+            await self._report_unanswered(call_id, jid, "failed", f"PIPELINE SETUP FAILED: pre-call audio loopback [{loop.get('check')}]: {loop.get('error')}")
             return
         try:
             sess = await self.hub.session(call_id, jid, "in")
@@ -424,9 +460,51 @@ def build_app(cfg: Config) -> FastAPI:
     return app
 
 
+def boost_priority() -> None:
+    """Run above the default CPU priority: at load 16 on 30 Sept 2026 (call
+    00817e79) the event loop's 2 s pickup watchdog fired at 10.5 s and no TTS
+    audio reached the wire in 28 s. `VOICE_PIPELINE_NICE` (default -10, `off`
+    to leave it). A negative nice needs RLIMIT_NICE headroom — pm2-amar.service
+    runs with `LimitNICE=0` — so a refusal is one warning naming the fix; the
+    hub meanwhile spawns agent sessions at nice +10, which is the same
+    ordering without privilege."""
+    import os
+    import resource
+
+    from .config import CONFIG_DIR, _read_env_file
+
+    raw = {**_read_env_file(CONFIG_DIR / "voice.env"), **os.environ}.get("VOICE_PIPELINE_NICE", "-10").strip()
+    if raw == "off":
+        return
+    try:
+        want = int(raw)
+    except ValueError:
+        logger.warning(f"VOICE_PIPELINE_NICE={raw!r} is not a nice value; using -10")
+        want = -10
+    if want >= 0:
+        return
+    soft, _hard = resource.getrlimit(resource.RLIMIT_NICE)
+    floor = 20 - min(max(soft, 0), 40)
+    target = max(want, floor)
+    if target >= 0:
+        logger.warning(
+            f"nice {want} refused: RLIMIT_NICE is {soft} (no nice below {floor}) — the pipeline runs at the default priority. "
+            "Fix: `LimitNICE=-15` on pm2-amar.service (drop-in + daemon-reload), or live: "
+            "`sudo prlimit --pid $(cat ~/.pm2/pm2.pid) --nice=35`; then `pm2 restart al-voice-pipeline`"
+        )
+        return
+    try:
+        os.setpriority(os.PRIO_PROCESS, 0, target)
+    except OSError as e:
+        logger.warning(f"setpriority(nice {target}) failed: {e}")
+        return
+    logger.info(f"process priority: nice {target}" + (f" (wanted {want}; RLIMIT_NICE caps it)" if target > want else ""))
+
+
 def cli() -> None:
     logger.remove()
     logger.add(sys.stderr, level="INFO", format="[al-voice] {time:HH:mm:ss.SSS} {level:<7} {message}")
+    boost_priority()
     cfg = Config.load()
     app = build_app(cfg)
     uvicorn.run(app, host=cfg.listen_host, port=cfg.listen_port, log_level="warning", access_log=False)

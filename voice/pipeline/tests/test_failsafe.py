@@ -266,14 +266,78 @@ def test_loopback_verdict():
     tone[-(16000 * 3 // 10):] = 0
     clip = tone.tobytes()
     assert signal_frames(clip) == 25
-    good = {"frames": 47, "speechFrames": 25, "encodedFrames": 47, "meanSpeechPacket": 80.0, "meanIdlePacket": 127.0, "encodeMsMax": 9.0}
-    assert loopback_verdict(good, clip) == (True, None), "quiet edges are not missing frames; packet sizes are not judged"
+    good = {
+        "frames": 47, "speechFrames": 25, "encodedFrames": 47, "meanSpeechPacket": 80.0, "meanIdlePacket": 127.0,
+        "encodeMsMean": 1.2, "encodeMsP90": 2.0, "encodeMsMax": 9.0, "encodeMsMaxFrame": 0, "encodeSlowFrames": 0,
+    }
+    assert loopback_verdict(good, clip) == (True, None, None), "quiet edges are not missing frames; packet sizes are not judged"
     assert loopback_verdict({**good, "speechFrames": 24}, clip)[0] is True, "one frame of tolerance for the padded last chunk"
-    ok, why = loopback_verdict({**good, "speechFrames": 12}, clip)
-    assert not ok and "only 12 of the clip's 25 signal frames" in why
-    ok, why = loopback_verdict({**good, "encodedFrames": 40}, clip)
-    assert not ok and "packets for 40 of 47" in why
-    ok, why = loopback_verdict({**good, "encodeMsMax": 75.0}, clip)
-    assert not ok and "too slow" in why
-    assert loopback_verdict({}, clip)[0] is False
-    assert loopback_verdict(good, b"\0" * 1920 * 10) == (False, "the probe clip itself is silent")
+    ok, why, check = loopback_verdict({**good, "speechFrames": 12}, clip)
+    assert not ok and check == "mic_clock" and "only 12 of the clip's 25 signal frames" in why and "threshold" in why
+    ok, why, check = loopback_verdict({**good, "encodedFrames": 40}, clip)
+    assert not ok and check == "packets" and "packets for 40 of 47" in why
+    # Call 00AB3AFC: one 80 ms frame in 47, the rest ~1 ms — jitter, not a slow encoder.
+    spike = {**good, "encodeMsMax": 79.7, "encodeMsMaxFrame": 12, "encodeSlowFrames": 1}
+    assert loopback_verdict(spike, clip) == (True, None, None), "the worst frame is reported, the p90 is judged"
+    ok, why, check = loopback_verdict({**spike, "encodeMsP90": 70.0, "encodeMsMean": 45.0, "encodeSlowFrames": 6}, clip)
+    assert not ok and check == "encode_speed"
+    assert "p90 70 ms" in why and "60 ms budget" in why and "worst 80 ms at frame 12" in why and "6 of 47 frames over budget" in why
+    # An older sidecar reports only the max: it stays the gate.
+    old = {k: v for k, v in good.items() if k in ("frames", "speechFrames", "encodedFrames", "encodeMsMax")}
+    assert loopback_verdict(old, clip)[0] is True
+    assert loopback_verdict({**old, "encodeMsMax": 75.0}, clip)[2] == "encode_speed"
+    assert loopback_verdict({}, clip)[2] == "mic_clock"
+    assert loopback_verdict(good, b"\0" * 1920 * 10) == (False, "the probe clip itself is silent", "clip")
+
+
+@pytest.mark.asyncio
+async def test_loopback_health_retries_once_on_encode_speed_only(monkeypatch):
+    from al_voice import main as m
+
+    monkeypatch.setattr(m, "LOOPBACK_RETRY_AFTER", 0.01)
+    clip = FakeClips(seconds=1.0).pcm
+    n = -(-len(clip) // 1920)
+
+    def report(**over):
+        return {"frames": n + 12, "speechFrames": n, "encodedFrames": n + 12, "encodeMsMean": 1.0, "encodeMsP90": 1.5,
+                "encodeMsMax": 3.0, "encodeMsMaxFrame": 0, "encodeSlowFrames": 0, **over}
+
+    class Sidecar:
+        connected = True
+
+        def __init__(self, replies):
+            self.replies, self.calls = list(replies), 0
+
+        async def loopback(self, pcm):
+            self.calls += 1
+            return self.replies.pop(0)
+
+    class Clips:
+        def get(self, name, lang):
+            return ("hold on", clip)
+
+    def manager(replies):
+        mgr = m.CallManager.__new__(m.CallManager)
+        mgr.sidecar, mgr.clips, mgr._loopback_probe = Sidecar(replies), Clips(), {}
+        return mgr
+
+    # Slow on the first run, fine on the second: the call goes ahead, the first verdict is kept for the record.
+    mgr = manager([report(encodeMsP90=72.0, encodeSlowFrames=7), report()])
+    out = await mgr.loopback_health(fresh=True)
+    assert out["ok"] is True and out["attempts"] == 2 and mgr.sidecar.calls == 2
+    assert "p90 72 ms" in out["firstAttempt"] and out["check"] is None
+
+    # Slow twice: refused, and the caller is told which threshold failed.
+    mgr = manager([report(encodeMsP90=72.0), report(encodeMsP90=65.0, encodeMsMean=61.0)])
+    out = await mgr.loopback_health(fresh=True)
+    assert out["ok"] is False and out["attempts"] == 2 and out["check"] == "encode_speed" and "p90 65 ms" in out["error"]
+
+    # A deterministic failure is not retried.
+    mgr = manager([report(speechFrames=3)])
+    out = await mgr.loopback_health(fresh=True)
+    assert out["ok"] is False and out["attempts"] == 1 and out["check"] == "mic_clock" and mgr.sidecar.calls == 1
+
+    # One stalled frame passes first time.
+    mgr = manager([report(encodeMsMax=80.0, encodeMsMaxFrame=12, encodeSlowFrames=1)])
+    out = await mgr.loopback_health(fresh=True)
+    assert out["ok"] is True and out["attempts"] == 1 and out["encodeMsMax"] == 80.0

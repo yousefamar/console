@@ -156,8 +156,19 @@ pub enum Event {
         mean_speech_packet: f32,
         #[serde(rename = "meanIdlePacket")]
         mean_idle_packet: f32,
+        /// Per-frame encode time: mean and p90 are what the encoder sustains
+        /// (the pipeline's real-time gate), max/maxFrame/slowFrames describe
+        /// the worst stall so a pre-empted frame can be told from a slow codec.
+        #[serde(rename = "encodeMsMean")]
+        encode_ms_mean: f32,
+        #[serde(rename = "encodeMsP90")]
+        encode_ms_p90: f32,
         #[serde(rename = "encodeMsMax")]
         encode_ms_max: f32,
+        #[serde(rename = "encodeMsMaxFrame")]
+        encode_ms_max_frame: usize,
+        #[serde(rename = "encodeSlowFrames")]
+        encode_slow_frames: usize,
         #[serde(rename = "inputDbfs")]
         input_dbfs: f32,
         #[serde(skip_serializing_if = "Option::is_none")]

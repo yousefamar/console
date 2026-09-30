@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { Session, setAgentModelResolver } from '../session.js'
+import { Session, agentNice, setAgentModelResolver } from '../session.js'
 import { ModelConfig } from '../model-config.js'
 import { taggedModelId } from '../bedrock-profiles.js'
 import { EventEmitter } from 'node:events'
@@ -74,6 +74,24 @@ beforeEach(() => {
   lastSpawnArgs = null
 })
 
+describe('agentNice', () => {
+  it('defaults to 10, honours CONSOLE_AGENT_NICE within 0..19, and 0 spawns claude directly', () => {
+    expect(agentNice({})).toBe(10)
+    expect(agentNice({ CONSOLE_AGENT_NICE: '5' })).toBe(5)
+    expect(agentNice({ CONSOLE_AGENT_NICE: '0' })).toBe(0)
+    expect(agentNice({ CONSOLE_AGENT_NICE: '-5' })).toBe(10)
+    expect(agentNice({ CONSOLE_AGENT_NICE: 'high' })).toBe(10)
+    process.env.CONSOLE_AGENT_NICE = '0'
+    try {
+      new Session({ prompt: 'x' })
+      expect(lastSpawnArgs!.command).toBe('claude')
+      expect(lastSpawnArgs!.args[0]).not.toBe('-n')
+    } finally {
+      delete process.env.CONSOLE_AGENT_NICE
+    }
+  })
+})
+
 // --------------------------------------------------------------------------
 // Tests
 // --------------------------------------------------------------------------
@@ -83,7 +101,10 @@ describe('Session spawn', () => {
     const session = new Session({ prompt: 'Fix the bug' })
 
     expect(lastSpawnArgs).not.toBeNull()
-    expect(lastSpawnArgs!.command).toBe('claude')
+    // Agents run under `nice` by default (agentNice) — the binary execs claude
+    // in place, so the pid is still the claude process.
+    expect(lastSpawnArgs!.command).toBe('nice')
+    expect(lastSpawnArgs!.args.slice(0, 3)).toEqual(['-n', '10', 'claude'])
     expect(lastSpawnArgs!.args).toContain('--output-format')
     expect(lastSpawnArgs!.args).toContain('stream-json')
     expect(lastSpawnArgs!.args).toContain('--input-format')

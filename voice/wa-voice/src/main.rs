@@ -6,7 +6,8 @@
 //! call slot. See `proto.rs` for the contract.
 //!
 //! Env: `WA_VOICE_PORT` (default 9878), `WA_VOICE_STORE_DIR`
-//! (default `~/.config/console/wa-voice`), `RUST_LOG`.
+//! (default `~/.config/console/wa-voice`), `WA_VOICE_NICE` (default -10;
+//! needs RLIMIT_NICE headroom), `RUST_LOG`.
 
 mod calls;
 mod proto;
@@ -55,8 +56,53 @@ fn load_voice_env() {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Run the whole process above the default CPU priority so a burst of test
+/// runs from Console forks cannot starve the 60 ms mic clock or the MLow
+/// encoder (call 00AB3AFC, 30 Sept: one frame took 80 ms under load 3.4).
+/// `WA_VOICE_NICE` (default -10, `off` to leave it). Every thread the runtime
+/// spawns afterwards inherits the value, so this must run before the runtime
+/// is built. A negative nice needs RLIMIT_NICE headroom (pm2-amar.service
+/// runs with `LimitNICE=0`): refused → one warning, default priority.
+fn boost_priority() {
+    let want: i32 = match std::env::var("WA_VOICE_NICE").ok().as_deref().map(str::trim) {
+        Some("off") => return,
+        Some(v) => match v.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                warn!("WA_VOICE_NICE={v:?} is not a nice value; using -10");
+                -10
+            }
+        },
+        None => -10,
+    };
+    if want >= 0 {
+        return;
+    }
+    let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: plain libc calls on this process, before any other thread exists.
+    let floor = if unsafe { libc::getrlimit(libc::RLIMIT_NICE, &mut lim) } == 0 { 20 - lim.rlim_cur.min(40) as i32 } else { 20 };
+    let target = want.max(floor);
+    if target >= 0 {
+        warn!(
+            "nice {want} refused: RLIMIT_NICE is {} (no nice below {floor}) — live audio runs at the default priority. \
+             Fix: `LimitNICE=-15` on pm2-amar.service (drop-in + daemon-reload), or live: \
+             `sudo prlimit --pid $(cat ~/.pm2/pm2.pid) --nice=35`; then `pm2 restart wa-voice`",
+            lim.rlim_cur
+        );
+        return;
+    }
+    if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, target) } != 0 {
+        warn!("setpriority(nice {target}) failed: {}", std::io::Error::last_os_error());
+        return;
+    }
+    if target > want {
+        warn!("process priority: nice {target} (wanted {want}; RLIMIT_NICE caps it)");
+    } else {
+        info!("process priority: nice {target}");
+    }
+}
+
+fn main() -> Result<()> {
     load_voice_env();
     env_logger::Builder::from_env(
         env_logger::Env::default().default_filter_or("info,webrtc_sctp=error,webrtc_dtls=error,rtc_dtls=error,rtc_sctp=error"),
@@ -66,7 +112,11 @@ async fn main() -> Result<()> {
         writeln!(buf, "[wa-voice] {:<5} {}", record.level(), record.args())
     })
     .init();
+    boost_priority();
+    tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(run())
+}
 
+async fn run() -> Result<()> {
     // Proof that voice.env loaded — /proc/…/environ can't show runtime set_var.
     let levers = calls::Levers::from_env();
     info!(

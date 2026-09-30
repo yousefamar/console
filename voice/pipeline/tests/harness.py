@@ -129,7 +129,8 @@ class FakeSidecar:
                 import base64
                 n = -(-len(base64.b64decode(cmd["pcm"])) // 1920)
                 await self.send({"ev": "loopback", "frames": n + 12, "speechFrames": n, "encodedFrames": n + 12, "encodedBytes": n * 160 + 12 * 80,
-                                 "meanSpeechPacket": 160.0, "meanIdlePacket": 80.0, "encodeMsMax": 0.9, "inputDbfs": -22.0, "id": cmd.get("id")})
+                                 "meanSpeechPacket": 160.0, "meanIdlePacket": 80.0, "encodeMsMean": 0.6, "encodeMsP90": 0.8, "encodeMsMax": 0.9,
+                                 "encodeMsMaxFrame": 0, "encodeSlowFrames": 0, "inputDbfs": -22.0, "id": cmd.get("id")})
 
     async def _accept_later(self):
         await asyncio.sleep(self.ring_secs)

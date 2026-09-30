@@ -431,8 +431,26 @@ pub struct LoopbackReport {
     pub encoded_bytes: usize,
     pub mean_speech_packet: f32,
     pub mean_idle_packet: f32,
+    pub encode_ms_mean: f32,
+    /// Nearest-rank 90th percentile of the per-frame encode time: what the
+    /// encoder sustains. One pre-empted frame moves `encode_ms_max`, not this.
+    pub encode_ms_p90: f32,
     pub encode_ms_max: f32,
+    /// Tick index of the slowest encode — 0 means the fresh encoder's first
+    /// frame (cold pages), anything else a stall mid-run.
+    pub encode_ms_max_frame: usize,
+    /// Frames whose encode took at least the 60 ms the frame itself lasts.
+    pub encode_slow_frames: usize,
     pub input_dbfs: f32,
+}
+
+/// Nearest-rank percentile of `sorted` (ascending); 0 for an empty slice.
+fn percentile(sorted: &[f32], pct: f32) -> f32 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let rank = ((pct / 100.0) * sorted.len() as f32).ceil() as usize;
+    sorted[rank.clamp(1, sorted.len()) - 1]
 }
 
 /// The pre-call self-test behind `Command::Loopback`: queue `pcm` exactly as
@@ -455,9 +473,9 @@ pub fn loopback(pcm: &[i16], levers: Levers) -> LoopbackReport {
     let mut buf = Vec::new();
     let (mut frames, mut speech_frames, mut encoded_bytes, mut encoded_frames) = (0usize, 0usize, 0usize, 0usize);
     let (mut speech_bytes, mut idle_frames, mut idle_bytes) = (0usize, 0usize, 0usize);
-    let mut encode_ms_max = 0f32;
     // Every input frame, then the pre-roll and the hangover, then a few idle ticks.
     let budget = input_frames + levers.preroll_frames + HANGOVER_TICKS + 4;
+    let mut encode_ms: Vec<f32> = Vec::with_capacity(budget);
     while frames < budget {
         let (frame, _events) = source.next_frame(&mut q);
         let t0 = Instant::now();
@@ -465,7 +483,7 @@ pub fn loopback(pcm: &[i16], levers: Levers) -> LoopbackReport {
         if enc.encode_i16_into(&frame, &mut buf).is_err() {
             break;
         }
-        encode_ms_max = encode_ms_max.max(t0.elapsed().as_secs_f32() * 1000.0);
+        encode_ms.push(t0.elapsed().as_secs_f32() * 1000.0);
         frames += 1;
         encoded_bytes += buf.len();
         if !buf.is_empty() {
@@ -479,6 +497,13 @@ pub fn loopback(pcm: &[i16], levers: Levers) -> LoopbackReport {
             idle_bytes += buf.len();
         }
     }
+    let (encode_ms_max_frame, encode_ms_max) = encode_ms
+        .iter()
+        .copied()
+        .enumerate()
+        .fold((0usize, 0f32), |best, (i, ms)| if ms > best.1 { (i, ms) } else { best });
+    let mut sorted = encode_ms.clone();
+    sorted.sort_by(f32::total_cmp);
     LoopbackReport {
         frames,
         speech_frames,
@@ -486,7 +511,11 @@ pub fn loopback(pcm: &[i16], levers: Levers) -> LoopbackReport {
         encoded_bytes,
         mean_speech_packet: if speech_frames > 0 { speech_bytes as f32 / speech_frames as f32 } else { 0.0 },
         mean_idle_packet: if idle_frames > 0 { idle_bytes as f32 / idle_frames as f32 } else { 0.0 },
+        encode_ms_mean: if encode_ms.is_empty() { 0.0 } else { encode_ms.iter().sum::<f32>() / encode_ms.len() as f32 },
+        encode_ms_p90: percentile(&sorted, 90.0),
         encode_ms_max,
+        encode_ms_max_frame,
+        encode_slow_frames: encode_ms.iter().filter(|&&ms| ms >= 60.0).count(),
         input_dbfs,
     }
 }
@@ -715,8 +744,9 @@ impl CallManager {
                 tokio::task::spawn_blocking(move || {
                     let r = loopback(&samples, levers);
                     info!(
-                        "loopback: {} frames, {} speech ({:.0} B mean) / idle {:.0} B mean, encode max {:.1} ms, input {:.1} dBFS",
-                        r.frames, r.speech_frames, r.mean_speech_packet, r.mean_idle_packet, r.encode_ms_max, r.input_dbfs
+                        "loopback: {} frames, {} speech ({:.0} B mean) / idle {:.0} B mean, encode mean {:.1} / p90 {:.1} / max {:.1} ms (frame {}, {} over 60 ms), input {:.1} dBFS",
+                        r.frames, r.speech_frames, r.mean_speech_packet, r.mean_idle_packet, r.encode_ms_mean, r.encode_ms_p90,
+                        r.encode_ms_max, r.encode_ms_max_frame, r.encode_slow_frames, r.input_dbfs
                     );
                     bcast.event(&Event::Loopback {
                         frames: r.frames,
@@ -725,7 +755,11 @@ impl CallManager {
                         encoded_bytes: r.encoded_bytes,
                         mean_speech_packet: r.mean_speech_packet,
                         mean_idle_packet: r.mean_idle_packet,
+                        encode_ms_mean: r.encode_ms_mean,
+                        encode_ms_p90: r.encode_ms_p90,
                         encode_ms_max: r.encode_ms_max,
+                        encode_ms_max_frame: r.encode_ms_max_frame,
+                        encode_slow_frames: r.encode_slow_frames,
                         input_dbfs: r.input_dbfs,
                         id,
                     });
@@ -1452,6 +1486,25 @@ mod tests {
     }
 
     #[test]
+    fn percentile_is_nearest_rank_and_one_outlier_moves_only_the_max() {
+        assert_eq!(percentile(&[], 90.0), 0.0);
+        assert_eq!(percentile(&[7.0], 90.0), 7.0);
+        // 47 frames at ~1 ms with one 80 ms stall (call 00AB3AFC): p90 stays at the floor.
+        let mut run: Vec<f32> = (0..46).map(|i| 1.0 + i as f32 * 0.01).collect();
+        run.push(80.0);
+        run.sort_by(f32::total_cmp);
+        assert!(percentile(&run, 90.0) < 2.0, "{}", percentile(&run, 90.0));
+        assert_eq!(percentile(&run, 100.0), 80.0);
+        // Six of 47 over budget = 13 % of ticks late: p90 crosses the line.
+        let mut late = run.clone();
+        for v in late.iter_mut().rev().take(6) {
+            *v = 70.0;
+        }
+        late.sort_by(f32::total_cmp);
+        assert!(percentile(&late, 90.0) >= 60.0);
+    }
+
+    #[test]
     fn loopback_encodes_every_input_frame_as_speech_sized_packets() {
         // 1 s of a 440 Hz tone at about -12 dBFS = 17 frames (the last one partial, padded).
         let n = 16_000;
@@ -1466,7 +1519,8 @@ mod tests {
         assert!(r.encoded_bytes > 0 && r.mean_speech_packet > 1.0, "{r:?}");
         // MLow is content-adaptive: a pure tone codes SMALLER than the -60 dBFS noise
         // floor (~80 B vs ~127 B here), so packet size says nothing about "speech".
-        assert!(r.encode_ms_max < 60.0, "real-time capable: {r:?}");
+        assert!(r.encode_ms_p90 < 60.0, "real-time capable: {r:?}");
+        assert!(r.encode_ms_p90 <= r.encode_ms_max && r.encode_ms_max_frame < r.frames, "{r:?}");
         assert!((r.input_dbfs + 15.0).abs() < 2.0, "{r:?}");
         // With a pre-roll the clock adds those frames too — they carry signal, so they count as speech.
         let with = Levers { dtx: false, idle_db: -60.0, preroll: Preroll::Noise, preroll_frames: 5, preroll_db: -30.0 };
