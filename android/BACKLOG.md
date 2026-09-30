@@ -42,6 +42,9 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+## Shipped
+
+### v106 (2026-09-30)
 - **Board: `spaces.hideBlocked` honoured on the phone** (^green-toad; SPA
   ^gold-ant a5b523d2). The SPA gained a hub-synced pref that hides `#blocked`
   cards on every board plus an `N blocked` / `N blocked hidden` toggle chip; the
@@ -69,8 +72,6 @@ view-mode hub-sync (Room meta is fine on one device).
   upsert from a wire shape that is a SUBSET of the entity — any Room field not
   in SessionInfo must be inherited, never defaulted. Test:
   `a list push keeps permissionMode and lastCachedIndex from the row it replaces`.
-
-## Shipped
 
 ### v105 (2026-09-22)
 - **A `/clear` on any client resets the phone's transcript cache** (^prim-tern
