@@ -37,7 +37,7 @@ vi.mock('../session.js', () => {
   return { Session: StubSession }
 })
 
-import { createSession, mintAgentKey, forkRoleSessionForTicket, wakeForkCompacted, type AgentContext } from '../routes/agents.js'
+import { createSession, mintAgentKey, forkRoleSessionForTicket, forkSessionForWake, wakeForkCompacted, type AgentContext } from '../routes/agents.js'
 import { buildForkCompactPrompt } from '../kanban/dispatch.js'
 
 function ctxOf(sessions: Map<string, unknown>): AgentContext {
@@ -103,6 +103,25 @@ describe('forkRoleSessionForTicket key shape', () => {
     const inherited = forkRoleSessionForTicket(ctx, source as never, 'odd-owl', null, { inherit: true }) as unknown as { opts: Record<string, unknown> }
     expect(inherited.opts).toMatchObject({ resume: 'c1', fork: true, forkContext: 'inherited', parentClaudeSessionId: 'c1', agentKey: 'console-general-odd-owl-fork' })
     expect(inherited.opts.pinSessionId).toBeUndefined()
+  })
+
+  it('ticket forks spawn as kind `fork`; a card #effort/<level> rides as the pin, junk is dropped (^busy-elk)', () => {
+    const sessions = new Map<string, unknown>()
+    const ctx = ctxOf(sessions)
+    const source = { id: 'src', name: 'Console general', agentKey: 'console-general', claudeSessionId: 'c1', cwd: '/v', project: 'console', status: 'idle' }
+    sessions.set('src', source)
+    const plain = forkRoleSessionForTicket(ctx, source as never, 'aa-bb') as unknown as { opts: Record<string, unknown> }
+    expect(plain.opts).toMatchObject({ spawnKind: 'fork', cacheTtl: '1h' })
+    expect(plain.opts.effort).toBeUndefined()
+    const pinned = forkRoleSessionForTicket(ctx, source as never, 'cc-dd', 'haiku', { effort: 'xhigh' }) as unknown as { opts: Record<string, unknown> }
+    expect(pinned.opts).toMatchObject({ spawnKind: 'fork', effort: 'xhigh', modelOverride: 'haiku' })
+    const junk = forkRoleSessionForTicket(ctx, source as never, 'ee-ff', null, { effort: 'turbo' }) as unknown as { opts: Record<string, unknown> }
+    expect(junk.opts.effort).toBeUndefined()
+    // Machine wakes: cron vs listener forks are distinct kinds (separately tunable).
+    const cron = forkSessionForWake(ctx, source as never, 'Cron', 'T1') as unknown as { opts: Record<string, unknown> }
+    expect(cron.opts).toMatchObject({ spawnKind: 'cronFork', pinSessionId: true, forkContext: 'fresh' })
+    const listener = forkSessionForWake(ctx, source as never, 'Listener', 'L1', 'haiku') as unknown as { opts: Record<string, unknown> }
+    expect(listener.opts).toMatchObject({ spawnKind: 'listenerFork', modelOverride: 'haiku' })
   })
 })
 

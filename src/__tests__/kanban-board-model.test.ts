@@ -7,10 +7,10 @@ import { MODEL_ALIASES, modelToken, parseBoard, parseCardTokens, refreshCardLine
 describe('client board port: model-pin shorthand', () => {
   it('bare #<alias> pins the model; other hashtags stay display tags', () => {
     expect(MODEL_ALIASES).toEqual(['opus', 'fable', 'sonnet', 'haiku'])
-    expect(parseCardTokens('Quick fix #sonnet @al ^ab12')).toMatchObject({ text: 'Quick fix', agentKey: 'al', blockId: 'ab12', model: 'sonnet' })
-    expect(parseCardTokens('Deep one #opus #inherit')).toMatchObject({ text: 'Deep one', inherit: true, model: 'opus' })
+    expect(parseCardTokens('Quick fix #sonnet @al ^ab12')).toMatchObject({ text: 'Quick fix', agentKey: 'al', blockId: 'ab12', model: 'sonnet', effort: null })
+    expect(parseCardTokens('Deep one #opus #inherit')).toMatchObject({ text: 'Deep one', inherit: true, model: 'opus', effort: null })
     expect(parseCardTokens('Explicit #model/haiku').model).toBe('haiku')
-    expect(parseCardTokens('Canadian tax lines #rfp')).toMatchObject({ text: 'Canadian tax lines #rfp', model: null })
+    expect(parseCardTokens('Canadian tax lines #rfp')).toMatchObject({ text: 'Canadian tax lines #rfp', model: null, effort: null })
     expect(splitTrailingTags(parseCardTokens('Canadian tax lines #rfp').text).tags).toEqual(['rfp'])
     expect(parseCardTokens('The #sonnet form is nicer here').model).toBe(null)
   })

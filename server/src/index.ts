@@ -26,6 +26,7 @@ import { FeedStore } from './feeds.js'
 import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
 import { reapStaleProcesses, StaleProcessSweeper, waitForExit } from './agents/process-reaper.js'
 import { CacheTtlLedger, setCacheTtlHooks, DEFAULT_RECENT_MINUTES } from './agents/cache-ttl.js'
+import { setEffortHooks } from './agents/effort.js'
 import { loadSessionHistory } from './history.js'
 import { discoverProjectDirs, listDirectories } from './projects.js'
 import { handleBookmarkRoutes } from './routes/bookmarks.js'
@@ -283,6 +284,13 @@ setCacheTtlHooks({
     log(`[cache] ${label}: prompt-cache TTL ${ttl} (${reason})`)
   },
   onUsage: (usage) => cacheTtlLedger.recordUsage(usage),
+})
+// Reasoning effort per spawn kind (agents/effort.ts): generals xhigh, throwaway
+// forks high. `cache.effort` pref overrides per kind without a restart; the
+// code defaults replace the old pm2 CLAUDE_EFFORT, which is no longer read.
+setEffortHooks({
+  policy: () => prefsStore.getAll()['cache.effort'],
+  onSpawn: (effort, kind, reason, label) => log(`[effort] ${label}: --effort ${effort} (${kind}, ${reason})`),
 })
 // Bedrock cost attribution: the chain stays bare, human-readable model ids, and
 // session.ts swaps in this owner's `owner`-tagged inference-profile ARN at the
@@ -1066,14 +1074,15 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // the session directly (trivial cards; Yousef's opt-OUT call — fork
     // stays the default).
     if (!isFork && live.claudeSessionId && !card.nofork) {
-      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model, { inherit })
-      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey} (${inherit ? 'inherited transcript' : 'fresh context'}${card.model ? `, model ${card.model}` : ''})`) }
+      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model, { inherit, effort: card.effort })
+      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey} (${inherit ? 'inherited transcript' : 'fresh context'}${card.model ? `, model ${card.model}` : ''}${card.effort ? `, effort ${card.effort}` : ''})`) }
     } else if (card.nofork) {
       log(`[boards] ^${card.blockId} #nofork — waking ${card.agentKey} directly`)
     }
     // `#model/…` only pins the ticket-FORK's spawn — a direct wake would
     // re-pin the session's whole model, leaking past the ticket.
     if (card.model && !forked) log(`[boards] ^${card.blockId} #model/${card.model} ignored — dispatch was a direct wake, not a fork`)
+    if (card.effort && !forked) log(`[boards] ^${card.blockId} #effort/${card.effort} ignored — dispatch was a direct wake, not a fork`)
     if (!worker) worker = live
     if (!worker) return false
     // Card image attachments (markdown-image detail lines → sibling assets
@@ -1279,7 +1288,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
     let worker: Session | null = null
     let forked = false
     if (!source.parentClaudeSessionId && source.claudeSessionId && !t.nofork) {
-      worker = forkRoleSessionForTicket(agentCtx, source, t.blockId, t.model, { inherit: t.inherit })
+      worker = forkRoleSessionForTicket(agentCtx, source, t.blockId, t.model, { inherit: t.inherit, effort: t.effort })
       if (worker) { forked = true; log(`[boards] ^${t.blockId} reopen re-forked ${source.agentKey} → ${worker.agentKey} (${t.inherit ? 'inherited transcript' : 'fresh context'})`) }
     }
     if (!worker) worker = source
@@ -2813,6 +2822,8 @@ httpServer.listen(port, host, () => {
             // Al predates the pin in al-session.ts — force it so a restored
             // manifest entry without one can't strand him on 5m.
             cacheTtl: entry.agentKey === 'al' ? '1h' : entry.cacheTtl,
+            spawnKind: entry.spawnKind,
+            effort: entry.effort,
             formerIds: [entry.hubId, ...(entry.formerHubIds ?? [])].filter((id): id is string => !!id),
             // The restore spawn of a mid-turn session is "being worked" for the
             // cache-TTL decision (the nudge below continues its turn).

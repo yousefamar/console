@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Session } from './session.js'
 import type { AttentionState } from './protocol.js'
+import type { Effort, SpawnKind } from './agents/effort.js'
 
 const MANIFEST_PATH = join(homedir(), '.claude', 'console-hub-sessions.json')
 const TMP_PATH = MANIFEST_PATH + '.tmp'
@@ -50,6 +51,10 @@ export interface ManifestEntry {
   /** Lifetime prompt-cache TTL pin (ticket forks = '1h') — survives a restart
    *  so the fork keeps its hour cache across the resume. */
   cacheTtl?: '5m' | '1h'
+  /** Spawn kind + lifetime `--effort` pin (agents/effort.ts) — a restored fork
+   *  must keep running at its kind's effort, not the generals' default. */
+  spawnKind?: SpawnKind
+  effort?: Effort
   /** A prompt queued for turn-end that hadn't flushed yet. Surviving a restart
    *  mid-turn is the reason the queue lives hub-side at all. */
   queuedMessage?: string
@@ -97,6 +102,8 @@ export function saveManifest(sessions: Map<string, Session>) {
       ...(session.messageLogLength > 0 ? { messageLogLength: session.messageLogLength } : {}),
       ...(session.modelOverride ? { modelOverride: session.modelOverride } : {}),
       ...(session.cacheTtlPin ? { cacheTtl: session.cacheTtlPin } : {}),
+      ...(session.spawnKind !== 'default' ? { spawnKind: session.spawnKind } : {}),
+      ...(session.effortPin ? { effort: session.effortPin } : {}),
       ...(session.queuedMessage ? { queuedMessage: session.queuedMessage } : {}),
     })
   }

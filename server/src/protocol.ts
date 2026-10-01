@@ -236,6 +236,11 @@ export interface SessionInfo {
    *  (agents/cache-ttl.ts). Absent before the first spawn / while hibernated. */
   cacheTtl?: '5m' | '1h'
   cacheTtlReason?: string
+  /** Spawn kind driving the effort policy (agents/effort.ts); absent = default. */
+  spawnKind?: string
+  /** `--effort` the current process runs on + why. Absent while hibernated. */
+  effort?: string
+  effortReason?: string
   messageLogLength?: number
   /** Present when the session is flagged for Yousef's attention (`@amar`). */
   needsAttention?: AttentionState | null

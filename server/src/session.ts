@@ -37,6 +37,7 @@ import { taggedModelId } from './bedrock-profiles.js'
 import { isTransientApiError, isUpstreamOutageError, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
+import { resolveEffort, effortHooks, type Effort, type EffortReason, type SpawnKind } from './agents/effort.js'
 
 let sessionCounter = 0
 
@@ -145,6 +146,12 @@ export interface SessionOptions {
    *  hour or more with think-gaps the 5m cache keeps lapsing across. Unset =
    *  the hub decides per spawn (agents/cache-ttl.ts). */
   cacheTtl?: CacheTtl
+  /** What this session is for — picks its `--effort` via the per-kind policy
+   *  (agents/effort.ts). Unset = 'default' (generals, Al, anything Yousef
+   *  types into). Fixed for life, persisted in the manifest. */
+  spawnKind?: SpawnKind
+  /** Lifetime `--effort` pin (card `#effort/<level>`) — beats the policy. */
+  effort?: Effort
   /** Restore-loop hint: the manifest said this session was mid-turn, so the
    *  restore spawn counts as "being worked" for the TTL decision even though
    *  the fresh instance has no activity yet. */
@@ -312,6 +319,8 @@ export class Session extends EventEmitter {
     this.areas = options.areas
     this.cwd = options.cwd || process.cwd()
     this.modelOverride = options.modelOverride
+    this.spawnKind = options.spawnKind ?? 'default'
+    this.effortPin = options.effort ?? null
     // Restore the absolute message-log high-water (see SessionOptions). The
     // in-memory log starts empty, so without this messageLogLength would report
     // 0 after a restart and every session's unread marker would be wiped. The
@@ -395,10 +404,14 @@ export class Session extends EventEmitter {
     this.cacheTtl = ttlChoice.ttl
     this.cacheTtlReason = ttlChoice.reason
     hooks.onSpawn?.(ttlChoice.ttl, ttlChoice.reason, this.name ?? this.id)
-    // Extended thinking moved from prompt-keywords to an explicit CLI flag in
-    // Claude Code 2.x — without --effort, no thinking blocks are ever emitted.
-    // Default to 'high' so "think hard" / "ultrathink" in prompts actually shows.
-    const effort = process.env.CLAUDE_EFFORT || 'high'
+    // Extended thinking is an explicit CLI flag in Claude Code 2.x — without
+    // --effort no thinking blocks are emitted. Per spawn KIND (agents/effort.ts):
+    // generals xhigh, throwaway forks high; a card `#effort/<level>` pins it.
+    const effortChoice = resolveEffort({ kind: this.spawnKind, pin: this.effortPin, policy: effortHooks().policy() })
+    const effort = effortChoice.effort
+    this.effort = effort
+    this.effortReason = effortChoice.reason
+    effortHooks().onSpawn?.(effort, effortChoice.kind, effortChoice.reason, this.name ?? this.id)
     // Per-session pin wins; else resolved from ModelConfig (runtime-configurable
     // + fallback chain). Record what we spawned with so a model-unavailable
     // failure reports the right id.
@@ -973,6 +986,12 @@ export class Session extends EventEmitter {
   cacheTtlReason: CacheTtlReason | null = null
   /** Lifetime pin from SessionOptions.cacheTtl (ticket forks). */
   cacheTtlPin: CacheTtl | null = null
+  /** See SessionOptions.spawnKind / effort. `effort` is what the current
+   *  process was spawned with (agents/effort.ts resolves kind + pin + pref). */
+  spawnKind: SpawnKind = 'default'
+  effortPin: Effort | null = null
+  effort: Effort | null = null
+  effortReason: EffortReason | null = null
   /** A fresh instance has no activity to judge by; flips on the first sendMessage. */
   private everActive = false
   /** Message that arrived during the hibernating window — sent after exit→wake. */
@@ -1222,6 +1241,9 @@ export class Session extends EventEmitter {
       modelOverride: this.modelOverride,
       cacheTtl: this.processAlive && this.cacheTtl ? this.cacheTtl : undefined,
       cacheTtlReason: this.processAlive && this.cacheTtlReason ? this.cacheTtlReason : undefined,
+      spawnKind: this.spawnKind === 'default' ? undefined : this.spawnKind,
+      effort: this.processAlive && this.effort ? this.effort : undefined,
+      effortReason: this.processAlive && this.effortReason ? this.effortReason : undefined,
       messageLogLength: this.messageLogLength,
       lastReadIndex: this.readPinned ? this.messageLogLength : getLastReadIndex(this.claudeSessionId),
       readPinned: this.readPinned || undefined,

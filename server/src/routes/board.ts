@@ -19,6 +19,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { BoardOps } from '../kanban/board-ops.js'
+import { EFFORTS, isEffort } from '../agents/effort.js'
 
 export interface BoardRedispatch {
   /** Resolve the card and re-fire dispatch for it (BoardWatcher.redispatch).
@@ -92,6 +93,13 @@ export function handleBoardRoutes(
       return true
     case 'model':
       run((b) => ops.setModel(project, String(b.card ?? ''), typeof b.model === 'string' && b.model.trim() ? b.model.trim() : null, actor))
+      return true
+    case 'effort':
+      run((b) => {
+        const effort = typeof b.effort === 'string' && b.effort.trim() ? b.effort.trim() : null
+        if (effort !== null && !isEffort(effort)) throw new Error(`effort must be one of ${EFFORTS.join(', ')} (or none)`)
+        return ops.setEffort(project, String(b.card ?? ''), effort, actor)
+      })
       return true
     case 'nofork':
       run((b) => ops.setNofork(project, String(b.card ?? ''), b.nofork !== false, actor))

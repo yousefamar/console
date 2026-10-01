@@ -43,7 +43,7 @@ const BOARD_FLAGS: Record<string, readonly string[]> = {
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   if (verb !== 'board') {
-    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|nofork|forkok|inherit|fresh|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
+    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|effort|nofork|forkok|inherit|fresh|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
     return
   }
   const project = args[0]
@@ -106,6 +106,12 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       const [card, model] = [pos[0], pos[1]]
       if (!card || !model) { exitWithError('USAGE', 'Usage: con spaces board <project> model "<card>" <model|none>   (alias like haiku/sonnet, or a full id; none clears)', flags); return }
       output(await hubFetch(`/board/${enc}/model`, { method: 'POST', body: { card, model: model === 'none' ? null : model } }), flags)
+      return
+    }
+    case 'effort': {
+      const [card, effort] = [pos[0], pos[1]]
+      if (!card || !effort) { exitWithError('USAGE', 'Usage: con spaces board <project> effort "<card>" <low|medium|high|xhigh|max|none>   (ticket-fork --effort pin; forks default to high, none clears)', flags); return }
+      output(await hubFetch(`/board/${enc}/effort`, { method: 'POST', body: { card, effort: effort === 'none' ? null : effort } }), flags)
       return
     }
     case 'owner': {

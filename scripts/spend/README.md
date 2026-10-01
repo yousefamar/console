@@ -21,6 +21,10 @@ context parts is proportional to each part's measured size in the prefix that re
 - `sessions.py`   — over an extract: top sessions by $ (reads/writes/output, avg+max context, model,
                      wake source, fork context) or `--by src|proj|model|effort|day|cwd` roll-ups;
                      names from the hub manifest + fork-cost.jsonl + the recall index
+- `effort.py`     — over an extract: output-token $ by session KIND (fork / cronFork / listenerFork /
+                     chatFork / default, inferred from the hub's wake envelopes) × `--effort`. The
+                     before/after check for the per-kind effort policy (^busy-elk): 22–28 Sep baseline
+                     = fork $453/wk (64% of requests), chatFork $13, default $237 — all xhigh.
 
 Gotchas that produced wrong answers the first time (2026-09-08 ^odd-toad, 2026-09-21 ^lime-kiwi):
 - Files' mtime says nothing about their lines' age: transcripts hold weeks of history, so

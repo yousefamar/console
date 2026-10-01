@@ -11,6 +11,7 @@ import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBa
 import { smallFastModel } from '../bedrock-profiles.js'
 import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { wouldCycle } from '../agents/lineage.js'
+import { isEffort } from '../agents/effort.js'
 import { isKanbanBoard } from '../kanban/board.js'
 import { spaceCwd, projectRepo } from '../spaces.js'
 import { buildReviewReminder, buildForkCompactPrompt, forkTitle, type ReviewCardRef } from '../kanban/dispatch.js'
@@ -290,7 +291,7 @@ export function findProjectBoard(vaultPath: string, slug: string): string | null
  *  claudeSessionId yet (pre-init) — caller falls back to waking the source
  *  directly. The ENVELOPE must be sent immediately after this returns:
  *  `claude --fork-session` emits no init until its first message. */
-export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string, model?: string | null, opts: { inherit?: boolean } = {}): Session | null {
+export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string, model?: string | null, opts: { inherit?: boolean; effort?: string | null } = {}): Session | null {
   if (!source.claudeSessionId) return null
   // Context mode (^tall-colt): FRESH by default — a new session at the
   // parent's cwd (CLAUDE.md + auto-memory arrive natively, the envelope
@@ -347,6 +348,10 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
     // Card `#model/<alias-or-id>` → per-fork model pin (a fast fix on haiku,
     // a cheap one on sonnet). Same plumbing as the session-status-bar pin.
     ...(model ? { modelOverride: model } : {}),
+    // Ticket forks run at the policy's `fork` effort (high); `#effort/<level>`
+    // on the card pins one that needs more.
+    spawnKind: 'fork',
+    ...(isEffort(opts.effort) ? { effort: opts.effort } : {}),
   })
   const created = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: title }
   session.logMessage(created)
@@ -378,6 +383,7 @@ export function forkSessionForWake(ctx: AgentContext, source: Session, kind: 'Li
     project: source.project,
     areas: source.areas,
     ...(model ? { modelOverride: model } : {}),
+    spawnKind: kind === 'Cron' ? 'cronFork' : 'listenerFork',
   })
   const created = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: title }
   session.logMessage(created)
@@ -1168,6 +1174,9 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         agentKey: forkAgentKey,
         project: sourceSession.project,
         areas: sourceSession.areas,
+        // A seeded fork is one Yousef opened from the SPA and will type into
+        // (default effort); seedless = `con agent chat`, agent-to-agent → high.
+        spawnKind: msg.seed ? 'default' : 'chatFork',
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: forkName }
       session.logMessage(createdMsg)

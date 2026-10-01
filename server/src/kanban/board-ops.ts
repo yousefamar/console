@@ -94,7 +94,7 @@ export interface ActorRecord {
   actor: string
   ts: number
   /** Which /board/* verb wrote this (absent on records from before ^shy-boar). */
-  op?: 'move' | 'assign' | 'block' | 'model' | 'nofork' | 'inherit' | 'note'
+  op?: 'move' | 'assign' | 'block' | 'model' | 'effort' | 'nofork' | 'inherit' | 'note'
   /** Target column of a `move`. */
   column?: string
 }
@@ -112,6 +112,8 @@ export interface CardView {
   inherit: boolean
   /** `#model/<alias>` (or bare `#haiku`/`#sonnet`/`#opus`/`#fable`) — ticket-fork model pin. */
   model: string | null
+  /** `#effort/<level>` — ticket-fork `--effort` pin. */
+  effort: string | null
   detail: string[]
   /** Set on a move into Under Review when the card carries no `- ` summary
    *  bullets — the CLI surfaces it to the agent at hand-back time. */
@@ -122,7 +124,7 @@ export interface CardView {
 function cardView(card: BoardCard, column: string): CardView {
   return {
     text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked,
-    nofork: card.nofork, inherit: card.inherit, model: card.model,
+    nofork: card.nofork, inherit: card.inherit, model: card.model, effort: card.effort,
     detail: card.lines.slice(1).map((l) => l.trim()).filter(Boolean),
   }
 }
@@ -136,7 +138,7 @@ function view(board: KanbanBoard): { defaultOwner: string | null; columns: Array
       title: col.title,
       cards: col.cards.map((c) => ({
         text: c.text, column: col.title, agentKey: c.agentKey, blockId: c.blockId,
-        blocked: c.blocked, checked: c.checked, nofork: c.nofork, inherit: c.inherit, model: c.model,
+        blocked: c.blocked, checked: c.checked, nofork: c.nofork, inherit: c.inherit, model: c.model, effort: c.effort,
         detail: c.lines.slice(1).map((l) => l.trim()).filter(Boolean),
       })),
     })),
@@ -249,7 +251,7 @@ export class BoardOps {
       })
       if (!card) throw new Error(`no column "${column}" on this board`)
       if (opts.detail?.length) card.lines.push(...opts.detail.flatMap(detailLines))
-      return { text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, inherit: card.inherit, model: card.model, detail: opts.detail ?? [] }
+      return { text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, inherit: card.inherit, model: card.model, effort: card.effort, detail: opts.detail ?? [] }
     })
   }
 
@@ -265,7 +267,7 @@ export class BoardOps {
       this.recordActor(path, card.blockId, actor, { op: 'move', column: target.title })
       const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
       const warning = REVIEW_COLUMN_RE.test(target.title) && !hasSummaryBullets(detail) ? handbackWarning(project, card.blockId) : undefined
-      return { text: card.text, column: target.title, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, inherit: card.inherit, model: card.model, detail, ...(warning ? { warning } : {}) }
+      return { text: card.text, column: target.title, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, inherit: card.inherit, model: card.model, effort: card.effort, detail, ...(warning ? { warning } : {}) }
     })
   }
 
@@ -299,6 +301,17 @@ export class BoardOps {
       hit.card.model = model
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor, { op: 'model' })
+      return cardView(hit.card, hit.ref.column)
+    })
+  }
+
+  setEffort(project: string, query: string, effort: string | null, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
+      const hit = findCardByQuery(board, query)
+      if ('error' in hit) throw new Error(hit.error)
+      hit.card.effort = effort
+      refreshCardLine(hit.card)
+      this.recordActor(path, hit.card.blockId, actor, { op: 'effort' })
       return cardView(hit.card, hit.ref.column)
     })
   }

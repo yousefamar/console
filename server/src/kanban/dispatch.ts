@@ -75,6 +75,7 @@ export interface InFlightCard {
    *  parent's transcript instead of fresh context + digest. */
   inherit: boolean
   model: string | null
+  effort: string | null
   /** Original card lines (text + indented notes) — a reopen re-dispatch sends
    *  the full envelope, and the accumulated notes ARE the handover. */
   lines: string[]
@@ -101,6 +102,7 @@ export function inFlightCards(board: KanbanBoard, opts: { boardInherit?: boolean
         nofork: card.nofork,
         inherit: card.inherit || boardInherit,
         model: card.model,
+        effort: card.effort,
         lines: card.lines,
       })
     }

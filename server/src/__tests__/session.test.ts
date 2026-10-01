@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { Session, agentNice, setAgentModelResolver } from '../session.js'
 import { ModelConfig } from '../model-config.js'
 import { taggedModelId } from '../bedrock-profiles.js'
+import { setEffortHooks } from '../agents/effort.js'
 import { EventEmitter } from 'node:events'
 import { Readable } from 'node:stream'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -790,6 +791,37 @@ describe('Session rich protocol', () => {
     const plain = new Session({ prompt: 'x' })
     expect(plain.claudeSessionId).toBeUndefined()
     expect(lastSpawnArgs!.args).not.toContain('--session-id')
+  })
+
+  it('--effort follows the spawn kind: default xhigh, throwaway forks high, card pin wins; pref flips it live (^busy-elk)', () => {
+    const effortOf = () => { const a = lastSpawnArgs!.args; return a[a.indexOf('--effort') + 1] }
+    const general = new Session({ prompt: 'x' })
+    expect(effortOf()).toBe('xhigh')
+    expect(general.spawnKind).toBe('default')
+    expect(general.getInfo()).toMatchObject({ effort: 'xhigh', effortReason: 'default' })
+    expect(general.getInfo().spawnKind).toBeUndefined()
+    for (const spawnKind of ['fork', 'cronFork', 'listenerFork', 'chatFork'] as const) {
+      const s = new Session({ prompt: '', silent: true, pinSessionId: true, forkContext: 'fresh', spawnKind })
+      expect(effortOf()).toBe('high')
+      expect(s.getInfo()).toMatchObject({ spawnKind, effort: 'high', effortReason: 'default' })
+    }
+    // A card `#effort/xhigh` pins the fork for life (manifest carries the pin).
+    const pinned = new Session({ prompt: '', silent: true, pinSessionId: true, spawnKind: 'fork', effort: 'xhigh' })
+    expect(effortOf()).toBe('xhigh')
+    expect(pinned.effortPin).toBe('xhigh')
+    expect(pinned.getInfo()).toMatchObject({ effort: 'xhigh', effortReason: 'pinned' })
+    // The `cache.effort` pref overrides a kind without a restart; the pin still wins.
+    setEffortHooks({ policy: () => ({ fork: 'medium', default: 'max' }) })
+    try {
+      new Session({ prompt: '', silent: true, pinSessionId: true, spawnKind: 'fork' })
+      expect(effortOf()).toBe('medium')
+      new Session({ prompt: 'x' })
+      expect(effortOf()).toBe('max')
+      new Session({ prompt: '', silent: true, pinSessionId: true, spawnKind: 'fork', effort: 'low' })
+      expect(effortOf()).toBe('low')
+    } finally {
+      setEffortHooks({ policy: () => undefined })
+    }
   })
 
   it('counts completed turns for the fork-cost ledger', async () => {
