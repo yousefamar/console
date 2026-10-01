@@ -8,7 +8,6 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import io.amar.console.ui.notes.prepareClip
 import io.amar.console.ui.notes.prepareImage
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +18,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -42,7 +40,6 @@ import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOff
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.Mic
@@ -76,7 +73,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -978,11 +974,12 @@ private fun BoardView(
                     }
                     val shown = BoardFilters.visibleCards(col, hideBlocked).filter { cardVisible(it) }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
+                        // No swipe-to-Done here: the pager scrolls horizontally too, so a
+                        // pan to reach the next column kept approving cards (^rare-tern).
+                        // Done is reached through the card sheet's column picker.
                         items(shown.size) { i ->
                             val card = shown[i]
-                            SwipeToDone(
-                                onDone = { scope.launch { spacesRepo.moveCard(slug, card, "Done") } },
-                            ) { CardChip(card, allSessions) { sheetCard = card } }
+                            CardChip(card, allSessions) { sheetCard = card }
                         }
                         if (doneCount > 0 && col === visibleCols.last()) {
                             item {
@@ -1561,47 +1558,6 @@ private fun AddCardSheet(column: String, onAdd: (String, (Boolean) -> Unit) -> U
             ) { Text(if (busy) "Adding…" else if (failed) "Retry" else "Add") }
             Spacer(Modifier.size(24.dp))
         }
-    }
-}
-
-/** Swipe-right = mark Done — the mobile analogue of the SPA's drag-to-Done
- *  mini track (^aka55s): the Done column is hidden from the pager, so this is
- *  the quick approval gesture. Drag past the threshold fires ONCE; a green
- *  check reveals behind the card as it slides. */
-@Composable
-private fun SwipeToDone(onDone: () -> Unit, content: @Composable () -> Unit) {
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val maxDragPx = with(density) { 96.dp.toPx() }
-    val triggerPx = with(density) { 72.dp.toPx() }
-    val offsetX = remember { androidx.compose.animation.core.Animatable(0f) }
-    val scope = rememberCoroutineScope()
-    var fired by remember { mutableStateOf(false) }
-    Box {
-        if (offsetX.value > 8f) {
-            Icon(
-                Icons.Filled.Check, contentDescription = "Mark Done",
-                tint = GREEN.copy(alpha = (offsetX.value / triggerPx).coerceIn(0f, 1f)),
-                modifier = Modifier.align(Alignment.CenterStart).padding(start = 14.dp).size(18.dp),
-            )
-        }
-        Box(
-            Modifier
-                .offset { androidx.compose.ui.unit.IntOffset(offsetX.value.toInt(), 0) }
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            if (offsetX.value >= triggerPx && !fired) { fired = true; onDone() }
-                            scope.launch {
-                                offsetX.animateTo(0f, androidx.compose.animation.core.tween(180))
-                                fired = false
-                            }
-                        },
-                    ) { _, dragAmount ->
-                        val next = (offsetX.value + dragAmount).coerceIn(0f, maxDragPx)
-                        scope.launch { offsetX.snapTo(next) }
-                    }
-                },
-        ) { content() }
     }
 }
 

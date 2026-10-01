@@ -52,6 +52,13 @@ view-mode hub-sync (Room meta is fine on one device).
   rotation/process death). The SPA was never affected: its `inboxFilter` lives in
   the unified-inbox store.
 
+- **Board: swipe-right-to-Done removed** (^rare-tern; Yousef 1 Oct: "too
+  risky to, on mobile, drag a card to mark it as done because dragging
+  horizontally is also for scrolling on the Kanban … I keep accidentally
+  marking cards as done"). The ^loud-duck `SwipeToDone` wrapper competed with
+  the paged `LazyRow` for every horizontal pan; cards are plain `CardChip`s
+  again and Done is reached only through the card sheet's column picker.
+
 ## Shipped
 
 ### v106 (2026-09-30)

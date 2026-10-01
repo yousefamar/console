@@ -17,7 +17,7 @@ import { usePref } from '@/prefs'
 import { useAgentStore, type SessionInfo } from '@/store/agent'
 import { useNotesStore } from '@/store/notes'
 import { useUiStore } from '@/store/ui'
-import { useIsMobile } from '@/hooks/useMediaQuery'
+import { useIsCoarsePointer, useIsMobile } from '@/hooks/useMediaQuery'
 import { useMicStore } from '@/store/mic'
 import { useCronStore } from '@/store/cron'
 import { useListenersStore } from '@/store/listeners'
@@ -1211,6 +1211,10 @@ function BoardView() {
   // dataTransfer — same-window drag, and Chrome hides the payload until drop).
   const [dragging, setDragging] = useState<CardRef | null>(null)
   const [dragOverCol, setDragOverCol] = useState<string | null>(null)
+  // On touch, a horizontal pan to scroll the columns doubles as a long-press
+  // drag and lands cards in Done by accident — cards move via the detail
+  // modal's column picker there instead.
+  const canDrag = !useIsCoarsePointer()
   const addCardWithDetail = async (column: string, text: string, detail: string[]) => {
     await addCardTo(column, text)
     // The fresh card lands on TOP (newest-first) — stamp its detail lines in.
@@ -1399,6 +1403,7 @@ function BoardView() {
                     else setAssignTarget({ ref: { column: col.title, index }, card })
                   }}
                   onOpen={() => setDetailTarget({ ref: { column: col.title, index }, card })}
+                  draggable={canDrag}
                   onDragStart={() => setDragging({ column: col.title, index })}
                   onDragEnd={() => { setDragging(null); setDragOverCol(null) }}
                 />
@@ -1412,7 +1417,7 @@ function BoardView() {
           visible rail at the right edge that wakes up while dragging. */}
       {(() => {
         const doneCol = board.columns.find((c) => /^(done|complete|completed|shipped)$/i.test(c.title))
-        if (!doneCol) return null
+        if (!doneCol || !canDrag) return null
         const over = dragOverCol === doneCol.title
         return (
           <div
@@ -2023,7 +2028,7 @@ const ASSIGNEE_CHIP: Record<AssigneeState, string> = {
   idle: 'bg-violet-500/15 text-violet-400 hover:bg-violet-500/25',
 }
 
-function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpen, onDragStart, onDragEnd }: {
+function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpen, draggable, onDragStart, onDragEnd }: {
   card: BoardCard
   /** Human label for the assignee badge (live session name / role title —
    *  fork keys like `console-general-bold-fox-fork` are unreadable raw). */
@@ -2032,6 +2037,7 @@ function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpe
   onAssign: () => void
   /** Open the detail modal (single click on the card body). */
   onOpen: () => void
+  draggable: boolean
   onDragStart: () => void
   onDragEnd: () => void
 }) {
@@ -2048,11 +2054,12 @@ function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpe
   // one zero-navigation affordance.
   return (
     <div
-      draggable
+      draggable={draggable}
       onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; onDragStart() }}
       onDragEnd={onDragEnd}
       className={clsx(
-        'group cursor-grab rounded-sm border bg-surface-0 px-2 py-1.5 transition-colors hover:border-text-tertiary/40 active:cursor-grabbing',
+        'group rounded-sm border bg-surface-0 px-2 py-1.5 transition-colors hover:border-text-tertiary/40',
+        draggable && 'cursor-grab active:cursor-grabbing',
         card.blocked ? 'border-red-500/50' : 'border-border',
         card.checked && 'opacity-50',
       )}
