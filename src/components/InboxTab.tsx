@@ -32,6 +32,7 @@ import { FeedItemView } from './FeedItemView'
 import { InboxDayRail } from './InboxDayRail'
 import { InboxPinnedChats } from './InboxPinnedChats'
 import { NetworkIcon } from './ChatRoomListItem'
+import { RoomIdContextMenu } from './RoomContextMenu'
 import { relativeTime } from '@/utils/date'
 import { blockedCardsFor, feedKindsPresent, reviewHandbacksFor, routeForFeed, type BlockedCard, type ReviewHandback } from '@/inbox/route'
 import { InboxCardModal } from '@/components/InboxCardModal'
@@ -509,7 +510,7 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
   onClick: () => void
 }) {
   const promote = item.route === 'feed'
-  return (
+  const row = (
     <div
       onClick={onClick}
       className={`group w-full text-left px-3 py-1.5 border-b border-border/50 transition-colors duration-fast cursor-pointer ${
@@ -565,6 +566,8 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
       </div>
     </div>
   )
+  if (item.source === 'chat') return <RoomIdContextMenu roomId={item.sourceId}>{row}</RoomIdContextMenu>
+  return row
 })
 
 /** Row-button unsnooze: same path as `e` in the snoozed view. */

@@ -1,16 +1,15 @@
-import { memo, useCallback, useMemo } from 'react'
+import { memo, useCallback } from 'react'
 import clsx from 'clsx'
 import { relativeTime } from '@/utils/date'
 import type { DbChatRoom } from '@/matrix/types'
 import { Check, Clock, MessageCircle, Pin } from 'lucide-react'
 import { FaWhatsapp, FaSlack, FaDiscord, FaInstagram, FaTelegram, FaLinkedin, FaFacebook, FaTwitter } from 'react-icons/fa'
 import { SiGooglemessages, SiImessage, SiX, SiGooglechat, SiSignal } from 'react-icons/si'
-import { mxcToThumbnail, getRoomState, setRoomTag, removeRoomTag, setRoomMuted } from '@/matrix/api'
-import { ContextMenu, type ContextMenuItem } from './ContextMenu'
+import { mxcToThumbnail } from '@/matrix/api'
+import { RoomContextMenu } from './RoomContextMenu'
 import { SwipeableRow } from './SwipeableRow'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useChatStore } from '@/store/chat'
-import { db } from '@/db'
 
 interface ChatRoomListItemProps {
   room: DbChatRoom
@@ -53,75 +52,6 @@ function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoom
   const handleMarkRead = useCallback(() => {
     useChatStore.getState().markRoomRead(room.id)
   }, [room.id])
-
-  const handleReload = useCallback(async () => {
-    // Delete everything EXCEPT deleted messages that still carry a body.
-    // Their text is irreplaceable — the server stripped the content on
-    // redaction, so re-pagination returns only an empty tombstone. Blindly
-    // wiping them turns recoverable struck-through text into "Message
-    // deleted" permanently (the bug that ate Katie's "back garden" message).
-    const stale = await db.chatMessages
-      .where('roomId').equals(room.id)
-      .filter((m) => !(m.isDeleted && !!m.body))
-      .primaryKeys()
-    await db.chatMessages.bulkDelete(stale as string[])
-    await db.chatRooms.update(room.id, { prevBatch: undefined })
-    try {
-      const state = await getRoomState(room.id)
-      const nameEvent = state.find((e) => e.type === 'm.room.name' && e.state_key === '')
-      if (nameEvent?.content?.name) {
-        await db.chatRooms.update(room.id, { name: nameEvent.content.name as string })
-      }
-    } catch { /* best effort */ }
-    const { useChatStore } = await import('@/store/chat')
-    await useChatStore.getState().ensureMessages(room.id)
-  }, [room.id])
-
-  // Optimistic tag/mute toggles — flip the local IDB row immediately so the
-  // UI reacts without waiting for the round-trip, then fire the hub call.
-  // Matrix sync replays account_data / push_rules back authoritatively
-  // within the next tick, so any divergence is self-healing.
-  const isPinned = room.tags?.includes('m.favourite') ?? false
-  const isLow = room.isLowPriority
-  const isMuted = room.isMuted
-
-  const togglePin = useCallback(async () => {
-    const next = !isPinned
-    const nextTags = next
-      ? Array.from(new Set([...(room.tags ?? []), 'm.favourite']))
-      : (room.tags ?? []).filter((t) => t !== 'm.favourite')
-    await db.chatRooms.update(room.id, { tags: nextTags })
-    try {
-      if (next) await setRoomTag(room.id, 'm.favourite')
-      else await removeRoomTag(room.id, 'm.favourite')
-    } catch { /* sync will reconcile */ }
-  }, [isPinned, room.id, room.tags])
-
-  const toggleLowPriority = useCallback(async () => {
-    const next = !isLow
-    const baseTags = (room.tags ?? []).filter((t) => t !== 'm.lowpriority')
-    const nextTags = next ? [...baseTags, 'm.lowpriority'] : baseTags
-    await db.chatRooms.update(room.id, { tags: nextTags, isLowPriority: next })
-    try {
-      if (next) await setRoomTag(room.id, 'm.lowpriority')
-      else await removeRoomTag(room.id, 'm.lowpriority')
-    } catch { /* sync will reconcile */ }
-  }, [isLow, room.id, room.tags])
-
-  const toggleMute = useCallback(async () => {
-    const next = !isMuted
-    await db.chatRooms.update(room.id, { isMuted: next })
-    try {
-      await setRoomMuted(room.id, next)
-    } catch { /* sync will reconcile */ }
-  }, [isMuted, room.id])
-
-  const menuItems = useMemo<ContextMenuItem[]>(() => [
-    { label: isPinned ? 'Unpin' : 'Pin', onClick: togglePin },
-    { label: isMuted ? 'Unmute' : 'Mute', onClick: toggleMute },
-    { label: isLow ? 'Restore to inbox' : 'Demote to low priority', onClick: toggleLowPriority },
-    { label: 'Reload room', onClick: handleReload },
-  ], [isPinned, isMuted, isLow, togglePin, toggleMute, toggleLowPriority, handleReload])
 
   const button = (
     <button
@@ -204,7 +134,7 @@ function ChatRoomListItemInner({ room, isSelected, onSelect, snoozed }: ChatRoom
     </SwipeableRow>
   ) : button
 
-  return <ContextMenu items={menuItems}>{content}</ContextMenu>
+  return <RoomContextMenu room={room}>{content}</RoomContextMenu>
 }
 
 export const ChatRoomListItem = memo(ChatRoomListItemInner)

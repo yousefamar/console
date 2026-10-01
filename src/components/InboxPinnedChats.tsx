@@ -13,6 +13,7 @@ import { mxcToThumbnail } from '@/matrix/api'
 import { roomToItem } from '@/inbox/route'
 import { useUnifiedInboxStore } from '@/store/unified-inbox'
 import { NetworkIcon } from './ChatRoomListItem'
+import { RoomContextMenu } from './RoomContextMenu'
 import type { DbChatRoom } from '@/matrix/types'
 
 export const InboxPinnedChats = memo(function InboxPinnedChats() {
@@ -34,7 +35,9 @@ export const InboxPinnedChats = memo(function InboxPinnedChats() {
   return (
     <div className="flex gap-2 overflow-x-auto border-b border-border px-3 py-1.5 [scrollbar-width:none]">
       {sorted.map((room) => (
-        <PinnedAvatar key={room.id} room={room} selected={`chat:${room.id}` === selectedKey} onClick={() => open(room)} />
+        <RoomContextMenu key={room.id} room={room} className="flex-shrink-0">
+          <PinnedAvatar room={room} selected={`chat:${room.id}` === selectedKey} onClick={() => open(room)} />
+        </RoomContextMenu>
       ))}
     </div>
   )
