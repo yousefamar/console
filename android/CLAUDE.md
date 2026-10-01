@@ -276,6 +276,11 @@ while the app is foregrounded (plus short background borrows), so a remote
 - `DateTimeFormatter.ofPattern("MMM", Locale.UK)` renders September as "Sept"
   (JDK 17+ CLDR en-GB); use `Locale.ENGLISH` for 3-letter months and keep
   day-before-month order in the pattern (`MoneyFormat.MONTH_LOCALE`).
+- Screen-level filter/toggle state (source chip, Inbox|Feed, collapsed groups)
+  is `rememberSaveable`, never `remember {}`: opening an item navigates to
+  another route, the list screen leaves composition, and plain `remember` is
+  rebuilt from defaults on back (^blue-pony, the Inbox chip reset; Feeds and
+  LongTail screens already did it right).
 
 ## Launcher-mode specifics
 
