@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process'
 import { WebSocketServer, WebSocket } from 'ws'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { Session, setAgentModelResolver, type ImageAttachment } from './session.js'
+import { Session, setAgentModelResolver, setContextProxyEnv, type ImageAttachment } from './session.js'
 import { ModelConfig } from './model-config.js'
 import { MAX_LOCAL_FILE_BYTES, resolveLocalMedia } from './agents/local-file.js'
 import type { ClientMessage, HubMessage } from './protocol.js'
@@ -27,6 +27,7 @@ import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
 import { reapStaleProcesses, StaleProcessSweeper, waitForExit } from './agents/process-reaper.js'
 import { CacheTtlLedger, setCacheTtlHooks, DEFAULT_RECENT_MINUTES } from './agents/cache-ttl.js'
 import { setEffortHooks } from './agents/effort.js'
+import { ContextProxy, ProxyConfigStore } from './agents/context-proxy.js'
 import { loadSessionHistory } from './history.js'
 import { discoverProjectDirs, listDirectories } from './projects.js'
 import { handleBookmarkRoutes } from './routes/bookmarks.js'
@@ -37,7 +38,7 @@ import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
 import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
-import { BACKEND_PRESETS, detectActiveBackend, syncBackendSettings, type AuthBackend } from './auth-backend.js'
+import { BACKEND_PRESETS, detectActiveBackend, readSettingsEnv, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
@@ -292,6 +293,33 @@ setEffortHooks({
   policy: () => prefsStore.getAll()['cache.effort'],
   onSpawn: (effort, kind, reason, label) => log(`[effort] ${label}: --effort ${effort} (${kind}, ${reason})`),
 })
+// Context proxy (^plum-fawn): opted-in sessions route Bedrock calls through a
+// loopback proxy that logs prompt composition and steers the API's
+// `clear_tool_uses` edit. Off unless ~/.config/console/context-proxy.json says
+// `enabled: true`; a session not listed there is never touched. Bedrock only —
+// on the Max subscription there is nothing to sign and nothing to clear.
+const contextProxyConfig = new ProxyConfigStore(join(feedsConfigDir, 'context-proxy.json'))
+const claudeEnv = readSettingsEnv()
+const contextProxy = new ContextProxy({
+  region: claudeEnv.AWS_REGION ?? process.env.AWS_REGION ?? 'us-east-1',
+  profile: claudeEnv.AWS_PROFILE ?? process.env.AWS_PROFILE ?? 'bedrock-amar',
+  config: contextProxyConfig,
+  logPath: join(feedsConfigDir, 'context-proxy.jsonl'),
+  bearerToken: claudeEnv.AWS_BEARER_TOKEN_BEDROCK ?? process.env.AWS_BEARER_TOKEN_BEDROCK,
+  log,
+})
+if (contextProxyConfig.get().enabled && detectActiveBackend() === 'bedrock') {
+  contextProxy.listen(Number(process.env.CONSOLE_CONTEXT_PROXY_PORT ?? 0)).then((port) => {
+    log(`[context-proxy] listening on 127.0.0.1:${port} for ${Object.keys(contextProxyConfig.get().sessions).join(', ') || 'nobody'}`)
+    setContextProxyEnv((name, hubId, spawnId) => {
+      const mode = contextProxyConfig.modeFor(name, hubId)
+      if (!mode) return null
+      log(`[context-proxy] ${name ?? hubId}: routed (${mode})`)
+      return contextProxy.envFor(name ?? hubId, spawnId)
+    })
+  }).catch((e) => log(`[context-proxy] not started: ${(e as Error).message}`))
+}
+
 // Bedrock cost attribution: the chain stays bare, human-readable model ids, and
 // session.ts swaps in this owner's `owner`-tagged inference-profile ARN at the
 // `--model` boundary. The built-in table is spawn-verified, so translation works

@@ -52,6 +52,10 @@ const DEFAULT_AGENT_MODEL = 'claude-opus-4-8'
 // env override internally (see ModelConfig.getModel).
 let agentModelResolver: (() => string) | null = null
 export function setAgentModelResolver(fn: () => string) { agentModelResolver = fn }
+// Extra spawn env from the context proxy (agents/context-proxy.ts) for sessions
+// opted in by name/id; null = bypass, the process talks to Bedrock directly.
+let contextProxyEnv: ((name: string | undefined, hubId: string, spawnId: string) => Record<string, string> | null) | null = null
+export function setContextProxyEnv(fn: typeof contextProxyEnv) { contextProxyEnv = fn }
 function resolveAgentModel(): string {
   return agentModelResolver?.() ?? process.env.CLAUDE_MODEL?.trim() ?? DEFAULT_AGENT_MODEL
 }
@@ -491,6 +495,7 @@ export class Session extends EventEmitter {
         ...(this.claudeSessionId ? { CONSOLE_CLAUDE_SESSION_ID: this.claudeSessionId } : {}),
         ...projectDirEnv(cwd),
         CLAUDE_CODE_PROMPT_CACHE_TTL: ttlChoice.ttl,
+        ...(contextProxyEnv?.(this.name, this.id, String(this.spawnedAt)) ?? {}),
         // Which hub generation spawned this process — the reaper kills claude
         // children whose marker names a dead hub (process-reaper.ts).
         [HUB_PID_ENV]: String(process.pid),

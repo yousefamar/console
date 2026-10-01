@@ -137,6 +137,17 @@ export function detectActiveBackend(): AuthBackend {
   }
 }
 
+/** The `env` block of settings.json — what every `claude` subprocess reads for
+ *  its backend (AWS_PROFILE/AWS_REGION live here, not in the hub's own env). */
+export function readSettingsEnv(): Record<string, string> {
+  try {
+    const env = JSON.parse(readFileSync(settingsPath(), 'utf-8')).env
+    return env && typeof env === 'object' ? env as Record<string, string> : {}
+  } catch {
+    return {}
+  }
+}
+
 /** Rewrite settings.json's env block to the target backend's preset. Atomic
  *  (tmp + rename) so a crash mid-write can't corrupt the file every `claude`
  *  invocation reads. Does NOT touch the model chain or respawn sessions —

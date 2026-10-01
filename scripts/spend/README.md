@@ -25,6 +25,25 @@ context parts is proportional to each part's measured size in the prefix that re
                      chatFork / default, inferred from the hub's wake envelopes) × `--effort`. The
                      before/after check for the per-kind effort policy (^busy-elk): 22–28 Sep baseline
                      = fork $453/wk (64% of requests), chatFork $13, default $237 — all xhigh.
+- `clear-sim.py`  — replays every request with its running transcript composition and prices
+                     tool-result clearing policies against stock: the API's `clear_tool_uses` as
+                     measured on Bedrock (frozen set while the cache lives, re-clear on cold),
+                     proxy-side cold-only and hybrid; `--keep N --inputs --exclude Read,Edit`.
+                     Honours Claude Code compaction boundaries (`isCompactSummary`); sidechains stock-only
+- `context-probe.ts` — (tsx) grows a synthetic tool-use conversation against Bedrock one exchange
+                     at a time and prints usage + `applied_edits` per call — how the API's
+                     context editing really behaves (`--clear --trigger --keep --force-at 12,19
+                     --infill 6000 --thinking-edit --model haiku|fable`); same signer + eventstream
+                     parser as the hub's context proxy (`server/src/agents/context-proxy.ts`)
+
+Context-editing findings (2026-10-01 ^plum-fawn): stale tool results beyond the last 3 tool uses are
+37 % of input spend; the API clears ALL but `keep` when the retained prompt crosses `trigger`, then
+FREEZES that set while a cached copy exists (warm), and re-clears from scratch when the retained
+prompt exceeds the trigger again (a cold write of the retained prompt). A trigger below the uncleared
+floor therefore rewrites every request (+1000 % in the sim) — the hub proxy steers the trigger per
+request instead (CLAUDE.md → Context proxy). Clearing only at cold moments: results −30 %, results +
+inputs −46 % of input spend; keep 3 vs 10 is within 2 points. The proxy ledger
+(`~/.config/console/context-proxy.jsonl`) is the ground truth for the live canary.
 
 Gotchas that produced wrong answers the first time (2026-09-08 ^odd-toad, 2026-09-21 ^lime-kiwi):
 - Files' mtime says nothing about their lines' age: transcripts hold weeks of history, so
