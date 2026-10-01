@@ -30,6 +30,10 @@ context parts is proportional to each part's measured size in the prefix that re
                      measured on Bedrock (frozen set while the cache lives, re-clear on cold),
                      proxy-side cold-only and hybrid; `--keep N --inputs --exclude Read,Edit`.
                      Honours Claude Code compaction boundaries (`isCompactSummary`); sidechains stock-only
+- `proxy-ledger.py` — over the context proxy's own ledger (`~/.config/console/context-proxy.jsonl`):
+                     per session/mode requests, cleared tokens, steering outcomes (hold reuse vs
+                     re-clear, backoffs), errors, and $ actual vs the same requests with nothing
+                     cleared — the A/B readout for ^plum-fawn Step 3
 - `context-probe.ts` — (tsx) grows a synthetic tool-use conversation against Bedrock one exchange
                      at a time and prints usage + `applied_edits` per call — how the API's
                      context editing really behaves (`--clear --trigger --keep --force-at 12,19
