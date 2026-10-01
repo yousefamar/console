@@ -153,6 +153,49 @@ async def test_watchdog_hold_on_then_apology_when_the_pipeline_never_comes_up():
 
 
 @pytest.mark.asyncio
+async def test_a_pickup_during_the_build_does_not_build_a_second_pipeline():
+    """Call 006B2AD9 (1 Oct 2026): `accepted` arrived while `_build` was still
+    loading the VAD, `go` saw no pipeline task yet and started another
+    `prepare`; two pipelines then shared one transport and the call was mute."""
+    side, clips = FakeSidecar(), FakeClips()
+    call = make_call(side, clips, hold_on_after_secs=5.0, setup_grace_secs=10.0)
+    call.direction = "in"
+    builds: list[object] = []
+
+    class Task:
+        def event_handler(self, _name):
+            return lambda fn: fn
+
+    async def slow_build():
+        await asyncio.sleep(0.1)  # the Silero load
+        builds.append(object())
+        return Task()
+
+    async def fake_run(_task):
+        await asyncio.sleep(10)
+
+    call._build = slow_build  # type: ignore[method-assign]
+    import al_voice.call as callmod
+
+    orig = callmod.PipelineRunner
+    callmod.PipelineRunner = lambda **_: type("R", (), {"run": staticmethod(fake_run)})()  # type: ignore[assignment]
+    try:
+        prep = asyncio.create_task(call.prepare())
+        await asyncio.sleep(0.02)  # inside _build
+        assert call._pipeline_task is None and call.build_started_at is not None
+        await call.go()  # the peer picked up mid-build
+        await asyncio.sleep(0.02)
+        await call.prepare()  # a stray third call is a no-op too
+        await prep
+        await asyncio.sleep(0.05)
+    finally:
+        callmod.PipelineRunner = orig
+    assert len(builds) == 1, "exactly one pipeline per call"
+    assert call._pipeline_task is not None and call.failed is None
+    call._watchdog_task.cancel()
+
+
+@pytest.mark.asyncio
 async def test_watchdog_stands_down_when_the_pipeline_becomes_ready():
     side, clips = FakeSidecar(), FakeClips()
     call = make_call(side, clips, hold_on_after_secs=0.05, setup_grace_secs=1.0)

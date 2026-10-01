@@ -165,6 +165,7 @@ class CallSession:
         self.tts_languages = tts_languages or cfg.tts_languages
         self.clips = clips
         self.started_at = time.time()
+        self.build_started_at: float | None = None
         self.prepared_at: float | None = None
         self.ready_at: float | None = None
         self.live_at: float | None = None
@@ -230,7 +231,12 @@ class CallSession:
 
     async def _build(self) -> PipelineTask:
         cfg = self.cfg
-        self._transport = WhatsAppCallTransport(self.sidecar, self.slot, self.call_id, self.latency)
+        # Bound to the slot before the VAD load so the caller's first words are
+        # queued, not lost. Kept in a local: the processors list below must
+        # use THIS transport even if `self._transport` were reassigned while
+        # the thread runs (call 006B2AD9: two pipelines sharing one transport).
+        transport = WhatsAppCallTransport(self.sidecar, self.slot, self.call_id, self.latency)
+        self._transport = transport
         # The ONNX session load is the one synchronous heavyweight here; on a
         # saturated disk it took 26 s in call 008048b0 and, run inline, held
         # the event loop so the `accepted` event itself arrived 8 s late.
@@ -267,11 +273,9 @@ class CallSession:
             settings=CartesiaTTSSettings(voice=cfg.cartesia_voice_id, model=cfg.cartesia_tts_model, language="en"),
         )
 
-        self._collector = TranscriptCollector(self.started_at)
-        collector = self._collector
-        self._router = LanguageRouter((*self.tts_languages, *cfg.extra_languages), initial=initial_language, steer_stt=steer_stt)
-        router = self._router
-        self._llm = ForkLLMService(
+        collector = TranscriptCollector(self.started_at)
+        router = LanguageRouter((*self.tts_languages, *cfg.extra_languages), initial=initial_language, steer_stt=steer_stt)
+        llm = ForkLLMService(
             hub=self.hub,
             call_id=self.call_id,
             language=lambda: router.language,
@@ -279,6 +283,7 @@ class CallSession:
             on_turn_done=self._on_turn_done,
             on_turn_start=self._on_turn_start,
         )
+        self._collector, self._router, self._llm = collector, router, llm
 
         context = LLMContext(messages=[])
         stop_strategies = None
@@ -323,14 +328,14 @@ class CallSession:
                     self.fail(f"{service.name} could not connect: {error}")
 
         processors = [
-            self._transport.input(),
+            transport.input(),
             stt,
             aggregators.user(),
-            self._llm,
-            self._router,
+            llm,
+            router,
             tts,
-            self._transport.output(),
-            self._collector,
+            transport.output(),
+            collector,
             aggregators.assistant(),
         ]
         for p in processors:
@@ -363,9 +368,16 @@ class CallSession:
 
     async def prepare(self) -> None:
         """Ring time: build and start the pipeline so every socket is open
-        before the peer picks up. Nothing is spoken yet."""
-        if self._pipeline_task or self.failed:
+        before the peer picks up. Nothing is spoken yet. Idempotent from the
+        first call, not from the first completed build: `go` on a pickup that
+        lands during the ~2 s VAD load used to start a second `prepare`, and
+        the two pipelines then shared one transport (call 006B2AD9, 1 Oct
+        2026: both StartFrames ran down one chain, the orphan PipelineTask
+        timed out 20 s later and its cleanup tore down the transports the
+        live pipeline was using — mute from then on)."""
+        if self.build_started_at is not None or self._pipeline_task or self.failed:
             return
+        self.build_started_at = time.time()
         task = await self._build()
         if self.failed or self._stopping:
             return
@@ -423,7 +435,7 @@ class CallSession:
         if self.failed:
             self._run_failure()
             return
-        if not self._pipeline_task:
+        if self.build_started_at is None and self._pipeline_task is None:
             asyncio.create_task(self.prepare(), name=f"prepare-late-{self.call_id}")
         self._watchdog_task = asyncio.create_task(self._ready_watchdog(), name=f"ready-{self.call_id}")
 

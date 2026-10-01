@@ -266,7 +266,12 @@ class CallManager:
         elif kind == "accepted":
             call = self.calls.get(ev.get("callId", ""))
             if call and call.live_at is None:
-                warm = f"{time.time() - call.prepared_at:.1f} s after prepare" if call.prepared_at else "pipeline not yet prepared"
+                if call.prepared_at:
+                    warm = f"{time.time() - call.prepared_at:.1f} s after prepare"
+                elif call.build_started_at:
+                    warm = f"{time.time() - call.build_started_at:.1f} s into the build"
+                else:
+                    warm = "build not started"
                 state = "ready" if call.ready.is_set() else ("FAILED" if call.failed else "NOT READY")
                 logger.info(f"[{call.call_id}] accepted — live ({warm}; pipeline {state})")
                 await call.go()
