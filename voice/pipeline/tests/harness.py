@@ -417,7 +417,10 @@ async def main():
             # the caller speaks 0.3 s after the answer, so the 2 s silence cue must not fire
             checks = {
                 "no silence greeting while the caller was talking": not any("This is AL" in t["text"] for t in turns if t["role"] == "assistant"),
-                "first audio ≤ 5 s after accept (reply to a 2 s utterance)": first_audio is not None and first_audio <= 5.0,
+                # Measured from the caller's speech end, not from accept: the
+                # caller speaks before the pipeline is ready, and until
+                # 50499ebc the hold-on clip at 2 s counted as "first audio".
+                "first reply audio ≤ 3 s after the caller stopped talking": bool(side.reply_latencies) and side.reply_latencies[0] <= 3.0,
                 "fork saw the caller's words first (no cue)": bool(hub.turn_requests) and hub.turn_requests[0].get("cue") is not True,
             }
         else:
