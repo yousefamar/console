@@ -36,19 +36,10 @@ Gotchas that produced wrong answers the first time (2026-09-08 ^odd-toad, 2026-0
 - Char→token proxy (chars/3.7) is only used for the RELATIVE split of a prompt; never sum
   it as an absolute.
 Scale the cost-weight shares to the real AWS figure from `GET /dashboard/costs`.
-- A remote MCP plugin (Stripe, 2026-09-22) made ~1% of consecutive requests rewrite the whole
-  history with the system prefix still cached (tools arrive after a spawn's first request and
-  flap mid-session — `deferred_tools_delta` attachments). Looked exactly like a TTL regression
-  because it landed the same evening; split by `version`/TTL and by plugin install time first.
-- Superseded 2026-09-30 (^spry-bear): the doubled writes are the CLI, not Stripe — on 2.1.280 the
-  SECOND request of a resumed/spawned process is a full rewrite (only the ~25k tools block hits)
-  22% of the time vs 1.9% on 2.1.263, same for 5m and 1h TTL, still there after the plugin was
-  disabled; the rate rises with the gap between request 1 and 2 (<10 s 1%, 20–40 s 32%, >40 s
-  45%) — something asynchronous settles 10–40 s after spawn and changes the prompt. Detector:
-  first request cold (`cr<60k, cw>100k`), next request within 10 min also `cr<60k` and
-  `cw>0.7×` the first. `prompt_snapshot` attachments hold the system prompt + tools for diffing
-  (the `cliPrefix` field flips ''→set between them on every spawn and is NOT a byte change —
-  a fresh 2.1.280 session hits fully on request 2).
-- Session rank is by $, not requests: 9 card forks that reached 900k+ context cost $532 each
-  (36% of fork spend) vs $9 under 200k — cold rewrites scale with context, so peak context is
-  the number to watch per session (`sessions.py` prints avg + max).
+- CORRECTED 2026-10-01 (^spry-bear): the ~1% "whole history rewritten with the system prefix still
+  cached" pattern that appeared 2026-09-22 was NOT the Stripe remote-MCP plugin installed that
+  evening — it is CLI 2.1.280 (symlink moved 22 Sep 22:11 UTC): the SECOND request after a
+  spawn/resume is a full rewrite 22% of the time (2.1.263: 1.9%), same on 5m and 1h TTL, rate
+  rising with the req1→req2 delay. Split by the per-line `version` field and by the day
+  `~/.local/bin/claude` changed BEFORE blaming TTL, plugins or MCP flapping. Detector in
+  extract.py's ledger: cold (cr<60k, cw>100k) followed within 10 min by cr<60k, cw>0.7× the first.
