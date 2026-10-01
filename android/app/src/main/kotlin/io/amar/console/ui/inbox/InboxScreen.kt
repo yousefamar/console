@@ -63,6 +63,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -126,10 +127,12 @@ fun InboxScreen(
     val lists by repo.lists.collectAsState()
     val xOnly by repo.xOnlyMode.collectAsState()
     val spaceList by spaces.spaces.collectAsState()
-    var showFeed by remember { mutableStateOf(false) }
-    var showSnoozed by remember { mutableStateOf(false) }
-    var inboxFilter by remember { mutableStateOf<InboxSource?>(null) }
-    var feedFilter by remember { mutableStateOf<FeedKind?>(null) }
+    // Saveable: opening an item navigates away, which drops plain `remember`
+    // state — the view/chip the user picked must still be selected on back.
+    var showFeed by rememberSaveable { mutableStateOf(false) }
+    var showSnoozed by rememberSaveable { mutableStateOf(false) }
+    var inboxFilter by rememberSaveable { mutableStateOf<InboxSource?>(null) }
+    var feedFilter by rememberSaveable { mutableStateOf<FeedKind?>(null) }
     var snoozeTarget by remember { mutableStateOf<InboxEntry?>(null) }
     var showRules by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { repo.refreshRules(); spaces.refreshSpaces() }

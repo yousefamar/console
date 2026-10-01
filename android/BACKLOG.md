@@ -42,6 +42,16 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **Inbox source chip / Inbox|Feed toggle survive opening an item** (^blue-pony).
+  Tapping Mail/Chat/Agents (or Feed, a platform chip, Snoozed) then opening a
+  thread and coming back landed on the unfiltered Inbox: `InboxScreen` held
+  `showFeed`/`showSnoozed`/`inboxFilter`/`feedFilter` in plain `remember`, and
+  navigating to `chat/{id}` etc. takes the screen out of composition, so the
+  state was rebuilt from its defaults on pop. Now `rememberSaveable` — the Inbox
+  back-stack entry's saved state restores all four on back (and across
+  rotation/process death). The SPA was never affected: its `inboxFilter` lives in
+  the unified-inbox store.
+
 ## Shipped
 
 ### v106 (2026-09-30)
