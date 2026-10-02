@@ -32,6 +32,11 @@ const fill = Number(arg('fill', '6000'))
 const keep = Number(arg('keep', '3')), trigger = Number(arg('trigger', '100000'))
 const clear = flag('clear'), clearInputs = flag('inputs')
 const ttl = arg('ttl', '5m')
+const triggerStep = Number(arg('trigger-step', '0'))
+const midBp = Number(arg('mid-bp', '0'))
+const delayMs = Number(arg('delay', '0'))          // pause between calls
+const holdMode = flag('hold')                     // proxy-style: first call forced, then trigger = previous original - 5k
+let lastOrig = 0   // extra cache_control on the tool_use block of exchange n-K (deep in the cleared region)   // vary the trigger per call: trigger + step*(n-from)
 const forceAt = new Set(arg('force-at', '').split(',').filter(Boolean).map(Number))   // force a clear (trigger=1) on these n
 const creds = loadAwsCredentials(profile)
 if (!creds) throw new Error(`no creds for ${profile}`)
@@ -49,7 +54,9 @@ function conversation(n: number): Array<Record<string, unknown>> {
   // so the previous call's breakpoint position is a prefix of this call.
   const msgs: Array<Record<string, unknown>> = [{ role: 'user', content: [{ type: 'text', text: 'Fetch documents 1..N one at a time with get_doc, one call per turn, no commentary.' }] }]
   for (let i = 1; i <= n; i++) {
-    msgs.push({ role: 'assistant', content: [{ type: 'tool_use', id: `toolu_${String(i).padStart(4, '0')}`, name: 'get_doc', input: { id: i, note: filler(1000 + i, Number(arg('infill', '200'))) } }] })
+    const tu: Record<string, unknown> = { type: 'tool_use', id: `toolu_${String(i).padStart(4, '0')}`, name: 'get_doc', input: { id: i, note: filler(1000 + i, Number(arg('infill', '200'))) } }
+    if (midBp > 0 && i === n - midBp) tu.cache_control = { type: 'ephemeral', ttl }
+    msgs.push({ role: 'assistant', content: [tu] })
     const tr: Record<string, unknown> = { type: 'tool_result', tool_use_id: `toolu_${String(i).padStart(4, '0')}`, content: filler(i, fill) }
     if (i === n) tr.cache_control = { type: 'ephemeral', ttl }
     msgs.push({ role: 'user', content: [tr] })
@@ -69,7 +76,8 @@ async function call(n: number): Promise<void> {
   if (clear) {
     const edits: Array<Record<string, unknown>> = []
     if (flag('thinking-edit')) edits.push({ type: 'clear_thinking_20251015', keep: 'all' })   // what Claude Code itself sends
-    edits.push({ type: CLEAR_EDIT_TYPE, trigger: { type: 'input_tokens', value: forceAt.has(n) ? 1 : trigger }, keep: { type: 'tool_uses', value: keep }, clear_tool_inputs: clearInputs })
+    const T = holdMode ? (lastOrig ? lastOrig - 5000 : 1) : forceAt.has(n) ? 1 : trigger + triggerStep * (n - from)
+    edits.push({ type: CLEAR_EDIT_TYPE, trigger: { type: 'input_tokens', value: T }, keep: { type: 'tool_uses', value: keep }, clear_tool_inputs: clearInputs })
     body.context_management = { edits }
   }
   const buf = Buffer.from(JSON.stringify(body))
@@ -85,9 +93,10 @@ async function call(n: number): Promise<void> {
       res.on('end', () => {
         const u = p.usage
         const ctx = (u.input ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0)
-        const ae = u.appliedEdits?.[0] as Record<string, unknown> | undefined
+        const ae = u.appliedEdits?.find((a) => a.type === CLEAR_EDIT_TYPE) as Record<string, unknown> | undefined
+        if (ctx) lastOrig = ctx + Number(ae?.cleared_input_tokens ?? 0)
         if (res.statusCode !== 200) console.log(`n=${n} HTTP ${res.statusCode} ${Buffer.concat(chunks).toString('utf-8').slice(0, 400)}`)
-        else console.log(`n=${String(n).padStart(3)} orig=${ctx + Number(ae?.cleared_input_tokens ?? 0)}  ctx=${ctx}  in=${u.input}  cache_read=${u.cacheRead}  cache_write=${u.cacheWrite}  ` +
+        else console.log(`n=${String(n).padStart(3)} T=${holdMode ? (lastOrig ? 'hold' : 'force') : forceAt.has(n) ? 1 : trigger + triggerStep * (n - from)} orig=${ctx + Number(ae?.cleared_input_tokens ?? 0)}  ctx=${ctx}  in=${u.input}  cache_read=${u.cacheRead}  cache_write=${u.cacheWrite}  ` +
           `cleared=${ae ? `${ae.cleared_tool_uses}u/${ae.cleared_input_tokens}t` : '-'}  stop=${u.stopReason}  ${Date.now() - t0}ms${u.exception ? '  EXC ' + u.exception : ''}`)
         resolve()
       })
@@ -99,4 +108,4 @@ async function call(n: number): Promise<void> {
 }
 
 console.log(`model=${modelId.slice(-30)} fill=${fill} chars/result  clear=${clear} keep=${keep} trigger=${trigger} inputs=${clearInputs} ttl=${ttl}`)
-for (let n = from; n <= to; n += step) await call(n)
+for (let n = from; n <= to; n += step) { await call(n); if (delayMs && n + step <= to) await new Promise((r) => setTimeout(r, delayMs)) }

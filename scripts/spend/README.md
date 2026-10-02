@@ -40,14 +40,15 @@ context parts is proportional to each part's measured size in the prefix that re
                      --infill 6000 --thinking-edit --model haiku|fable`); same signer + eventstream
                      parser as the hub's context proxy (`server/src/agents/context-proxy.ts`)
 
-Context-editing findings (2026-10-01 ^plum-fawn): stale tool results beyond the last 3 tool uses are
-37 % of input spend; the API clears ALL but `keep` when the retained prompt crosses `trigger`, then
-FREEZES that set while a cached copy exists (warm), and re-clears from scratch when the retained
-prompt exceeds the trigger again (a cold write of the retained prompt). A trigger below the uncleared
-floor therefore rewrites every request (+1000 % in the sim) — the hub proxy steers the trigger per
-request instead (CLAUDE.md → Context proxy). Clearing only at cold moments: results −30 %, results +
-inputs −46 % of input spend; keep 3 vs 10 is within 2 points. The proxy ledger
-(`~/.config/console/context-proxy.jsonl`) is the ground truth for the live canary.
+Context-editing findings (2026-10-01/02 ^plum-fawn): stale tool results beyond the last 3 tool uses are
+37 % of input spend. The API's `clear_tool_uses` clears all but `keep` (or the minimum to get under the
+trigger) as a COLD write of the retained prompt, and only SOMETIMES reuses a cached cleared set on the
+next call (live Fable 5.1 420k: 4/6 holds; sonnet 370k synthetic: 1/6 and 1/5, timing-independent).
+Each miss rewrites 130–270k; the live canary cost 35 % MORE than stock. Negative result on Fable 5.1
+pricing (reads $0.25 vs 1h writes $20/MTok) — keep the proxy in `log` mode for composition data, do
+not enable `clear`. If holds were reliable the sim ceiling is −30 % (results) / −46 % (+inputs).
+`proxy-ledger.py` is the readout; its stock counterfactual treats a cold hold as a clearing-induced
+miss (stock warm), not as a cold moment.
 
 Gotchas that produced wrong answers the first time (2026-09-08 ^odd-toad, 2026-09-21 ^lime-kiwi):
 - Files' mtime says nothing about their lines' age: transcripts hold weeks of history, so

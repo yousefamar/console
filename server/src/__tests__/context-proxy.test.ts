@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { signV4, parseAwsProfile, rfc3986 } from '../agents/sigv4.js'
 import {
-  analyzeBody, injectClearEdit, decideTrigger, conversationKey, EventStreamParser, ContextProxy, ProxyConfigStore,
+  analyzeBody, injectClearEdit, decideTrigger, conversationKey, placeMidBreakpoint, EventStreamParser, ContextProxy, ProxyConfigStore,
   CLEAR_EDIT_TYPE, CONTEXT_BETA, DEFAULT_POLICY, FORCE_CLEAR_TRIGGER, NO_CLEAR_TRIGGER, SESSION_HEADER, SPAWN_HEADER,
   type Composition,
 } from '../agents/context-proxy.js'
@@ -92,7 +92,7 @@ describe('decideTrigger', () => {
     expect(decideTrigger(undefined, now, 's1', comp(0), DEFAULT_POLICY)).toEqual({ trigger: FORCE_CLEAR_TRIGGER, reason: 'force-first' })
   })
   it('a warm run with a cleared set is held just under the last original so the API keeps reusing it', () => {
-    const st = { retained: 200_000, cleared: 300_000, chars: 500_000 * 3.7, lastAt: now - 60_000, spawn: 's1', holds: 0, reclears: 0 }
+    const st = { retained: 200_000, cleared: 300_000, chars: 500_000 * 3.7, lastAt: now - 60_000, spawn: 's1', misses: [] }
     expect(decideTrigger(st, now, 's1', comp(300_000 * 3.7), DEFAULT_POLICY)).toEqual({ trigger: 485_000, reason: 'hold' })
     // a respawn inside the cache window keeps holding: a live cache reuses the set, a dead one re-clears for free
     expect(decideTrigger(st, now, 's2', comp(300_000 * 3.7), DEFAULT_POLICY).reason).toBe('hold')
@@ -102,25 +102,46 @@ describe('decideTrigger', () => {
     expect(decideTrigger(st, now, 's1', comp(500_000 * 3.7), DEFAULT_POLICY)).toEqual({ trigger: FORCE_CLEAR_TRIGGER, reason: 'refresh' })
     expect(decideTrigger(st, now, 's1', comp(500_000 * 3.7), { ...DEFAULT_POLICY, enterAbove: 0 }).reason).toBe('hold')
   })
-  it('backs off to no edits when the API keeps re-clearing under hold', () => {
-    const st = { retained: 200_000, cleared: 300_000, chars: 500_000 * 3.7, lastAt: now - 60_000, spawn: 's1', holds: 5, reclears: 3 }
+  it('backs off to no edits when too many recent holds came back cold', () => {
+    const st = { retained: 200_000, cleared: 300_000, chars: 500_000 * 3.7, lastAt: now - 60_000, spawn: 's1', misses: [true, false, true, false] }
     expect(decideTrigger(st, now, 's1', comp(300_000 * 3.7), DEFAULT_POLICY)).toEqual({ trigger: NO_CLEAR_TRIGGER, reason: 'backoff' })
-    expect(decideTrigger({ ...st, holds: 20 }, now, 's1', comp(300_000 * 3.7), DEFAULT_POLICY).reason).toBe('hold')
-    expect(decideTrigger({ ...st, holds: 2, reclears: 2 }, now, 's1', comp(300_000 * 3.7), DEFAULT_POLICY).reason).toBe('hold')
+    expect(decideTrigger({ ...st, misses: [true, false, false, false, false, false] }, now, 's1', comp(300_000 * 3.7), DEFAULT_POLICY).reason).toBe('hold')
+    expect(decideTrigger({ ...st, misses: [true, true] }, now, 's1', comp(300_000 * 3.7), DEFAULT_POLICY).reason).toBe('hold')   // too few to judge
     // a cold moment resets the regime
     expect(decideTrigger({ ...st, lastAt: now - 56 * 60_000 }, now, 's1', comp(0), DEFAULT_POLICY).reason).toBe('force-cold')
   })
   it('a gap past the TTL forces a clear', () => {
-    const st = { retained: 200_000, cleared: 300_000, chars: 0, lastAt: now - 56 * 60_000, spawn: 's1', holds: 0, reclears: 0 }
+    const st = { retained: 200_000, cleared: 300_000, chars: 0, lastAt: now - 56 * 60_000, spawn: 's1', misses: [] }
     expect(decideTrigger(st, now, 's1', comp(0), DEFAULT_POLICY)).toEqual({ trigger: FORCE_CLEAR_TRIGGER, reason: 'force-cold' })
   })
   it('nothing cleared yet: wait for a cold moment unless the stale share is worth a deliberate clear', () => {
-    const st = { retained: 120_000, cleared: 0, chars: 120_000 * 3.7, lastAt: now - 1000, spawn: 's1', holds: 0, reclears: 0 }
+    const st = { retained: 120_000, cleared: 0, chars: 120_000 * 3.7, lastAt: now - 1000, spawn: 's1', misses: [] }
     expect(decideTrigger(st, now, 's1', comp(50_000 * 3.7), DEFAULT_POLICY)).toEqual({ trigger: NO_CLEAR_TRIGGER, reason: 'none' })
     expect(decideTrigger(st, now, 's1', comp(200_000 * 3.7), DEFAULT_POLICY)).toEqual({ trigger: FORCE_CLEAR_TRIGGER, reason: 'enter' })
     expect(decideTrigger(st, now, 's1', comp(200_000 * 3.7), { ...DEFAULT_POLICY, enterAbove: 0 }).reason).toBe('none')
     // a new process with nothing cleared is a rewrite anyway — clear now
     expect(decideTrigger(st, now, 's2', comp(0), DEFAULT_POLICY).reason).toBe('force-cold')
+  })
+})
+
+describe('placeMidBreakpoint', () => {
+  it('marks the tool_use keep+margin exchanges back with the CLI\'s TTL, within the 4-breakpoint limit', () => {
+    const body = toolBody(30)
+    ;(body.system as Array<Record<string, unknown>>)[0].cache_control = { type: 'ephemeral', ttl: '1h' }
+    expect(placeMidBreakpoint(body, 10, 8)).toBe(true)
+    const msgs = body.messages as Array<{ content: Array<Record<string, unknown>> }>
+    const marked = msgs.flatMap((m) => Array.isArray(m.content) ? m.content : []).filter((b) => b.cache_control && b.type === 'tool_use')
+    expect(marked).toHaveLength(1)
+    expect(marked[0].id).toBe('t12')                       // 30 - (10 + 8)
+    expect(marked[0].cache_control).toEqual({ type: 'ephemeral', ttl: '1h' })
+    expect(placeMidBreakpoint(body, 10, 8)).toBe(false)    // already there
+  })
+  it('does nothing for short conversations or when four breakpoints exist', () => {
+    expect(placeMidBreakpoint(toolBody(15), 10, 8)).toBe(false)
+    const body = toolBody(30)
+    const msgs = body.messages as Array<{ content: Array<Record<string, unknown>> }>
+    for (const i of [1, 3, 5, 7]) msgs[i].content[0].cache_control = { type: 'ephemeral' }
+    expect(placeMidBreakpoint(body, 10, 8)).toBe(false)
   })
 })
 
@@ -216,7 +237,7 @@ describe('ContextProxy end to end', () => {
       req.end(data)
     })
 
-    const r1 = await send('canary', toolBody(6))
+    const r1 = await send('canary', toolBody(6))   // 6 tool uses: too short for a mid breakpoint
     expect(r1.status).toBe(200)
     expect(r1.body.length).toBeGreaterThan(50)              // the eventstream came back verbatim
     const u1 = seen[0]

@@ -34,6 +34,7 @@ def rate(model):
     return RATES['fable-5-1']
 
 S = collections.defaultdict(lambda: collections.Counter())
+WARM_WRITE = 4_000   # tokens a warm stock request writes (its new turn); fleet log-mode median is 0.3–5k
 first_seen = {}
 try:
     fh = open(A.ledger)
@@ -61,21 +62,29 @@ for line in fh:
     cold = (rd + wr) > 0 and wr / (rd + wr) > 0.5
     edits = [e for e in (u.get('appliedEdits') or []) if e.get('type') == 'clear_tool_uses_20250919']
     cleared = sum(e.get('cleared_input_tokens', 0) or 0 for e in edits)
+    reason = r.get('reason') or '-'
+    # Would stock have been cold here too? Only at a cold moment (first request of a
+    # conversation / process, a >55 min gap) or the CLI's own second-request rewrite —
+    # a cold answer to a hold is a clearing-induced miss and stock would have been warm.
+    prev_ts, prev_reason = s.get('_prev_ts'), s.get('_prev_reason')
+    stock_cold = cold and (reason in ('force-first', 'force-cold') or prev_reason in ('force-first', 'force-cold')
+                           or prev_ts is None or ts - prev_ts > 55 * 60 or r.get('mode') != 'clear')
+    s['_prev_ts'] = ts; s['_prev_reason'] = reason
+    if cold and not stock_cold: s['misses'] += 1
     s['tok_read'] += rd; s['tok_write'] += wr; s['tok_in'] += inp; s['tok_out'] += out; s['tok_cleared'] += cleared
     s['ctx_sum'] += rd + wr + inp; s['ctx_max'] = max(s['ctx_max'], rd + wr + inp)
     if cold: s['cold'] += 1
     actual = (rd * r_rd + (w5 or 0) * r_w5 + (w1 or 0) * r_w1 + inp * base + out * r_out) / 1e6
-    # counterfactual: the cleared tokens come back as reads (warm) or writes at this request's TTL mix (cold)
     r_w = (r_w1 if (w1 or 0) >= (w5 or 0) else r_w5)
-    stock = actual + cleared * (r_w if cold else r_rd) / 1e6
+    if stock_cold:      # stock writes the cleared tokens too
+        stock = actual + cleared * r_w / 1e6
+    elif cold:          # clearing-induced miss: stock would have read everything and written only the new turn
+        stock = ((rd + wr + cleared) * r_rd + WARM_WRITE * r_w + inp * base + out * r_out) / 1e6
+    else:               # warm either way: stock reads the cleared tokens as well
+        stock = actual + cleared * r_rd / 1e6
     s['usd'] += actual; s['usd_stock'] += stock
-    reason = r.get('reason') or '-'
     s['reason:' + reason] += 1
-    if reason == 'hold':
-        s['holds'] += 1
-        prev = S[key].get('_prev_cleared')
-        if prev is not None and abs(cleared - prev) > max(200, prev * 0.02): s['reclears'] += 1
-    s['_prev_cleared'] = cleared
+    if reason == 'hold': s['holds'] += 1
     if r.get('comp'):
         st = r['comp']['stale']; ch = r['comp']['chars']
         total = sum(v for k, v in ch.items() if k != 'images') or 1
@@ -86,7 +95,7 @@ print(f"{'session':28} {'mode':5} {'req':>5} {'cold':>4} {'avg ctx':>8} {'max ct
 for (sess, mode), s in sorted(S.items(), key=lambda kv: -kv[1]['usd_stock']):
     n = s['req'] or 1
     reasons = ', '.join(f"{k[7:]} {v}" for k, v in sorted(s.items()) if k.startswith('reason:') and k != 'reason:-')
-    rc = f"  re-clears {s['reclears']}/{s['holds']} holds" if s['holds'] else ''
+    rc = f"  cold holds (misses) {s['misses']}/{s['holds']}" if s['holds'] else ''
     err = f"  ERRORS api {s['api_errors']} proxy {s['proxy_errors']}" if (s['api_errors'] or s['proxy_errors']) else ''
     saved = s['usd_stock'] - s['usd']
     pct = f"{saved / s['usd_stock'] * 100:.0f}%" if s['usd_stock'] else '-'

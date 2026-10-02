@@ -191,6 +191,34 @@ export function injectClearEdit(body: Record<string, unknown>, p: ClearPolicy, t
 }
 
 
+/** The API honours a `cache_control` marker on a block inside the region it
+ *  clears, and the placeholders before it are byte-stable — so a breakpoint on
+ *  the tool_use `margin` exchanges behind the keep window bounds what a dropped
+ *  set costs to the tail (measured: whole retained prompt → last ~K exchanges).
+ *  Uses the CLI's own TTL; respects the 4-breakpoint limit. */
+export function placeMidBreakpoint(body: Record<string, unknown>, keep: number, margin = 8): boolean {
+  const msgs = Array.isArray(body.messages) ? body.messages as Array<Record<string, unknown>> : []
+  let existing = 0; let ttl: string | undefined
+  const scan = (blocks: unknown) => {
+    if (!Array.isArray(blocks)) return
+    for (const b of blocks) {
+      const cc = (b as Record<string, unknown>)?.cache_control as { ttl?: string } | undefined
+      if (cc) { existing++; ttl = ttl ?? cc.ttl }
+    }
+  }
+  scan(body.system); scan(body.tools)
+  const toolUses: Array<Record<string, unknown>> = []
+  for (const m of msgs) {
+    scan(m.content)
+    if (m.role === 'assistant' && Array.isArray(m.content)) for (const b of m.content as Array<Record<string, unknown>>) if (b.type === 'tool_use') toolUses.push(b)
+  }
+  if (existing >= 4) return false
+  const target = toolUses[toolUses.length - 1 - (keep + margin)]
+  if (!target || target.cache_control) return false
+  target.cache_control = ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' }
+  return true
+}
+
 // ---------------------------------------------------------------------------
 // Trigger steering — measured on Bedrock 2026-10-01 (scripts/spend/context-probe.ts).
 //
@@ -216,17 +244,18 @@ export interface ConvState {
   chars: number
   lastAt: number
   spawn: string
-  /** Hold requests since the last forced clear, and how many of them the API
-   *  answered by re-clearing anyway (the cleared total moved). */
-  holds: number
-  reclears: number
+  /** Outcome of the last HOLD_WINDOW hold requests: true = the API answered cold. */
+  misses: boolean[]
 }
 
 export type TriggerReason = 'force-first' | 'force-cold' | 'hold' | 'refresh' | 'enter' | 'none' | 'backoff'
 
-/** A hold that keeps getting re-cleared is paying a history rewrite every time;
- *  after this many, stop editing until the next cold moment. */
-export const BACKOFF_RECLEARS = 3
+/** A hold the API answers cold (cache_read under half the prompt) paid for the
+ *  tail again; past this share of recent holds, stop editing until the next cold
+ *  moment — on Fable 5.1 pricing only reliably warm holds pay for themselves. */
+export const BACKOFF_MISS_RATE = 0.34
+export const BACKOFF_MIN_HOLDS = 4
+export const HOLD_WINDOW = 10
 
 export function decideTrigger(st: ConvState | undefined, now: number, spawn: string, comp: Composition, p: ClearPolicy): { trigger: number; reason: TriggerReason } {
   if (!st) return { trigger: FORCE_CLEAR_TRIGGER, reason: 'force-first' }
@@ -234,7 +263,8 @@ export function decideTrigger(st: ConvState | undefined, now: number, spawn: str
   const tokPerChar = st.chars > 0 ? (st.retained + st.cleared) / st.chars : 1 / 3.7
   const stale = (comp.stale.toolResult + (p.clearInputs ? comp.stale.toolInput : 0)) * tokPerChar
   if (st.cleared > 0 && !gapCold) {
-    if (st.reclears >= BACKOFF_RECLEARS && st.reclears * 2 >= st.holds) return { trigger: NO_CLEAR_TRIGGER, reason: 'backoff' }
+    const n = st.misses.length, miss = st.misses.filter(Boolean).length
+    if (n >= BACKOFF_MIN_HOLDS && miss / n >= BACKOFF_MISS_RATE) return { trigger: NO_CLEAR_TRIGGER, reason: 'backoff' }
     // Stale results that piled up since the frozen clear: worth paying one rewrite?
     if (p.enterAbove > 0 && stale - st.cleared > p.enterAbove) return { trigger: FORCE_CLEAR_TRIGGER, reason: 'refresh' }
     // Just under last time's original: rule 1 cannot fire (this prompt is longer),
@@ -383,6 +413,7 @@ export interface ProxyLogEntry {
   model?: string
   comp?: Composition
   injected: boolean
+  midBreakpoint?: boolean
   trigger?: number
   reason?: TriggerReason
   usage?: UsageSummary
@@ -402,6 +433,8 @@ export interface ContextProxyOptions {
 }
 
 export function bedrockHost(region: string): string { return `bedrock-runtime.${region}.amazonaws.com` }
+/** The CLI's `/inference-profiles*` lookups are control-plane calls (service `bedrock`, host without `-runtime`). */
+export function bedrockControlHost(region: string): string { return `bedrock.${region}.amazonaws.com` }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -486,8 +519,10 @@ export class ContextProxy {
             const spawn = String(req.headers[SPAWN_HEADER] ?? '')
             const d = decideTrigger(this.conversations.get(convKey), t0, spawn, entry.comp, cfg.policy)
             entry.trigger = d.trigger; entry.reason = d.reason
-            if (injectClearEdit(parsed, cfg.policy, d.trigger)) {
-              entry.injected = true
+            const injected = injectClearEdit(parsed, cfg.policy, d.trigger)
+            const bp = d.trigger !== NO_CLEAR_TRIGGER && placeMidBreakpoint(parsed, cfg.policy.keep)
+            if (injected || bp) {
+              entry.injected = injected; entry.midBreakpoint = bp
               body = Buffer.from(JSON.stringify(parsed))
             }
           }
@@ -509,8 +544,9 @@ export class ContextProxy {
   }
 
   private forward(req: IncomingMessage, res: ServerResponse, body: Buffer, entry: ProxyLogEntry): Promise<void> {
-    const up = this.o.upstream ?? { protocol: 'https:' as const, host: bedrockHost(this.o.region), port: 443 }
     const url = new URL(req.url ?? '/', 'http://x')
+    const control = url.pathname.startsWith('/inference-profiles')
+    const up = this.o.upstream ?? { protocol: 'https:' as const, host: control ? bedrockControlHost(this.o.region) : bedrockHost(this.o.region), port: 443 }
     const headers: Record<string, string> = {}
     for (const [k, v] of Object.entries(req.headers)) {
       if (HOP_BY_HOP.has(k) || v === undefined) continue
@@ -580,14 +616,10 @@ export class ContextProxy {
     const edit = u.appliedEdits?.find((a) => a.type === CLEAR_EDIT_TYPE)
     const cleared = typeof edit?.cleared_input_tokens === 'number' ? edit.cleared_input_tokens : 0
     const prev = this.conversations.get(convKey)
-    let holds = 0, reclears = 0
-    if (e.reason === 'hold' && prev) {
-      holds = prev.holds + 1
-      reclears = prev.reclears + (Math.abs(cleared - prev.cleared) > Math.max(200, prev.cleared * 0.02) ? 1 : 0)
-    } else if (e.reason === 'backoff' && prev) {
-      holds = prev.holds; reclears = prev.reclears
-    }
-    this.conversations.set(convKey, { retained, cleared, chars: e.comp ? promptChars(e.comp) : 0, lastAt: now, spawn, holds, reclears })
+    let misses: boolean[] = []
+    if (e.reason === 'hold' && prev) misses = [...prev.misses, (u.cacheRead ?? 0) < retained / 2].slice(-HOLD_WINDOW)
+    else if (e.reason === 'backoff' && prev) misses = prev.misses
+    this.conversations.set(convKey, { retained, cleared, chars: e.comp ? promptChars(e.comp) : 0, lastAt: now, spawn, misses })
     if (this.conversations.size > 2000) {
       const cutoff = now - 6 * 3600_000
       for (const [k, v] of this.conversations) if (v.lastAt < cutoff) this.conversations.delete(k)
