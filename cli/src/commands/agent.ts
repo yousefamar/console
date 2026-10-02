@@ -494,7 +494,7 @@ async function agentBackend(args: string[], flags: GlobalFlags): Promise<void> {
     const state = await hubFetch<BackendState>('/agents/backend')
     if (isJsonMode(flags)) { output(state, flags); return }
     const lines: string[] = []
-    lines.push(`backend:    ${state.backend}${state.backend !== state.preferred ? `  (preferred: ${state.preferred})` : ''}`)
+    lines.push(`backend:    ${state.backend}${state.preferred && state.backend !== state.preferred ? `  (preferred: ${state.preferred})` : ''}`)
     const ep = state.failover?.active
     if (ep) {
       lines.push(`failover:   on Bedrock since ${fmtTime(ep.hitAt)} (${ep.rateLimitType ?? 'window unknown'}, tripped by ${ep.trippedBy ?? '?'}); back on the subscription at ${fmtTime(ep.returnAt)}`)
