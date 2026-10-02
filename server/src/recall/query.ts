@@ -168,6 +168,9 @@ interface SearchOpts {
   cwdHint?: string
   perSession?: number
   now?: Date
+  /** Also rank tool-output matches (`--tools`). Otherwise the tools index is
+   *  only consulted when turn matches alone cannot fill `limit` sessions. */
+  tools?: boolean
 }
 
 /** Full-text search. Turn matches rank the session (best bm25, boosted under
@@ -188,20 +191,26 @@ function runMatch(db: DatabaseSync, match: string, f: Filters, opts: SearchOpts)
   const now = opts.now ?? new Date()
   const w = sessionWhere(f, now)
   const perSession = opts.perSession ?? (f.session ? 12 : 2)
+  // Rank with bm25 only and build the excerpts in JS from the stored text:
+  // FTS5's snippet() runs for EVERY matching row before ORDER BY/LIMIT and
+  // re-tokenises the whole document each time — "board" matched 33,850 tool
+  // results and took 124 s with snippet() vs 0.2 s without (qlog median was
+  // 12 s, p90 575 s, 2026-10-02).
+  const terms = termsOf(match)
   const turnRows = db.prepare(`
-    SELECT t.session_id, t.idx, t.uuid, t.ts, bm25(turns_fts, 1.5, 1.0) AS score,
-           snippet(turns_fts, 0, '[', ']', '…', ${SNIPPET_TOKENS}) AS s_user,
-           snippet(turns_fts, 1, '[', ']', '…', ${SNIPPET_TOKENS}) AS s_asst
+    SELECT t.session_id, t.idx, t.uuid, t.ts, bm25(turns_fts, 1.5, 1.0) AS score, t.user_text, t.assistant_text
     FROM turns_fts JOIN turns t ON t.rowid = turns_fts.rowid JOIN sessions s ON s.id = t.session_id
     WHERE turns_fts MATCH ? AND ${w.sql}
-    ORDER BY score LIMIT ?`).all(match, ...w.params, RAW_LIMIT) as Array<{ session_id: string; idx: number; uuid: string; ts: string; score: number; s_user: string; s_asst: string }>
-  const toolRows = db.prepare(`
-    SELECT e.session_id, e.turn_idx, e.seq, e.name, bm25(tools_fts, 2.0, 1.0) AS score,
-           snippet(tools_fts, 1, '[', ']', '…', ${SNIPPET_TOKENS}) AS s_res,
-           snippet(tools_fts, 0, '[', ']', '…', ${SNIPPET_TOKENS}) AS s_in
+    ORDER BY score LIMIT ?`).all(match, ...w.params, RAW_LIMIT) as Array<{ session_id: string; idx: number; uuid: string; ts: string; score: number; user_text: string; assistant_text: string }>
+  // Tool results are the bulk of the index (a common word matches ~3× more tool
+  // events than turns), so that half runs only when asked for or when turn
+  // matches alone cannot fill the page.
+  const turnSessions = new Set(turnRows.map((r) => r.session_id)).size
+  const toolRows = (opts.tools || turnSessions < opts.limit) ? db.prepare(`
+    SELECT e.session_id, e.turn_idx, e.seq, e.name, bm25(tools_fts, 2.0, 1.0) AS score, e.result, e.input_summary
     FROM tools_fts JOIN tool_events e ON e.rowid = tools_fts.rowid JOIN sessions s ON s.id = e.session_id
     WHERE tools_fts MATCH ? AND ${w.sql}
-    ORDER BY score LIMIT ?`).all(match, ...w.params, RAW_LIMIT) as Array<{ session_id: string; turn_idx: number; seq: number; name: string; score: number; s_res: string; s_in: string }>
+    ORDER BY score LIMIT ?`).all(match, ...w.params, RAW_LIMIT) as Array<{ session_id: string; turn_idx: number; seq: number; name: string; score: number; result: string; input_summary: string }> : []
 
   const bySession = new Map<string, SessionHit>()
   const ensure = (id: string): SessionHit => {
@@ -216,14 +225,14 @@ function runMatch(db: DatabaseSync, match: string, f: Filters, opts: SearchOpts)
   for (const r of turnRows) {
     const hit = ensure(r.session_id)
     if (hit.turns.length >= perSession) continue
-    const snippet = pickSnippet(r.s_user, r.s_asst)
+    const snippet = pickSnippet(excerpt(r.user_text, terms), excerpt(r.assistant_text, terms))
     hit.turns.push({ idx: r.idx, uuid: r.uuid, ts: r.ts, score: r.score, snippet })
   }
   for (const r of toolRows) {
     const hit = ensure(r.session_id)
     hit.toolMatchCount++
     if (hit.tools.length >= perSession) continue
-    hit.tools.push({ turnIdx: r.turn_idx, seq: r.seq, name: r.name, score: r.score, snippet: pickSnippet(r.s_res, r.s_in) })
+    hit.tools.push({ turnIdx: r.turn_idx, seq: r.seq, name: r.name, score: r.score, snippet: pickSnippet(excerpt(r.result, terms), excerpt(r.input_summary, terms)) })
   }
   const hits = [...bySession.values()]
   for (const hit of hits) {
@@ -241,6 +250,34 @@ function pickSnippet(a: string, b: string): string {
   const ha = a.includes('[') ? a : ''
   const hb = b.includes('[') ? b : ''
   return (ha || hb || a || b).replace(/\s+/g, ' ').trim()
+}
+
+/** The bare search words of a MATCH expression (quotes, prefix `*` and operators dropped). */
+export function termsOf(match: string): string[] {
+  const out: string[] = []
+  for (const m of match.matchAll(/"([^"]+)"/g)) {
+    const w = m[1]!.toLowerCase()
+    if (w && !out.includes(w)) out.push(w)
+  }
+  return out
+}
+
+/** FTS5-snippet lookalike built in JS: the first window of SNIPPET_TOKENS words
+ *  around a term (prefix match, so porter-stemmed hits still highlight), the
+ *  hits in [brackets], `…` where the text was cut. No term → the opening words. */
+export function excerpt(text: string | null | undefined, terms: string[], tokens = SNIPPET_TOKENS): string {
+  const words = (text ?? '').split(/\s+/).filter(Boolean)
+  if (words.length === 0) return ''
+  const isHit = (w: string): boolean => {
+    const bare = w.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+    return bare.length > 0 && terms.some((t) => bare.startsWith(t) || t.startsWith(bare) && bare.length >= 4)
+  }
+  const first = words.findIndex(isHit)
+  if (first < 0) return words.slice(0, tokens).join(' ') + (words.length > tokens ? '…' : '')
+  const start = Math.max(0, first - Math.floor(tokens / 3))
+  const end = Math.min(words.length, start + tokens)
+  const body = words.slice(start, end).map((w) => (isHit(w) ? `[${w}]` : w)).join(' ')
+  return (start > 0 ? '…' : '') + body + (end < words.length ? '…' : '')
 }
 
 export function turnsOf(db: DatabaseSync, sessionId: string): TurnRow[] {

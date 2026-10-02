@@ -10,7 +10,7 @@ import { parseTranscriptText, humanText, firstHumanPrompt } from '../recall/pars
 import { redact, isSensitivePath } from '../recall/redact.js'
 import { openDb, upsertSession, stats } from '../recall/db.js'
 import { parseAddress, formatAddress } from '../recall/address.js'
-import { buildMatch, orTerms, parseSince, selectTurns, resolveSession, NotFoundError } from '../recall/query.js'
+import { buildMatch, orTerms, parseSince, selectTurns, resolveSession, NotFoundError, termsOf, excerpt } from '../recall/query.js'
 import { runSearch, runRead, indexFile } from '../recall/service.js'
 import { listTranscripts } from '../recall/index.js'
 
@@ -293,6 +293,28 @@ describe('read ladder', () => {
     expect(() => runRead(db, { address: 'aaaaaaaa/t9' })).toThrow(/no turn "t9"/)
     expect(() => runRead(db, { address: 'aaaaaaaa/t1#7' })).toThrow(/no tool call #7/)
     expect(() => resolveSession(db, 'a')).not.toThrow()
+  })
+})
+
+describe('excerpts (built in JS, not FTS5 snippet())', () => {
+  it('termsOf strips the MATCH quoting, prefix stars and operators', () => {
+    expect(termsOf(buildMatch('Spaces board* AND timeout'))).toEqual(['spaces', 'board', 'timeout'])
+    expect(termsOf('"a" OR "a" NOT "b"')).toEqual(['a', 'b'])
+  })
+  it('brackets the hits in a window around the first one, with ellipses where it cut', () => {
+    const text = Array.from({ length: 40 }, (_, i) => `w${i}`).join(' ') + ' the board moved and boards tilt ' + Array.from({ length: 30 }, (_, i) => `z${i}`).join(' ')
+    const s = excerpt(text, ['board'])
+    expect(s).toMatch(/^…/)
+    expect(s).toMatch(/…$/)
+    expect(s).toContain('[board]')
+    expect(s).toContain('[boards]')  // prefix match covers the porter-stemmed hit
+    expect(s.split(' ').length).toBeLessThanOrEqual(14)
+  })
+  it('falls back to the opening words when no term is present, and handles empty text', () => {
+    expect(excerpt('one two three', ['zzz'])).toBe('one two three')
+    expect(excerpt(Array.from({ length: 20 }, (_, i) => `w${i}`).join(' '), ['zzz'])).toMatch(/^w0 .*w13…$/)
+    expect(excerpt('', ['x'])).toBe('')
+    expect(excerpt(null, ['x'])).toBe('')
   })
 })
 

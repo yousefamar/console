@@ -50,7 +50,7 @@ export function runSearch(db: DatabaseSync, p: SearchParams): { text: string; hi
     return { text: renderRecent(rows, scope(f)), hits: rows.length }
   }
   const limit = Math.max(p.limit ?? SEARCH_DEFAULT_LIMIT, 1)
-  const hits = search(db, query, f, { limit, cwdHint: p.cwdHint })
+  const hits = search(db, query, f, { limit, cwdHint: p.cwdHint, tools: !!p.includeTools })
   if (hits.length) return { text: renderHits(hits, query, { showTools: !!p.includeTools }), hits: hits.length }
   const terms = orTerms(query)
   const weak = fallbackSearch(db, terms, f, { limit: FALLBACK_LIMIT, cwdHint: p.cwdHint })
