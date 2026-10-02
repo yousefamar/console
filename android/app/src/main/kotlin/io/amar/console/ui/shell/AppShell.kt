@@ -150,6 +150,7 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
                     io.amar.console.ui.inbox.InboxScreen(
                         app.graph.inbox,
                         spaces = app.graph.spaces,
+                        chat = app.graph.chat,
                         onOpenChat = { roomId -> navController.navigate("chat/${android.net.Uri.encode(roomId)}") },
                         onOpenMail = { threadId -> navController.navigate("mail/${android.net.Uri.encode(threadId)}") },
                         onOpenFeedItem = { itemId -> navController.navigate("feeds/${android.net.Uri.encode(itemId)}") },

@@ -68,6 +68,21 @@ view-mode hub-sync (Room meta is fine on one device).
   the hub strips the tag from served card text — this keeps the client port in
   sync so a raw-markdown parse never leaks `#effort/high` as title text.
 
+- **Inbox: long-press room menu on chat rows + the pinned strip** (^pink-colt;
+  SPA ^deft-tern parity). Inbox chat rows had swipe done/snooze only and the
+  pinned avatars tap only, so pin/mute/demote/reload meant a detour through
+  the Chat app. The Chat list's private `RoomContextSheet` is now the shared
+  `ui/components/RoomContextSheet.kt` (`RoomMenuSheet` wires it to the same
+  `ChatRepository` calls — one definition, two surfaces, like the SPA's
+  `RoomContextMenu`); the item list is pure data (`data/chat/RoomMenu.kt`
+  `roomMenuItems`, unit-tested — each toggle labelled from the room's current
+  state). `InboxScreen` takes `chat: ChatRepository`, CHAT rows and each pinned
+  avatar are `combinedClickable` with a long-press that resolves the room by id
+  through a keyed `observeRoom` live query (rows carry an `InboxEntry`, not the
+  room) and opens the sheet; its Snooze lands in the Inbox's own picker
+  (`snoozeTarget`, now `SnoozeFor.Item | SnoozeFor.Room` — a pinned room may
+  not be a listed item), never a second picker. No hub change.
+
 ## Shipped
 
 ### v106 (2026-09-30)

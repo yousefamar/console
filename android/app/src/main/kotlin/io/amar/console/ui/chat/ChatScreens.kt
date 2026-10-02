@@ -41,16 +41,11 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.MarkChatUnread
-import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Snooze
-import androidx.compose.material.icons.filled.SouthEast
-import androidx.compose.material.icons.outlined.NotificationsOff
-import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -92,6 +87,7 @@ import io.amar.console.ui.components.Composer
 import io.amar.console.ui.components.CountPill
 import io.amar.console.ui.components.EmptyState
 import io.amar.console.ui.components.PaneTopBar
+import io.amar.console.ui.components.RoomMenuSheet
 import io.amar.console.ui.components.SnoozeSheet
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -312,75 +308,13 @@ private fun SnoozeAndMenuSheets(
         )
     }
     menuTarget?.let { room ->
-        val context = androidx.compose.ui.platform.LocalContext.current
-        RoomContextSheet(
+        RoomMenuSheet(
+            repo = repo,
             room = room,
             onDismiss = onMenuDismiss,
-            onMarkRead = { scope.launch { repo.markRead(room.id) } },
-            onMarkUnread = { scope.launch { repo.markUnread(room.id) } },
+            launch = { block -> scope.launch { block() } },
             onSnooze = { onMenuDismiss(); onSnoozeRequest(room) },
-            onTogglePin = { scope.launch { repo.setPinned(room.id, !room.isPinned) } },
-            onToggleMute = { scope.launch { repo.setMuted(room.id, !room.isMuted) } },
-            onToggleLowPriority = { scope.launch { repo.setLowPriority(room.id, !room.isLowPriority) } },
-            onReload = {
-                scope.launch {
-                    repo.reloadRoom(room.id)
-                    android.widget.Toast.makeText(context, "Room reloaded", android.widget.Toast.LENGTH_SHORT).show()
-                }
-            },
         )
-    }
-}
-
-/** Long-press room context menu: read state, snooze, pin, mute, low-priority, reload. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun RoomContextSheet(
-    room: ChatRoomRow,
-    onDismiss: () -> Unit,
-    onMarkRead: () -> Unit,
-    onMarkUnread: () -> Unit,
-    onSnooze: () -> Unit,
-    onTogglePin: () -> Unit,
-    onToggleMute: () -> Unit,
-    onToggleLowPriority: () -> Unit = {},
-    onReload: () -> Unit = {},
-) {
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
-        Text(room.name, style = MaterialTheme.typography.titleSmall,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
-        @Composable
-        fun item(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, action: () -> Unit) {
-            Row(
-                Modifier.fillMaxWidth().clickable { action(); onDismiss() }
-                    .padding(horizontal = 20.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text(label, style = MaterialTheme.typography.bodyMedium)
-            }
-        }
-        if (room.isUnread) item(Icons.Filled.DoneAll, "Mark read", onMarkRead)
-        else item(Icons.Filled.MarkChatUnread, "Mark unread", onMarkUnread)
-        item(Icons.Filled.Snooze, "Snooze…", onSnooze)
-        item(
-            if (room.isPinned) Icons.Filled.PushPin else Icons.Outlined.PushPin,
-            if (room.isPinned) "Unpin" else "Pin", onTogglePin,
-        )
-        item(
-            if (room.isMuted) Icons.Filled.NotificationsOff else Icons.Outlined.NotificationsOff,
-            if (room.isMuted) "Unmute" else "Mute", onToggleMute,
-        )
-        item(
-            Icons.Filled.SouthEast,
-            if (room.isLowPriority) "Restore to inbox" else "Demote to low priority",
-            onToggleLowPriority,
-        )
-        item(Icons.Filled.Refresh, "Reload room", onReload)
-        androidx.compose.foundation.layout.Spacer(Modifier.size(24.dp))
     }
 }
 

@@ -2,6 +2,7 @@ package io.amar.console.ui.inbox
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.draw.alpha
+import io.amar.console.data.chat.ChatRepository
 import io.amar.console.data.chat.MatrixMedia
 import io.amar.console.data.db.ChatRoomRow
 import io.amar.console.data.inbox.blockedCardsFor
@@ -87,6 +89,7 @@ import io.amar.console.ui.components.EmptyState
 import io.amar.console.ui.components.NetworkBadge
 import io.amar.console.ui.components.PaneTopBar
 import io.amar.console.ui.components.RelativeTime
+import io.amar.console.ui.components.RoomMenuSheet
 import io.amar.console.ui.components.SnoozeSheet
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
@@ -107,11 +110,19 @@ import java.util.Locale
  * toggle swaps the list for everything currently snoozed (soonest due first;
  * swipe right there = unsnooze). Chips narrow the Inbox by source and the
  * Feed by platform; both are session-only.
+ *
+ * Long-press on a chat row or a pinned avatar opens the Chat app's room menu
+ * (mark read/unread, snooze, pin, mute, low-priority, reload); its Snooze
+ * lands in THIS screen's picker, never a second one.
  */
 @Composable
 fun InboxScreen(
     repo: InboxRepository,
     spaces: SpacesRepository,
+    /** Chat rows + the pinned strip long-press into the Chat app's room menu
+     *  (pin/mute/demote/reload…) — the same ChatRepository calls, one sheet
+     *  (SPA RoomContextMenu, ^deft-tern). */
+    chat: ChatRepository,
     onOpenChat: (String) -> Unit,
     onOpenMail: (String) -> Unit,
     onOpenFeedItem: (String) -> Unit,
@@ -133,7 +144,8 @@ fun InboxScreen(
     var showSnoozed by rememberSaveable { mutableStateOf(false) }
     var inboxFilter by rememberSaveable { mutableStateOf<InboxSource?>(null) }
     var feedFilter by rememberSaveable { mutableStateOf<FeedKind?>(null) }
-    var snoozeTarget by remember { mutableStateOf<InboxEntry?>(null) }
+    var snoozeTarget by remember { mutableStateOf<SnoozeFor?>(null) }
+    var menuRoomId by remember { mutableStateOf<String?>(null) }
     var showRules by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { repo.refreshRules(); spaces.refreshSpaces() }
 
@@ -233,7 +245,7 @@ fun InboxScreen(
         // hidden in the snoozed view and on the Feed list (SPA ^shy-loon).
         if (!showSnoozed && !showFeed) {
             val pinned by repo.pinnedRooms.collectAsState(initial = emptyList())
-            if (pinned.isNotEmpty()) PinnedChatsStrip(pinned, onOpenChat)
+            if (pinned.isNotEmpty()) PinnedChatsStrip(pinned, onOpenChat, onLongPress = { menuRoomId = it.id })
         }
         if (entries.isEmpty()) {
             EmptyState(
@@ -263,7 +275,7 @@ fun InboxScreen(
                                 }
                                 // Open the picker; the row springs back (false) —
                                 // the snooze itself drops it once a time is picked.
-                                SwipeToDismissBoxValue.EndToStart -> { if (!showSnoozed) snoozeTarget = entry; false }
+                                SwipeToDismissBoxValue.EndToStart -> { if (!showSnoozed) snoozeTarget = SnoozeFor.Item(entry); false }
                                 else -> false
                             }
                         },
@@ -297,6 +309,7 @@ fun InboxScreen(
                                     InboxSource.AGENT -> onOpenSession(entry.sourceId)
                                 }
                             },
+                            onLongClick = if (entry.source == InboxSource.CHAT) ({ menuRoomId = entry.sourceId }) else null,
                             onToggleRoute = { repo.toggleRoute(entry) },
                         )
                     }
@@ -306,13 +319,52 @@ fun InboxScreen(
         }
     }
 
-    snoozeTarget?.let { entry ->
+    snoozeTarget?.let { target ->
         SnoozeSheet(
             onDismiss = { snoozeTarget = null },
-            onPick = { until -> repo.launch { snooze(entry, until) }; snoozeTarget = null },
+            onPick = { until ->
+                when (target) {
+                    is SnoozeFor.Item -> repo.launch { snooze(target.entry, until) }
+                    is SnoozeFor.Room -> repo.launch {
+                        chat.snooze(target.roomId, until)
+                        io.amar.console.ui.shell.UndoController.offer(label = "Snoozed until ${timeFmt.format(Date(until))}") {
+                            chat.snooze(target.roomId, null)
+                        }
+                    }
+                }
+                snoozeTarget = null
+            },
         )
     }
+    // The menu resolves its room by id with a keyed live query (the row holds
+    // an InboxEntry, not the room — SPA ^deft-tern), so pin/mute flips show
+    // on the open sheet.
+    menuRoomId?.let { id ->
+        val room by remember(id) { chat.observeRoom(id) }.collectAsState(initial = null)
+        room?.let { r ->
+            RoomMenuSheet(
+                repo = chat,
+                room = r,
+                onDismiss = { menuRoomId = null },
+                launch = { block -> repo.launch(block) },
+                onSnooze = {
+                    menuRoomId = null
+                    // Inbox rows snooze as their entry (same undo path as the
+                    // swipe); a pinned room may not be listed at all.
+                    val entry = lists.inbox.firstOrNull { it.source == InboxSource.CHAT && it.sourceId == id }
+                    snoozeTarget = if (entry != null) SnoozeFor.Item(entry) else SnoozeFor.Room(id)
+                },
+            )
+        }
+    }
     if (showRules) RoutingRulesSheet(repo, onDismiss = { showRules = false })
+}
+
+/** What the shared snooze picker is for: a listed item, or a room reached
+ *  through the pinned strip (which has no InboxEntry). */
+private sealed interface SnoozeFor {
+    data class Item(val entry: InboxEntry) : SnoozeFor
+    data class Room(val roomId: String) : SnoozeFor
 }
 
 /**
@@ -429,6 +481,7 @@ private fun SwipeHint(direction: SwipeToDismissBoxValue, snoozedView: Boolean) {
     ) { Text(label, style = MaterialTheme.typography.labelMedium) }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun InboxRow(
     entry: InboxEntry,
@@ -438,13 +491,15 @@ private fun InboxRow(
     blockedCards: Int,
     dueLabel: String?,
     onClick: () -> Unit,
+    /** Chat rows only: opens the room menu. */
+    onLongClick: (() -> Unit)?,
     onToggleRoute: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.background)
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -570,10 +625,15 @@ private fun InboxRow(
  * Chat app's pinned section compressed to one row of 32dp avatars so it
  * costs the list a single line (SPA `InboxPinnedChats`, ^shy-loon). Read
  * rooms dim; unread rooms carry a blue count; the bridge network badges the
- * corner. Tap opens the room like any chat item.
+ * corner. Tap opens the room like any chat item; long-press opens its menu.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun PinnedChatsStrip(rooms: List<ChatRoomRow>, onOpenChat: (String) -> Unit) {
+private fun PinnedChatsStrip(
+    rooms: List<ChatRoomRow>,
+    onOpenChat: (String) -> Unit,
+    onLongPress: (ChatRoomRow) -> Unit,
+) {
     Row(
         Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -582,7 +642,9 @@ private fun PinnedChatsStrip(rooms: List<ChatRoomRow>, onOpenChat: (String) -> U
         for (room in rooms) {
             val unread = room.isUnread && room.snoozedUntil == null
             Box(
-                Modifier.size(34.dp).clickable { onOpenChat(room.id) }.alpha(if (unread) 1f else 0.6f),
+                Modifier.size(34.dp)
+                    .combinedClickable(onClick = { onOpenChat(room.id) }, onLongClick = { onLongPress(room) })
+                    .alpha(if (unread) 1f else 0.6f),
             ) {
                 Avatar(
                     name = room.name,
