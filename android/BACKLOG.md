@@ -42,6 +42,9 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+## Shipped
+
+### v107 (2026-10-02)
 - **Inbox source chip / Inbox|Feed toggle survive opening an item** (^blue-pony).
   Tapping Mail/Chat/Agents (or Feed, a platform chip, Snoozed) then opening a
   thread and coming back landed on the unfiltered Inbox: `InboxScreen` held
@@ -82,8 +85,6 @@ view-mode hub-sync (Room meta is fine on one device).
   room) and opens the sheet; its Snooze lands in the Inbox's own picker
   (`snoozeTarget`, now `SnoozeFor.Item | SnoozeFor.Room` — a pinned room may
   not be a listed item), never a second picker. No hub change.
-
-## Shipped
 
 ### v106 (2026-09-30)
 - **Board: `spaces.hideBlocked` honoured on the phone** (^green-toad; SPA
