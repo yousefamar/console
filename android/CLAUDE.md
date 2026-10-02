@@ -281,6 +281,16 @@ while the app is foregrounded (plus short background borrows), so a remote
   another route, the list screen leaves composition, and plain `remember` is
   rebuilt from defaults on back (^blue-pony, the Inbox chip reset; Feeds and
   LongTail screens already did it right).
+- A `ModalBottomSheet` whose items dismiss it must never own the coroutine
+  that does the work — the sheet leaves composition on tap and a
+  `rememberCoroutineScope` inside it is cancelled with it. Take a
+  `launch: (suspend () -> Unit) -> Unit` from the caller (Chat passes its screen
+  scope, Inbox passes `repo.launch`) and hop to `Dispatchers.Main` for any
+  toast (`ui/components/RoomContextSheet.kt`, ^pink-colt).
+- `./gradlew … | grep … | tail` reports the PIPE's exit code, not gradle's — a
+  "clean" compile in that shape was a missing `@OptIn`. Read the `e:` lines,
+  use `set -o pipefail` / `${PIPESTATUS[0]}`, or judge the run from
+  `app/build/test-results/testDebugUnitTest/TEST-*.xml` counts.
 
 ## Launcher-mode specifics
 
