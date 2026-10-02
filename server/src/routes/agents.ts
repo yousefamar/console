@@ -17,7 +17,8 @@ import { spaceCwd, projectRepo } from '../spaces.js'
 import { buildReviewReminder, buildForkCompactPrompt, forkTitle, type ReviewCardRef } from '../kanban/dispatch.js'
 import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/merge.js'
 import { missingSessionMessage } from '../agents/stale-id.js'
-import type { ClientMessage, HubMessage } from '../protocol.js'
+import type { ClientMessage, HubMessage, ClaudeRateLimitInfo } from '../protocol.js'
+import type { BackendFailover } from '../backend-failover.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
 import { saveManifest } from '../manifest.js'
 import { isAlName } from '../al/identity.js'
@@ -121,6 +122,9 @@ export interface AgentContext {
   clearAttentionPush?: (sessionId: string) => void
   /** Runtime agent-model config + fallback chain (model-config.ts). */
   modelConfig: ModelConfig
+  /** Subscription → Bedrock failover on a Max usage-limit rejection
+   *  (backend-failover.ts). Absent in tests that never spawn. */
+  failover?: BackendFailover
   /** Force a fresh Al spawn (re-derive persona). Wired in index.ts to
    *  `reloadAlSession`; used by the `reload_al` client message. */
   reloadAl?: () => Promise<Session | null>
@@ -224,6 +228,15 @@ export function applyBackendSwitch(ctx: AgentContext, backend: AuthBackend): Bac
   broadcastModelState(ctx)
   forceRestartAllSessionsForBackend(ctx)
   return preset
+}
+
+/** A HUMAN picked the backend (`con agent backend set`, SPA toggle). Records
+ *  the choice as the failover's `preferred` (closing any open spill) and then
+ *  performs the switch. The failover itself calls `applyBackendSwitch`
+ *  directly — its switches are not choices. */
+export function applyUserBackendChoice(ctx: AgentContext, backend: AuthBackend): BackendPreset {
+  ctx.failover?.setPreferred(backend)
+  return applyBackendSwitch(ctx, backend)
 }
 
 /** Broadcast the current model + backend state to all clients. */
@@ -570,6 +583,12 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
       // Already fell back (another session beat us to it) — catch this one up.
       session.restartForModelChange()
     }
+  })
+
+  // Subscription rate-limit headers (first-party sessions only). `rejected`
+  // = the Max window is exhausted → the failover spills the fleet to Bedrock.
+  session.on('rate_limit', (info: ClaudeRateLimitInfo, detail?: string) => {
+    ctx.failover?.onRateLimit(info, session.name ?? session.id, detail)
   })
 
   ctx.sessions.set(session.id, session)

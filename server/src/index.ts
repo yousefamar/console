@@ -37,8 +37,10 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, readSettingsEnv, syncBackendSettings, type AuthBackend } from './auth-backend.js'
+import { BackendFailover } from './backend-failover.js'
+import { SubscriptionUsageLedger, summariseUsage } from './subscription-usage.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
@@ -853,6 +855,25 @@ const agentCtx: AgentContext = {
   // rather than waiting out the 10 s poll.
   onWorkerEnded: () => void boardWatcher.onWorkerEnded(),
 }
+
+// Claude Max first, Bedrock as the backup (backend-failover.ts): a first-party
+// session's `rate_limit_event: rejected` spills the whole fleet to Bedrock and
+// a timer brings it back once the window resets. Needs agentCtx for the
+// switch, so it is attached after the literal. `boot()` runs after the
+// session restore (below) so a re-armed return respawns live sessions.
+const backendFailover = new BackendFailover(join(feedsConfigDir, 'backend-failover.json'), {
+  switchTo: (backend, reason) => {
+    log(`[failover] switching backend to ${backend}: ${reason}`)
+    applyBackendSwitch(agentCtx, backend)
+  },
+  activeBackend: detectActiveBackend,
+  log,
+  emit: (topic, data, key) => eventBus.emit({ topic, source: 'backend-failover', key, data }),
+})
+agentCtx.failover = backendFailover
+// Utilisation of the Max windows over time — the data behind "how many
+// subscriptions". Polls the CLI's own usage endpoint with the CLI's token.
+const subscriptionUsage = new SubscriptionUsageLedger(join(feedsConfigDir, 'subscription-usage.json'), { log })
 
 // --------------------------------------------------------------------------
 // Push-to-talk mic ownership (see server/src/mic.ts).
@@ -2088,10 +2109,22 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   // for why this is a distinct lever from /agents/model (env, not just model id).
   if (path === '/agents/backend') {
     if (req.method === 'GET') {
+      const failover = backendFailover.getState()
+      const usage = subscriptionUsage.getState()
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({
         backend: detectActiveBackend(),
         presets: Object.values(BACKEND_PRESETS).map((p) => ({ id: p.id, label: p.label })),
+        preferred: failover.preferred,
+        failover: { active: failover.active, lastWarning: failover.lastWarning, history: failover.history.slice(-20) },
+        usage: {
+          latest: subscriptionUsage.latest(),
+          authError: usage.authError,
+          lastError: usage.lastError,
+          lastOkAt: usage.lastOkAt,
+          last7d: summariseUsage(usage.samples, Date.now() - 7 * 86_400_000),
+          samples: usage.samples.length,
+        },
       }))
       return
     }
@@ -2106,7 +2139,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
             res.end(JSON.stringify({ error: "backend must be 'first_party' or 'bedrock'" }))
             return
           }
-          const preset = applyBackendSwitch(agentCtx, backend as AuthBackend)
+          const preset = applyUserBackendChoice(agentCtx, backend as AuthBackend)
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ backend: preset.id, label: preset.label, chain: preset.chain }))
         } catch (e) {
@@ -2900,6 +2933,8 @@ httpServer.listen(port, host, () => {
     listenerEngine.start()
     imapWatcher.start()
     eventBus.emitStarted()
+    backendFailover.boot()
+    subscriptionUsage.start()
 
     // -----------------------------------------------------------------
     // Al runtime bootstrap — absorbed from ~/proj/code/al into the hub.

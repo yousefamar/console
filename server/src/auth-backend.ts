@@ -59,11 +59,15 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     id: 'first_party',
     label: 'Claude Max subscription',
     env: {},
-    // opus-5 leads (most capable). First-party form assumed bare (same pattern
-    // as every other model here) — not spawn-verified (couldn't test without
-    // switching the live backend off Bedrock); if it 400s the chain auto-falls
-    // back to fable-5. Verify with a one-shot spawn once on the Max sub.
-    chain: ['claude-opus-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    // opus-5-5 leads: the most capable model the Max plan covers at the flat
+    // rate. Fable is deliberately NOT in this chain — on a subscription it has
+    // its own small allowance and then "requires usage credits" (CLI 2.1.280
+    // strings), i.e. the pay-per-use spend this chain exists to avoid; pin it
+    // per session (`con agent model pin`) when a card warrants it. Every id
+    // below is in the CLI's own model catalog (2.1.280); none is spawn-
+    // verified against the Max account yet (its OAuth was expired when this
+    // was written) — a 400 auto-advances the chain.
+    chain: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
   },
   bedrock: {
     id: 'bedrock',

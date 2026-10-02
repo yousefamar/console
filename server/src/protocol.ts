@@ -418,6 +418,27 @@ export interface ClaudeControlResponseMessage {
   }
 }
 
+/** CLI ≥2.1.280: emitted whenever the subscription rate-limit headers change.
+ *  Never emitted on Bedrock/Vertex/API-key sessions (no such headers). */
+export interface ClaudeRateLimitEvent {
+  type: 'rate_limit_event'
+  rate_limit_info: ClaudeRateLimitInfo
+  uuid?: string
+  session_id?: string
+}
+
+export interface ClaudeRateLimitInfo {
+  status: 'allowed' | 'allowed_warning' | 'rejected'
+  /** Epoch SECONDS (the CLI mirrors the header value). */
+  resetsAt?: number
+  rateLimitType?: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'seven_day_overage_included' | 'overage'
+  /** 0..1 share of the binding window used. */
+  utilization?: number
+  unifiedWindows?: Partial<Record<'five_hour' | 'seven_day' | 'seven_day_overage_included', { utilization: number; resetsAt: number }>>
+  isUsingOverage?: boolean
+  overageStatus?: 'allowed' | 'allowed_warning' | 'rejected'
+}
+
 export type ClaudeStdoutMessage =
   | ClaudeSystemMessage
   | ClaudeAssistantMessage
@@ -426,6 +447,7 @@ export type ClaudeStdoutMessage =
   | ClaudeControlRequest
   | ClaudeControlResponseMessage
   | ClaudeStreamEvent
+  | ClaudeRateLimitEvent
 
 // Content blocks within assistant/user messages
 export type ClaudeContentBlock =

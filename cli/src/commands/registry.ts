@@ -388,6 +388,17 @@ export const COMMANDS: CommandDef[] = [
   { name: 'agent merge', description: 'Merge a fork back into its parent: the fork self-summarises what it learned/did, that digest is injected into the parent session, then the fork is closed. Use instead of killing a fork when its findings should survive. Accepts a hub session id, a conv id (fork claudeSessionId), or a unique name.', safety: 'write',
     args: [{ name: 'session', required: true, description: 'Fork to merge (session id / conv id / name)' }],
     examples: ['con agent merge session_47_1781…', 'con agent merge 6ecfb8ec-…'] },
+  { name: 'agent backend', description: 'Which auth backend the fleet spawns under: `first_party` (Claude Max subscription, the standing choice) or `bedrock` (pay-per-token backup). `set` rewrites ~/.claude/settings.json env, swaps the model chain and respawns every live session. The hub fails over to Bedrock by itself when a Max window (5 h / weekly) is exhausted and returns once it resets; `get` shows the active backend, any open spill, the spill history and the subscription\'s utilisation (the data for "how many subscriptions").', safety: 'write',
+    args: [
+      { name: 'subcommand', required: false, description: '`get` (default), `set`, `history`, `usage`' },
+      { name: 'backend', required: false, description: '`first_party` or `bedrock` for `set`' },
+    ],
+    examples: [
+      'con agent backend',
+      'con agent backend set first_party',
+      'con agent backend history',
+      'con agent backend usage',
+    ] },
   { name: 'agent model', description: 'Inspect or switch the Claude model all hub agents spawn with. Recovery lever when a model is pulled: `set` changes it live (no code edit) and restarts sessions onto it; the hub also auto-falls-back down the chain on a model-unavailable error.', safety: 'write',
     args: [
       { name: 'subcommand', required: false, description: '`get` (default) or `set`' },

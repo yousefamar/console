@@ -13,6 +13,7 @@ import { EventEmitter } from 'node:events'
 import { createInterface } from 'node:readline'
 import type {
   ClaudeStdoutMessage,
+  ClaudeRateLimitInfo,
   ClaudeStdinMessage,
   ClaudeStdinContentBlock,
   ClaudeContentBlock,
@@ -34,7 +35,7 @@ import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
-import { isTransientApiError, isUpstreamOutageError, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
+import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
 import { resolveEffort, effortHooks, type Effort, type EffortReason, type SpawnKind } from './agents/effort.js'
@@ -78,6 +79,8 @@ export function agentNice(env: NodeJS.ProcessEnv = process.env): number {
 /** How many times a single session may auto-restart chasing a working model
  *  before giving up — guards against a restart loop if every model fails. */
 const MAX_MODEL_RESTARTS = 6
+/** Delivered to a session whose in-flight turn was cut by a model/backend respawn. */
+export const MODEL_RESTART_NUDGE = 'The hub switched model/backend mid-turn, which interrupted you. Continue from where you left off.'
 
 export interface ImageAttachment {
   media_type: string
@@ -1171,6 +1174,15 @@ export class Session extends EventEmitter {
     this.modelRestarts++
     if (this.process && this.processAlive) {
       // Alive — kill it; the exit handler does the re-spawn on the new model.
+      // A turn in flight dies with the process and a silent --resume would
+      // leave it half-done forever (the hub-restart path has the same nudge).
+      // Queued, so it is delivered once the respawn is idle — never mid-turn.
+      if (this.status === 'running' && !this.transientResumeTimer) {
+        this.queuedMessage = this.queuedMessage
+          ? `${this.queuedMessage}\n\n${MODEL_RESTART_NUDGE}`
+          : MODEL_RESTART_NUDGE
+        this.emitQueued()
+      }
       this.restartingForModel = true
       this.process.kill('SIGKILL')
     } else {
@@ -1205,6 +1217,9 @@ export class Session extends EventEmitter {
     this.status = 'idle'
     if (this.claudeSessionId) {
       this.spawn({ prompt: '', cwd: this.cwd, resume: this.claudeSessionId, silent: true, name: this.name })
+      // The resume is silent — deliver whatever was parked for the end of
+      // the turn the kill cut short (incl. the restart nudge, if any).
+      this.flushQueuedMessage()
     } else {
       this.spawn({ prompt: this.initialPrompt, cwd: this.cwd, name: this.name })
       if (this.initialPrompt) this.sendMessage(this.initialPrompt)
@@ -1339,7 +1354,14 @@ export class Session extends EventEmitter {
             const isApiError = anyMsg.isApiErrorMessage || anyMsg.is_api_error_message
               || anyMsg.error != null || /^API Error/i.test(text)
             if (isApiError) {
-              if (isTransientApiError(text)) {
+              // A subscription quota exhaustion worded as an API error (the
+              // structured rate_limit_event usually precedes it; this is the
+              // belt to that brace). The turn is also a transient failure —
+              // the Continue nudge below lands on Bedrock after the failover.
+              if (isUsageLimitError(text)) {
+                this.emit('rate_limit', { status: 'rejected' } satisfies ClaudeRateLimitInfo, text.slice(0, 200))
+              }
+              if (isTransientApiError(text) || isUsageLimitError(text)) {
                 // 429/503/overloaded: the turn died but the session is fine.
                 // Schedule a backoff "Continue." nudge instead of sitting
                 // idle until someone notices (auto-resume, like hub restarts).
@@ -1419,6 +1441,16 @@ export class Session extends EventEmitter {
 
       case 'stream_event':
         this.handleStreamEvent(msg)
+        break
+
+      // Subscription (Claude Max) rate-limit headers changed. `rejected` =
+      // the 5h/weekly window is exhausted and every turn will fail until
+      // resetsAt — the hub fails the fleet over to Bedrock (backend-failover.ts).
+      // Bedrock sessions never emit this (no such headers on that route).
+      case 'rate_limit_event':
+        if (msg.rate_limit_info && typeof msg.rate_limit_info === 'object') {
+          this.emit('rate_limit', msg.rate_limit_info satisfies ClaudeRateLimitInfo)
+        }
         break
     }
   }

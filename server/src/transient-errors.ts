@@ -59,6 +59,21 @@ export function isTransientApiError(text: string): boolean {
   )
 }
 
+/** A SUBSCRIPTION quota exhaustion (Claude Max 5h / weekly window), as the CLI
+ *  words it in a synthetic API-error message. Text-level fallback for the
+ *  structured `rate_limit_event` (status: rejected) — the hub fails the fleet
+ *  over to Bedrock on either (backend-failover.ts). A plain API 429 ("rate
+ *  limit", "too many requests") is NOT this: that resolves by waiting. */
+export function isUsageLimitError(text: string): boolean {
+  const t = text.toLowerCase()
+  return (
+    t.includes('usage limit') ||
+    /\b(hit|reached) your (?:\w+ ){0,3}limit\b/.test(t) ||
+    t.includes('out of usage credits') ||
+    t.includes('out of extra usage')
+  )
+}
+
 /** Backoff schedule for auto-resume nudges (ms). Index = attempt number. */
 export const RESUME_BACKOFF_MS = [60_000, 180_000, 420_000, 900_000] as const
 

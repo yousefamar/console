@@ -38,6 +38,10 @@ export const BUILTIN_TOPICS: TopicDoc[] = [
     fields: { listenerId: 'listener id', expect: 'one-line rule', on: 'awaited topic', deadlineAt: 'epoch ms', armedAt: 'epoch ms', reason: 'deadline | hub down', acted: 'false when the deadline was >24 h stale on restart', lateMs: 'present when judged late', confidence: 'fresh | stale — geo topics only, stale = last fix >30 min old', triggerEventId: 'the --after event, if any', trigger: 'that event\'s data', sinceLastSatisfiedMs: 'ms since it was last satisfied' } },
   { topic: 'expect.satisfied', description: 'An expectation\'s awaited event arrived in time.',
     fields: { listenerId: 'listener id', expect: 'one-line rule', eventId: 'the satisfying event', deadlineAt: 'the tick it satisfied (absolute)', triggerEventIds: 'the --after events it disarmed (relative)' } },
+  { topic: 'console.backend.failover', description: 'A Claude Max usage-limit rejection spilled the agent fleet onto Amazon Bedrock (backend-failover.ts). The fleet returns by itself once the window resets.',
+    fields: { to: 'bedrock', rateLimitType: 'five_hour | seven_day | …', resetsAt: 'epoch ms the window resets (null when unknown)', returnAt: 'epoch ms the fleet is due back on the subscription', trippedBy: 'session that hit the limit' } },
+  { topic: 'console.backend.restored', description: 'The subscription window reset and the fleet is back on Claude Max.',
+    fields: { to: 'first_party', onBedrockMs: 'how long the spill lasted', rateLimitType: 'the window that had tripped' } },
   { topic: 'hub.started', description: 'The hub finished booting. Fires once per process — the hook for catch-up scripts after downtime.',
     fields: { downSince: 'epoch ms of the last heartbeat before the restart (null on first boot)', downMs: 'downtime length', pid: 'process id' } },
 ]

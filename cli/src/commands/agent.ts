@@ -1,5 +1,5 @@
 import { hubFetch, HubError } from '../client.js'
-import { output, exitWithError, info, outputLine, type GlobalFlags } from '../output.js'
+import { output, exitWithError, info, outputLine, isJsonMode, type GlobalFlags } from '../output.js'
 import { parseFlags, unknownFlags } from './util.js'
 
 export async function agent(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
@@ -467,21 +467,78 @@ async function agentReload(args: string[], flags: GlobalFlags): Promise<void> {
 }
 
 interface ModelState { model: string; chain: string[]; lockedByEnv: boolean }
-interface BackendState { backend: string; presets: Array<{ id: string; label: string }> }
+interface FailoverEpisode { hitAt: number; resetsAt: number | null; returnAt: number; rateLimitType?: string; trippedBy?: string; returnedAt?: number; closedBy?: string }
+interface UsageSample { at: number; windows: Record<string, { utilization: number; resetsAt: number | null }> }
+interface BackendState {
+  backend: string
+  presets: Array<{ id: string; label: string }>
+  preferred: string
+  failover: { active: FailoverEpisode | null; lastWarning: { at: number; utilization?: number; rateLimitType?: string; resetsAt: number | null } | null; history: FailoverEpisode[] }
+  usage: { latest: UsageSample | null; authError: string | null; lastError: string | null; lastOkAt: number | null; last7d: Record<string, { peak: number; mean: number; samplesAbove90: number; samples: number }>; samples: number }
+}
 
-/** `con agent backend [get | set <first_party|bedrock>]` — switch which auth
- *  backend the whole fleet spawns under. Distinct from `con agent model`: this
- *  also rewrites ~/.claude/settings.json's env (each `claude` subprocess reads
- *  its backend from there at its OWN startup) and swaps the model chain to
- *  that backend's verified id format, then forces every live session to
- *  respawn (the in-place model-switch fast path can't apply a new backend to
- *  an already-running process). Use this when Max-subscription session limits
- *  are hit (switch to bedrock) or once they reset (switch back). */
+const fmtTime = (ms: number | null | undefined): string => (ms ? new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + 'Z' : '—')
+const fmtMins = (ms: number): string => (ms >= 3_600_000 ? `${(ms / 3_600_000).toFixed(1)} h` : `${Math.round(ms / 60_000)} min`)
+
+/** `con agent backend [get | set <first_party|bedrock> | history | usage]` —
+ *  which auth backend the whole fleet spawns under. Distinct from `con agent
+ *  model`: `set` also rewrites ~/.claude/settings.json's env (each `claude`
+ *  subprocess reads its backend from there at its OWN startup) and swaps the
+ *  model chain to that backend's id format, then forces every live session to
+ *  respawn. The hub spills to Bedrock on its own when a Max window is
+ *  exhausted and returns once it resets (backend-failover.ts); `set` records
+ *  the HUMAN's standing choice, which the failover never overrides. */
 async function agentBackend(args: string[], flags: GlobalFlags): Promise<void> {
   const sub = args[0]
   if (!sub || sub === 'get' || sub === 'list') {
     const state = await hubFetch<BackendState>('/agents/backend')
-    output(state, flags)
+    if (isJsonMode(flags)) { output(state, flags); return }
+    const lines: string[] = []
+    lines.push(`backend:    ${state.backend}${state.backend !== state.preferred ? `  (preferred: ${state.preferred})` : ''}`)
+    const ep = state.failover?.active
+    if (ep) {
+      lines.push(`failover:   on Bedrock since ${fmtTime(ep.hitAt)} (${ep.rateLimitType ?? 'window unknown'}, tripped by ${ep.trippedBy ?? '?'}); back on the subscription at ${fmtTime(ep.returnAt)}`)
+    } else if (state.preferred === 'first_party') {
+      lines.push(`failover:   armed — spills to Bedrock on a Max usage-limit rejection`)
+    } else {
+      lines.push(`failover:   off — Bedrock chosen manually (set first_party to arm)`)
+    }
+    const h = state.failover?.history ?? []
+    if (h.length) {
+      const total = h.reduce((a, e) => a + ((e.returnedAt ?? Date.now()) - e.hitAt), 0)
+      lines.push(`spills:     ${h.length} recorded, ${fmtMins(total)} on Bedrock in total; last ${fmtTime(h[h.length - 1]!.hitAt)}`)
+    }
+    const u = state.usage
+    if (u?.authError) lines.push(`usage:      ${u.authError}`)
+    else if (u?.latest) {
+      const w = Object.entries(u.latest.windows).map(([k, v]) => `${k} ${v.utilization.toFixed(0)}%${v.resetsAt ? ` (resets ${fmtTime(v.resetsAt)})` : ''}`).join(', ')
+      lines.push(`usage:      ${w}  @ ${fmtTime(u.latest.at)}`)
+      const peaks = Object.entries(u.last7d).map(([k, v]) => `${k} peak ${v.peak.toFixed(0)}% / mean ${v.mean.toFixed(0)}%${v.samplesAbove90 ? ` / ${v.samplesAbove90}×≥90%` : ''}`).join(', ')
+      if (peaks) lines.push(`last 7d:    ${peaks}`)
+    } else lines.push(`usage:      no samples yet${u?.lastError ? ` (${u.lastError})` : ''}`)
+    output(lines.join('\n'), flags)
+    return
+  }
+  if (sub === 'history') {
+    const state = await hubFetch<BackendState>('/agents/backend')
+    const rows = (state.failover?.history ?? []).map((e) => ({
+      hit: fmtTime(e.hitAt), window: e.rateLimitType ?? '?', trippedBy: e.trippedBy ?? '?',
+      returned: fmtTime(e.returnedAt), onBedrock: fmtMins((e.returnedAt ?? Date.now()) - e.hitAt), closedBy: e.closedBy ?? 'open',
+    }))
+    if (state.failover?.active) {
+      const e = state.failover.active
+      rows.push({ hit: fmtTime(e.hitAt), window: e.rateLimitType ?? '?', trippedBy: e.trippedBy ?? '?', returned: `due ${fmtTime(e.returnAt)}`, onBedrock: fmtMins(Date.now() - e.hitAt), closedBy: 'open' })
+    }
+    output(isJsonMode(flags) ? { active: state.failover?.active ?? null, history: state.failover?.history ?? [] } : rows, flags)
+    return
+  }
+  if (sub === 'usage') {
+    const state = await hubFetch<BackendState>('/agents/backend')
+    if (isJsonMode(flags)) { output(state.usage, flags); return }
+    const u = state.usage
+    if (u.authError) { output(`usage: ${u.authError}`, flags); return }
+    const rows = Object.entries(u.last7d).map(([k, v]) => ({ window: k, now: u.latest?.windows[k] ? `${u.latest.windows[k]!.utilization.toFixed(0)}%` : '—', peak7d: `${v.peak.toFixed(0)}%`, mean7d: `${v.mean.toFixed(0)}%`, 'samples≥90%': v.samplesAbove90, samples: v.samples }))
+    output(rows.length ? rows : `no samples yet${u.lastError ? ` (${u.lastError})` : ''}`, flags)
     return
   }
   if (sub === 'set') {
@@ -494,7 +551,7 @@ async function agentBackend(args: string[], flags: GlobalFlags): Promise<void> {
     output(state, flags)
     return
   }
-  exitWithError('USAGE', `Unknown: con agent backend ${sub}. Usage: con agent backend [get | set <first_party|bedrock>]`, flags)
+  exitWithError('USAGE', `Unknown: con agent backend ${sub}. Usage: con agent backend [get | set <first_party|bedrock> | history | usage]`, flags)
 }
 
 /** `con agent model` — inspect or switch the model all hub agents spawn with.
