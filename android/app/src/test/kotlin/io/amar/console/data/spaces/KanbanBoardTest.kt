@@ -119,6 +119,27 @@ kanban-plugin: board
     }
 
     @Test
+    fun `effort pin parses either spelling, only known levels, and re-serializes after the model token`() {
+        // SPA 26bfda38 (^busy-elk): `#effort/<level>` — `#effort:<level>` read-compatible.
+        val t1 = KanbanCodec.parseCardTokens("Port the thing #effort/xhigh #sonnet @al ^abc")
+        assertEquals("Port the thing", t1.text)
+        assertEquals("xhigh", t1.effort); assertEquals("sonnet", t1.model)
+        assertEquals("al", t1.agentKey); assertEquals("abc", t1.blockId)
+        val t2 = KanbanCodec.parseCardTokens("Legacy spelling #effort:low")
+        assertEquals("Legacy spelling", t2.text); assertEquals("low", t2.effort)
+        // An unknown level is ordinary card text, like any other hashtag.
+        val t3 = KanbanCodec.parseCardTokens("Try hard #effort/turbo")
+        assertEquals("Try hard #effort/turbo", t3.text); assertNull(t3.effort)
+
+        val board = KanbanCodec.parse("## Now\n\n- [ ] Port the thing #sonnet #effort/high #nofork @al ^abc")
+        val card = board.columns[0].cards[0]
+        assertEquals("high", card.effort)
+        card.effort = "max"
+        KanbanCodec.refreshCardLine(card)
+        assertEquals("- [ ] Port the thing #sonnet #effort/max #nofork @al ^abc", card.lines[0])
+    }
+
+    @Test
     fun `continuations attach to the previous card and survive round-trip`() {
         val board = KanbanCodec.parse(sample)
         val backlog = board.columns.first { it.title == "Backlog" }

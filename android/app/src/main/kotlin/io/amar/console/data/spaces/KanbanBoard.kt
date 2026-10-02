@@ -31,6 +31,8 @@ data class BoardCard(
     var inherit: Boolean = false,
     /** #model/<alias-or-id> (or a bare alias tag) — ticket-fork model pin. */
     var model: String? = null,
+    /** #effort/<level> — ticket-fork `--effort` pin (forks run `high` by policy). */
+    var effort: String? = null,
 )
 
 data class Interstitial(var afterCard: Int, val line: String)
@@ -73,6 +75,10 @@ object KanbanCodec {
     fun isModelAlias(s: String): Boolean = s in MODEL_ALIASES
     private val MODEL_ALIAS_RE = Regex("""^(.*?)\s+#(${MODEL_ALIASES.joinToString("|")})$""")
     private val MODEL_RE = Regex("""^(.*?)\s+#model/([\w.:-]+)$""")
+    /** The CLI's `--effort` levels — keep in sync with server/src/kanban/board.ts
+     *  + src/kanban/board.ts. `#effort:<level>` is read-compatible, written as `/`. */
+    val EFFORT_LEVELS = listOf("low", "medium", "high", "xhigh", "max")
+    private val EFFORT_RE = Regex("""^(.*?)\s+#effort[/:](${EFFORT_LEVELS.joinToString("|")})$""")
     private val BLOCK_RE = Regex("""^(.*?)\s+\^([A-Za-z0-9-]+)$""")
     private val AGENT_RE = Regex("""^(.*?)\s+@([a-z0-9][a-z0-9-]*)$""")
     private val BLOCKED_RE = Regex("""^(.*?)\s+#blocked$""")
@@ -91,11 +97,12 @@ object KanbanCodec {
         val nofork: Boolean = false,
         val inherit: Boolean = false,
         val model: String? = null,
+        val effort: String? = null,
     )
 
     /** Strip trailing `@key` / `^blockid` / `#blocked` / `#nofork` /
-     *  `#inherit` / `#model/x` (or bare alias) off card text. Order-agnostic,
-     *  up to one of each — a verbatim port of the TS parseCardTokens. */
+     *  `#inherit` / `#model/x` (or bare alias) / `#effort/x` off card text.
+     *  Order-agnostic, up to one of each — a verbatim port of the TS parseCardTokens. */
     fun parseCardTokens(rawText: String): CardTokens {
         var text = rawText.trimEnd()
         var agentKey: String? = null
@@ -104,7 +111,8 @@ object KanbanCodec {
         var nofork = false
         var inherit = false
         var model: String? = null
-        repeat(6) {
+        var effort: String? = null
+        repeat(7) {
             val block = BLOCK_RE.find(text)
             if (block != null && blockId == null) {
                 text = block.groupValues[1].trimEnd(); blockId = block.groupValues[2]; return@repeat
@@ -129,9 +137,13 @@ object KanbanCodec {
             if (mdl != null && model == null) {
                 text = mdl.groupValues[1].trimEnd(); model = mdl.groupValues[2]; return@repeat
             }
-            return CardTokens(text, agentKey, blockId, blocked, nofork, inherit, model)
+            val eff = EFFORT_RE.find(text)
+            if (eff != null && effort == null) {
+                text = eff.groupValues[1].trimEnd(); effort = eff.groupValues[2]; return@repeat
+            }
+            return CardTokens(text, agentKey, blockId, blocked, nofork, inherit, model, effort)
         }
-        return CardTokens(text, agentKey, blockId, blocked, nofork, inherit, model)
+        return CardTokens(text, agentKey, blockId, blocked, nofork, inherit, model, effort)
     }
 
     fun parse(content: String): KanbanBoard {
@@ -161,7 +173,7 @@ object KanbanCodec {
                 val t = parseCardTokens(card.groupValues[2])
                 c.cards.add(BoardCard(
                     t.text, card.groupValues[1] != " ", t.agentKey, t.blockId, t.blocked, mutableListOf(line),
-                    nofork = t.nofork, inherit = t.inherit, model = t.model,
+                    nofork = t.nofork, inherit = t.inherit, model = t.model, effort = t.effort,
                 ))
                 i++; continue
             }
@@ -189,10 +201,11 @@ object KanbanCodec {
         return out.joinToString("\n")
     }
 
-    /** Token order mirrors the hub serializer: model, nofork, inherit, blocked, @key, ^id. */
+    /** Token order mirrors the hub serializer: model, effort, nofork, inherit, blocked, @key, ^id. */
     private fun cardFirstLine(card: BoardCard): String {
         val tokens = mutableListOf(card.text)
         card.model?.let { tokens.add(modelToken(it)) }
+        card.effort?.let { tokens.add("#effort/$it") }
         if (card.nofork) tokens.add("#nofork")
         if (card.inherit) tokens.add("#inherit")
         if (card.blocked) tokens.add("#blocked")

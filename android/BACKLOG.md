@@ -59,6 +59,15 @@ view-mode hub-sync (Room meta is fine on one device).
   the paged `LazyRow` for every horizontal pan; cards are plain `CardChip`s
   again and Done is reached only through the card sheet's column picker.
 
+- **Board grammar: `#effort/<level>` parsed like the SPA/hub** (nightly sweep,
+  SPA 26bfda38 ^busy-elk). The hub gained a per-card `--effort` pin
+  (`#effort/<low|medium|high|xhigh|max>`, `#effort:<level>` read-compatible,
+  `CardView.effort`); `KanbanCodec.parseCardTokens` / `cardFirstLine` and
+  `SpacesRepository.CardView` now carry it (token order model → effort → nofork
+  → inherit → blocked → @key → ^id, the hub serializer's). No visible change —
+  the hub strips the tag from served card text — this keeps the client port in
+  sync so a raw-markdown parse never leaks `#effort/high` as title text.
+
 ## Shipped
 
 ### v106 (2026-09-30)

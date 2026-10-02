@@ -102,6 +102,8 @@ class SpacesRepository(
          *  `#haiku`/`#sonnet`/`#opus`/`#fable` — the hub resolves both to the
          *  same field, so `model` is `sonnet` for a `#sonnet` card. */
         val model: String? = null,
+        /** `#effort/<level>` — the ticket-fork's `--effort` pin (`low|medium|high|xhigh|max`). */
+        val effort: String? = null,
         val detail: List<String>,
     )
 
@@ -238,6 +240,7 @@ class SpacesRepository(
             nofork = o["nofork"]?.jsonPrimitive?.content == "true",
             inherit = o["inherit"]?.jsonPrimitive?.content == "true",
             model = o["model"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+            effort = o["effort"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
             detail = (o["detail"] as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
         )
     }
