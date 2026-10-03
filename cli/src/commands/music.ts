@@ -103,8 +103,15 @@ async function musicPlay(args: string[], flags: GlobalFlags): Promise<void> {
   if (ctxType) {
     const name = typeof opts[ctxType] === 'string' && opts[ctxType] !== 'true' ? opts[ctxType] : positional
     if (!name) return exitWithError('USAGE', `con music play --${ctxType} "<name>"`, flags)
-    const r = await hubFetch<SearchResults>('/spotify/search', { params: { q: name, limit: '1' } })
-    const item = ctxType === 'playlist' ? r.playlists?.[0] : ctxType === 'album' ? r.albums?.[0] : r.artists?.[0]
+    let item: { uri: string | null; name: string } | undefined
+    if (ctxType === 'playlist') {
+      const own = await hubFetch<{ playlists: Playlist[] }>('/spotify/playlists')
+      item = own.playlists?.find((p) => p.name.toLowerCase().includes(name.toLowerCase()))
+    }
+    if (!item) {
+      const r = await hubFetch<SearchResults>('/spotify/search', { params: { q: name, limit: '1' } })
+      item = ctxType === 'playlist' ? r.playlists?.[0] : ctxType === 'album' ? r.albums?.[0] : r.artists?.[0]
+    }
     if (!item?.uri) return exitWithError('USAGE', `No ${ctxType} found for "${name}"`, flags)
     await hubFetch('/spotify/play', { method: 'POST', body: { contextUri: item.uri } })
     return output({ ok: true, playing: item.name }, flags)
