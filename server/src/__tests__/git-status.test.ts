@@ -20,7 +20,47 @@ vi.mock('node:child_process', () => ({
   },
 }))
 
-const { gitStatusSync, forgetGitStatus } = await import('../git-status.js')
+// Checkout resolution reads the filesystem; model these dirs (`>name` = symlink).
+//   /repo        — a repository root itself (has .git)
+//   /vault/p     — vault project dir with a `repo` link to a checkout
+//   /vault/q     — vault project dir whose checkout is linked as `app`
+//   /vault/r     — vault project dir with no checkout inside (falls back)
+//   /vault       — the vault root: a REAL nested repo (`al`) must not count
+//   /nope        — not a dir git accepts
+const tree: Record<string, string[]> = {
+  '/repo': ['.git', 'src'],
+  '/vault': ['al', 'projects', '>_data'],
+  '/vault/al': ['.git'],
+  '/vault/projects': [],
+  '/vault/_data': [],
+  '/vault/p': ['board.md', '>repo'],
+  '/vault/p/repo': ['.git'],
+  '/vault/q': ['agendas', '>app', 'node_modules', 'archive'],
+  '/vault/q/app': ['.git'],
+  '/vault/q/node_modules': ['.git'],   // never a candidate
+  '/vault/r': ['research', 'sources'],
+  '/vault/r/research': [],
+  '/vault/r/sources': [],
+}
+vi.mock('node:fs/promises', () => ({
+  readdir: async (p: string) => {
+    const kids = tree[p]
+    if (!kids) throw new Error('ENOENT')
+    return kids.map((raw) => {
+      const link = raw.startsWith('>'), name = link ? raw.slice(1) : raw
+      return { name, isDirectory: () => !link && name !== 'board.md' && name !== '.git', isSymbolicLink: () => link }
+    })
+  },
+  stat: async (p: string) => {
+    const isDir = p in tree
+    const parent = p.slice(0, p.lastIndexOf('/')), base = p.slice(p.lastIndexOf('/') + 1)
+    const listed = tree[parent]?.some((raw) => raw === base || raw === '>' + base)
+    if (!isDir && !listed) throw new Error('ENOENT')
+    return { isDirectory: () => isDir }
+  },
+}))
+
+const { gitStatusSync, forgetGitStatus, resolveCheckout } = await import('../git-status.js')
 
 const settle = () => new Promise((r) => setTimeout(r, 5))
 
@@ -39,6 +79,7 @@ describe('gitStatusSync', () => {
     let release!: () => void
     gate = new Promise((r) => { release = r })
     for (let i = 0; i < 12; i++) gitStatusSync('/repo')   // a dozen sessions, one cwd
+    await new Promise((r) => setImmediate(r))              // checkout resolution (fs) precedes the git calls
     expect(calls).toHaveLength(2)                          // one refresh: rev-parse + status
     release()
     await settle()
@@ -47,10 +88,38 @@ describe('gitStatusSync', () => {
     expect(calls).toHaveLength(4)                          // fresh snapshot → no new refresh
   })
 
+  it('describes the checkout INSIDE a vault project dir, not the vault', async () => {
+    forgetGitStatus('/vault/q')
+    gitStatusSync('/vault/q')
+    await settle()
+    expect(gitStatusSync('/vault/q').repo).toBe('/vault/q/app')
+    expect(calls.every((c) => c.cwd === '/vault/q/app')).toBe(true)   // every git call ran in the checkout
+    expect(gitStatusSync('/repo').repo).toBeUndefined()               // a repo root describes itself
+  })
+
   it('a checkout git rejects yields an empty snapshot, not a throw', async () => {
     expect(gitStatusSync('/nope')).toEqual({})
     await settle()
     expect(gitStatusSync('/nope')).toEqual({})
     expect(calls.filter((c) => c.cwd === '/nope')).toHaveLength(2)   // failed refresh is not retried until stale
+  })
+})
+
+describe('resolveCheckout', () => {
+  it('a repository root is its own checkout, whatever is under it', async () => {
+    expect(await resolveCheckout('/repo')).toBe('/repo')
+  })
+  it('the `repo` link wins', async () => {
+    expect(await resolveCheckout('/vault/p')).toBe('/vault/p/repo')
+  })
+  it('any other child that is a repository counts (astera links its code as `app`)', async () => {
+    expect(await resolveCheckout('/vault/q')).toBe('/vault/q/app')
+  })
+  it('a REAL nested repo is vault content, not the checkout (root/al at the vault root)', async () => {
+    expect(await resolveCheckout('/vault')).toBe('/vault')
+  })
+  it('no checkout inside → the cwd itself (the vault)', async () => {
+    expect(await resolveCheckout('/vault/r')).toBe('/vault/r')
+    expect(await resolveCheckout('/nope')).toBe('/nope')
   })
 })

@@ -258,7 +258,7 @@ export function AgentSessionView() {
           {activeSession?.gitBranch && (
             <span
               className="text-[10px] text-text-tertiary flex-shrink min-w-0 truncate flex items-center gap-1"
-              title={activeSession.gitRepo ? `git: ${shortCwd(activeSession.gitRepo)} (the repo symlink in this project dir)` : `git: ${activeSession.cwd ? shortCwd(activeSession.cwd) : 'cwd'}`}
+              title={activeSession.gitRepo ? `git: ${shortCwd(activeSession.gitRepo)} (the checkout inside this project dir)` : `git: ${activeSession.cwd ? shortCwd(activeSession.cwd) : 'cwd'}`}
             >
               <GitBranch size={10} className="flex-shrink-0" />
               <span className="truncate">{activeSession.gitBranch}</span>

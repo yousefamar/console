@@ -1226,22 +1226,13 @@ export class Session extends EventEmitter {
     }
   }
 
-  /** The checkout the status bar should describe. A space-bound session runs
-   *  from its VAULT project dir; when that dir carries a `repo` symlink to the
-   *  code, the vault's own branch/+/- is noise (Yousef, ^spry-seal) — report
-   *  the linked checkout instead. */
-  private gitCwd(): string {
-    const repo = join(this.cwd, 'repo')
-    try { if (statSync(repo).isDirectory()) return repo } catch { /* no repo link */ }
-    return this.cwd
-  }
-
   /** Get session info for listing */
   getInfo(): SessionInfo {
-    // Served from the shared per-checkout snapshot (git-status.ts) — never a
+    // Served from the shared per-cwd snapshot (git-status.ts) — never a
     // blocking shell-out; the SPA calls this for every session every 10 s.
-    const gitCwd = this.gitCwd()
-    const git = gitStatusSync(gitCwd)
+    // The snapshot describes the code checkout INSIDE a vault project dir
+    // when there is one (`repo` link or any child repository), else the cwd.
+    const git = gitStatusSync(this.cwd)
     return {
       id: this.id,
       claudeSessionId: this.claudeSessionId,
@@ -1274,7 +1265,7 @@ export class Session extends EventEmitter {
       queuedMessage: this.queuedMessage,
       todos: this.visibleTodos().length ? this.visibleTodos() : undefined,
       gitBranch: git.branch,
-      gitRepo: gitCwd === this.cwd ? undefined : gitCwd,
+      gitRepo: git.repo,
       gitDirty: git.dirty,
       gitStats: git.stats,
     }

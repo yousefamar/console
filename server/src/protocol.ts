@@ -267,8 +267,8 @@ export interface SessionInfo {
   gitBranch?: string
   gitDirty?: boolean
   gitStats?: { added: number; deleted: number }
-  /** The checkout the git fields describe when it isn't the cwd — the `repo`
-   *  symlink inside a vault project dir. */
+  /** The checkout the git fields describe when it isn't the cwd — the code
+   *  repository inside a vault project dir (`repo` link or any child repo). */
   gitRepo?: string
 }
 
