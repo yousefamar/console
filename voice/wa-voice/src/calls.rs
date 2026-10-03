@@ -20,6 +20,7 @@
 //!   audio path) in the state a human caller would leave it in.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -146,14 +147,22 @@ impl Default for IdleNoise {
 ///   With the room capture (`wire.rs`) that turns ONE call into a full A/B.
 ///   Spec atoms joined by `+`: `base` (the call's env levers), `dtx`,
 ///   `floor:<dBFS>`, `tone:<ms>[@<dBFS>]`, `noise:<ms>[@<dBFS>]`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Preroll {
     Off,
     Tone,
     Noise,
+    /// A rendered clip (16 kHz mono s16 wav) played before the utterance — a
+    /// breath in the clone's voice: at speech level, so the phone's receive chain
+    /// has adapted before the first word arrives (the 3 Oct sweep: every first
+    /// word after a 300 ms burst played whole, every one from idle lost its
+    /// tail), and natural, so the listener does not register it. `name`
+    /// resolves under `~/.config/console/voice-clips/<name>.wav`; an absolute
+    /// path is used as is. `db` rescales the clip to that RMS, else as rendered.
+    Clip { name: String, db: Option<f32> },
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Levers {
     pub dtx: bool,
     /// Idle comfort-noise floor in dBFS (ignored when `dtx`: idle frames are zeros).
@@ -167,17 +176,33 @@ impl Levers {
     pub fn from_env() -> Self {
         let flag = |k: &str| std::env::var(k).map(|v| !matches!(v.trim(), "" | "0" | "off" | "false" | "no")).unwrap_or(false);
         let ms: usize = std::env::var("WA_VOICE_ONSET_PREROLL_MS").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
-        let kind = match std::env::var("WA_VOICE_ONSET_PREROLL").map(|v| v.trim().to_ascii_lowercase()) {
-            Ok(v) if v == "tone" => Preroll::Tone,
-            Ok(v) if v == "noise" => Preroll::Noise,
+        let kind = match std::env::var("WA_VOICE_ONSET_PREROLL").map(|v| v.trim().to_string()) {
+            Ok(v) if v.eq_ignore_ascii_case("tone") => Preroll::Tone,
+            Ok(v) if v.eq_ignore_ascii_case("noise") => Preroll::Noise,
+            Ok(v) if v.to_ascii_lowercase().starts_with("clip:") => match parse_clip_spec(&v[5..]) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("WA_VOICE_ONSET_PREROLL={v}: {e}; pre-roll off");
+                    Preroll::Off
+                }
+            },
             _ => Preroll::Off,
         };
-        let preroll = if ms == 0 { Preroll::Off } else { kind };
+        let preroll = match kind {
+            Preroll::Clip { .. } => kind,
+            _ if ms == 0 => Preroll::Off,
+            _ => kind,
+        };
+        let preroll_frames = match &preroll {
+            Preroll::Off => 0,
+            Preroll::Clip { name, db } => clip_frames(name, *db).map(|f| f.len()).unwrap_or(0),
+            _ => ms.div_ceil(60),
+        };
         Self {
             dtx: flag("WA_VOICE_DTX"),
             idle_db: IdleNoise::configured_level_db(),
             preroll,
-            preroll_frames: if preroll == Preroll::Off { 0 } else { ms.div_ceil(60) },
+            preroll_frames,
             preroll_db: std::env::var("WA_VOICE_ONSET_PREROLL_DB")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -189,16 +214,16 @@ impl Levers {
     /// The sweep schedule from `WA_VOICE_SWEEP`, or just `base` when unset. A
     /// malformed entry disables the whole sweep (logged by the caller) rather
     /// than silently running a different experiment from the one asked for.
-    pub fn sweep_from_env(base: Levers) -> Result<Vec<Levers>, String> {
+    pub fn sweep_from_env(base: &Levers) -> Result<Vec<Levers>, String> {
         let Some(spec) = std::env::var("WA_VOICE_SWEEP").ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
-            return Ok(vec![base]);
+            return Ok(vec![base.clone()]);
         };
         spec.split(',').map(|e| Levers::parse(e, base)).collect()
     }
 
     /// One sweep entry. `base` supplies whatever the spec does not name.
-    pub fn parse(spec: &str, base: Levers) -> Result<Levers, String> {
-        let mut l = base;
+    pub fn parse(spec: &str, base: &Levers) -> Result<Levers, String> {
+        let mut l = base.clone();
         for atom in spec.split('+').map(str::trim).filter(|a| !a.is_empty()) {
             let (key, arg) = atom.split_once(':').map(|(k, a)| (k.trim(), Some(a.trim()))).unwrap_or((atom, None));
             match (key.to_ascii_lowercase().as_str(), arg) {
@@ -223,7 +248,15 @@ impl Levers {
                     };
                     l.preroll_frames = if l.preroll == Preroll::Off { 0 } else { ms.div_ceil(60) };
                 }
-                _ => return Err(format!("{atom}: unknown lever (base, dtx, floor:<dB>, tone:<ms>[@<dB>], noise:<ms>[@<dB>])")),
+                ("clip", Some(a)) => {
+                    let p = parse_clip_spec(a).map_err(|e| format!("{atom}: {e}"))?;
+                    let Preroll::Clip { name, db } = &p else { unreachable!() };
+                    l.preroll_frames = clip_frames(name, *db).map_err(|e| format!("{atom}: {e}"))?.len();
+                    l.preroll = p;
+                }
+                _ => return Err(format!(
+                    "{atom}: unknown lever (base, dtx, floor:<dB>, tone:<ms>[@<dB>], noise:<ms>[@<dB>], clip:<name>[@<dB>])"
+                )),
             }
         }
         Ok(l)
@@ -238,17 +271,27 @@ impl Levers {
         } else {
             format!("floor:{:.0}", self.idle_db)
         }];
-        match self.preroll {
+        match &self.preroll {
             Preroll::Off => {}
             Preroll::Tone => parts.push(format!("tone:{}@{:.0}", self.preroll_frames * 60, self.preroll_db)),
             Preroll::Noise => parts.push(format!("noise:{}@{:.0}", self.preroll_frames * 60, self.preroll_db)),
+            Preroll::Clip { name, db } => parts.push(match db {
+                Some(db) => format!("clip:{name}@{db:.0}"),
+                None => format!("clip:{name}"),
+            }),
         }
         parts.join("+")
     }
 
     /// The whole pre-roll as frames: a 440 Hz tone or low-passed noise at
-    /// `preroll_db`, with a 20 ms raised-cosine fade at both ends.
+    /// `preroll_db`, or the clip, with a 20 ms raised-cosine fade at both ends.
     pub fn preroll_frames(&self) -> VecDeque<Vec<i16>> {
+        if let Preroll::Clip { name, db } = &self.preroll {
+            return clip_frames(name, *db).unwrap_or_else(|e| {
+                warn!("pre-roll clip {name}: {e}; no pre-roll this talkspurt");
+                VecDeque::new()
+            });
+        }
         let n = self.preroll_frames * FRAME_SAMPLES;
         if n == 0 {
             return VecDeque::new();
@@ -261,7 +304,7 @@ impl Levers {
             let mut v = match self.preroll {
                 Preroll::Tone => (amp * 1.414) * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin(),
                 Preroll::Noise => noise.next_sample() as f32,
-                Preroll::Off => 0.0,
+                Preroll::Off | Preroll::Clip { .. } => 0.0,
             };
             let env = if i < fade {
                 0.5 - 0.5 * (std::f32::consts::PI * i as f32 / fade as f32).cos()
@@ -275,6 +318,91 @@ impl Levers {
         }
         buf.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect()
     }
+}
+
+/// `<name>[@<dBFS>]` → `Preroll::Clip`.
+fn parse_clip_spec(a: &str) -> Result<Preroll, String> {
+    let (name, db) = a.split_once('@').unwrap_or((a, ""));
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("clip wants <name>[@<dBFS>]".into());
+    }
+    let db = if db.trim().is_empty() {
+        None
+    } else {
+        Some(db.trim().parse::<f32>().map_err(|_| format!("{a}: bad dBFS"))?.clamp(-60.0, -10.0))
+    };
+    Ok(Preroll::Clip { name: name.to_string(), db })
+}
+
+fn clip_path(name: &str) -> PathBuf {
+    let p = PathBuf::from(name);
+    if p.is_absolute() {
+        return p;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".config").join("console").join("voice-clips").join(format!("{name}.wav"))
+}
+
+/// Read a 16 kHz mono 16-bit wav into samples (RIFF chunk walk; no crate).
+fn read_wav_16k_mono(path: &std::path::Path) -> Result<Vec<i16>, String> {
+    let b = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
+        return Err(format!("{}: not a RIFF/WAVE file", path.display()));
+    }
+    let (mut pos, mut fmt_ok, mut data) = (12usize, false, None::<&[u8]>);
+    while pos + 8 <= b.len() {
+        let id = &b[pos..pos + 4];
+        let len = u32::from_le_bytes([b[pos + 4], b[pos + 5], b[pos + 6], b[pos + 7]]) as usize;
+        let body = &b[pos + 8..(pos + 8 + len).min(b.len())];
+        if id == b"fmt " && body.len() >= 16 {
+            let ch = u16::from_le_bytes([body[2], body[3]]);
+            let rate = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
+            let bits = u16::from_le_bytes([body[14], body[15]]);
+            if ch != 1 || rate != 16_000 || bits != 16 {
+                return Err(format!("{}: want 16 kHz mono 16-bit, got {rate} Hz {ch} ch {bits}-bit", path.display()));
+            }
+            fmt_ok = true;
+        } else if id == b"data" {
+            data = Some(body);
+        }
+        pos += 8 + len + (len & 1);
+    }
+    match (fmt_ok, data) {
+        (true, Some(d)) => Ok(d.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()),
+        _ => Err(format!("{}: missing fmt/data chunk", path.display())),
+    }
+}
+
+/// The clip as whole 60 ms frames: optionally rescaled to `db` RMS, 20 ms
+/// raised-cosine fades, the last frame zero-padded.
+fn clip_frames(name: &str, db: Option<f32>) -> Result<VecDeque<Vec<i16>>, String> {
+    let mut pcm: Vec<f32> = read_wav_16k_mono(&clip_path(name))?.iter().map(|&s| s as f32).collect();
+    if pcm.is_empty() {
+        return Err(format!("{name}: empty clip"));
+    }
+    if let Some(db) = db {
+        let rms = (pcm.iter().map(|s| s * s).sum::<f32>() / pcm.len() as f32).sqrt();
+        if rms > 0.0 {
+            let g = 32767.0 * 10f32.powf(db / 20.0) / rms;
+            pcm.iter_mut().for_each(|s| *s *= g);
+        }
+    }
+    let n = pcm.len();
+    let fade = 320usize.min(n / 2);
+    for (i, v) in pcm.iter_mut().enumerate() {
+        let env = if i < fade {
+            0.5 - 0.5 * (std::f32::consts::PI * i as f32 / fade as f32).cos()
+        } else if i >= n - fade {
+            0.5 - 0.5 * (std::f32::consts::PI * (n - 1 - i) as f32 / fade as f32).cos()
+        } else {
+            1.0
+        };
+        *v *= env;
+    }
+    let mut out: Vec<i16> = pcm.iter().map(|v| v.round().clamp(-32767.0, 32767.0) as i16).collect();
+    out.resize(n.div_ceil(FRAME_SAMPLES) * FRAME_SAMPLES, 0);
+    Ok(out.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect())
 }
 
 /// How long the source waits, with the queue empty, before it calls the
@@ -328,9 +456,10 @@ impl MicSource {
     }
 
     pub fn with_sweep(sweep: Vec<Levers>) -> Self {
-        let levers = sweep.first().copied().unwrap_or_else(Levers::from_env);
-        let sweep = if sweep.is_empty() { vec![levers] } else { sweep };
-        Self { levers, sweep, cursor: 0, idle: IdleNoise::with_level_db(levers.idle_db), state: MicState::Idle }
+        let levers = sweep.first().cloned().unwrap_or_else(Levers::from_env);
+        let sweep = if sweep.is_empty() { vec![levers.clone()] } else { sweep };
+        let idle = IdleNoise::with_level_db(levers.idle_db);
+        Self { levers, sweep, cursor: 0, idle, state: MicState::Idle }
     }
 
     /// The entry in force, for the wire log (`lever=<label> #<i>/<n>`).
@@ -347,7 +476,7 @@ impl MicSource {
             return;
         }
         self.cursor = (self.cursor + 1) % self.sweep.len();
-        let next = self.sweep[self.cursor];
+        let next = self.sweep[self.cursor].clone();
         if next.idle_db != self.levers.idle_db {
             self.idle = IdleNoise::with_level_db(next.idle_db);
         }
@@ -468,13 +597,14 @@ pub fn loopback(pcm: &[i16], levers: Levers) -> LoopbackReport {
     let input_dbfs = dbfs(pcm);
     let mut q: VecDeque<Vec<i16>> = pcm.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect();
     let input_frames = q.len();
+    let preroll_frames = levers.preroll_frames;
     let mut source = MicSource::new(levers);
     let mut enc = MlowEncoder::new();
     let mut buf = Vec::new();
     let (mut frames, mut speech_frames, mut encoded_bytes, mut encoded_frames) = (0usize, 0usize, 0usize, 0usize);
     let (mut speech_bytes, mut idle_frames, mut idle_bytes) = (0usize, 0usize, 0usize);
     // Every input frame, then the pre-roll and the hangover, then a few idle ticks.
-    let budget = input_frames + levers.preroll_frames + HANGOVER_TICKS + 4;
+    let budget = input_frames + preroll_frames + HANGOVER_TICKS + 4;
     let mut encode_ms: Vec<f32> = Vec::with_capacity(budget);
     while frames < budget {
         let (frame, _events) = source.next_frame(&mut q);
@@ -1063,12 +1193,12 @@ impl CallManager {
                 "idle comfort noise at {} dBFS; levers {levers:?}",
                 if levers.dtx { "DTX (zeros)".to_string() } else { levers.idle_db.to_string() }
             );
-            let sweep = match Levers::sweep_from_env(levers) {
+            let sweep = match Levers::sweep_from_env(&levers) {
                 Ok(s) => s,
                 Err(e) => {
                     warn!("WA_VOICE_SWEEP ignored ({e}); running the env levers for the whole call");
                     WIRE.line(&format!("sweep ignored: {e}"));
-                    vec![levers]
+                    vec![levers.clone()]
                 }
             };
             WIRE.line(&format!(
@@ -1308,24 +1438,70 @@ mod tests {
     #[test]
     fn sweep_specs_parse_and_label_round_trip() {
         let base = levers(0);
-        assert_eq!(Levers::parse("base", base).unwrap(), base);
-        let dtx = Levers::parse("dtx", base).unwrap();
+        assert_eq!(Levers::parse("base", &base).unwrap(), base);
+        let dtx = Levers::parse("dtx", &base).unwrap();
         assert!(dtx.dtx && dtx.preroll == Preroll::Off);
         assert_eq!(dtx.label(), "dtx");
-        let floor = Levers::parse("floor:-45", base).unwrap();
+        let floor = Levers::parse("floor:-45", &base).unwrap();
         assert!(!floor.dtx && floor.idle_db == -45.0);
         assert_eq!(floor.label(), "floor:-45");
-        let tone = Levers::parse("tone:300", base).unwrap();
-        assert_eq!((tone.preroll, tone.preroll_frames, tone.preroll_db), (Preroll::Tone, 5, -30.0));
+        let tone = Levers::parse("tone:300", &base).unwrap();
+        assert_eq!((tone.preroll.clone(), tone.preroll_frames, tone.preroll_db), (Preroll::Tone, 5, -30.0));
         assert_eq!(tone.label(), "floor:-60+tone:300@-30");
-        let both = Levers::parse("dtx+noise:120@-40", base).unwrap();
+        let both = Levers::parse("dtx+noise:120@-40", &base).unwrap();
         assert!(both.dtx && both.preroll == Preroll::Noise && both.preroll_frames == 2 && both.preroll_db == -40.0);
         assert_eq!(both.label(), "dtx+noise:120@-40");
-        assert!(Levers::parse("gate:3", base).is_err());
-        assert!(Levers::parse("floor:loud", base).is_err());
-        assert!(Levers::parse("tone:x", base).is_err());
+        assert!(Levers::parse("gate:3", &base).is_err());
+        assert!(Levers::parse("floor:loud", &base).is_err());
+        assert!(Levers::parse("tone:x", &base).is_err());
         // `floor` after `dtx` wins (and vice versa): the idle shape is one thing.
-        assert!(!Levers::parse("dtx+floor:-50", base).unwrap().dtx);
+        assert!(!Levers::parse("dtx+floor:-50", &base).unwrap().dtx);
+        assert!(Levers::parse("clip:does-not-exist", &base).is_err(), "a missing clip is a spec error, not a silent no-op");
+    }
+
+    /// A clip pre-roll comes out as whole frames at the asked level with faded
+    /// edges, and the sweep spec resolves its length from the file.
+    #[test]
+    fn clip_preroll_is_whole_frames_at_the_asked_level() {
+        let dir = std::env::temp_dir().join(format!("wa-voice-clip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("breath.wav");
+        // 250 ms of a 1 kHz tone at about -20 dBFS, 16 kHz mono 16-bit.
+        let n = 4000usize;
+        let pcm: Vec<i16> = (0..n).map(|i| (3277.0 * 1.414 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 16000.0).sin()) as i16).collect();
+        let mut w = Vec::new();
+        w.extend_from_slice(b"RIFF");
+        w.extend_from_slice(&(36 + 2 * n as u32).to_le_bytes());
+        w.extend_from_slice(b"WAVEfmt ");
+        w.extend_from_slice(&16u32.to_le_bytes());
+        w.extend_from_slice(&1u16.to_le_bytes());
+        w.extend_from_slice(&1u16.to_le_bytes());
+        w.extend_from_slice(&16000u32.to_le_bytes());
+        w.extend_from_slice(&32000u32.to_le_bytes());
+        w.extend_from_slice(&2u16.to_le_bytes());
+        w.extend_from_slice(&16u16.to_le_bytes());
+        w.extend_from_slice(b"data");
+        w.extend_from_slice(&(2 * n as u32).to_le_bytes());
+        for s in &pcm {
+            w.extend_from_slice(&s.to_le_bytes());
+        }
+        std::fs::write(&path, w).unwrap();
+        let spec = format!("clip:{}@-30", path.display());
+        let l = Levers::parse(&spec, &levers(0)).unwrap();
+        assert_eq!(l.preroll_frames, 5, "4000 samples → 5 frames (last one padded)");
+        assert_eq!(l.label(), format!("floor:-60+clip:{}@-30", path.display()));
+        let frames = l.preroll_frames();
+        assert_eq!(frames.len(), 5);
+        assert!(frames.iter().all(|f| f.len() == FRAME_SAMPLES));
+        let db = 20.0 * (rms(&frames[2]) / 32767.0).log10();
+        assert!((-31.0..=-29.0).contains(&db), "clip level {db:.1} dBFS, wanted -30");
+        assert!(frames[0][0].abs() < 50, "faded in");
+        assert!(frames[4][FRAME_SAMPLES - 1] == 0, "padded tail");
+        // As rendered (no @dB): the original -20 dBFS level survives.
+        let raw = Levers::parse(&format!("clip:{}", path.display()), &levers(0)).unwrap().preroll_frames();
+        let db = 20.0 * (rms(&raw[2]) / 32767.0).log10();
+        assert!((-21.0..=-19.0).contains(&db), "as rendered {db:.1}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The schedule advances at the END of each talkspurt, so entry k governs the
@@ -1334,8 +1510,8 @@ mod tests {
     #[test]
     fn sweep_rotates_per_talkspurt_and_governs_the_gap_before_each_onset() {
         let a = levers(0);
-        let b = Levers::parse("dtx", a).unwrap();
-        let c = Levers::parse("tone:300", a).unwrap();
+        let b = Levers::parse("dtx", &a).unwrap();
+        let c = Levers::parse("tone:300", &a).unwrap();
         let mut src = MicSource::with_sweep(vec![a, b, c]);
         assert_eq!(src.lever_tag(), "lever=floor:-60 #1/3");
         let mut q: VecDeque<Vec<i16>> = VecDeque::new();
@@ -1512,7 +1688,7 @@ mod tests {
             .map(|i| (8000.0 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin()) as i16)
             .collect();
         let levers = Levers { dtx: false, idle_db: -60.0, preroll: Preroll::Off, preroll_frames: 0, preroll_db: -30.0 };
-        let r = loopback(&tone, levers);
+        let r = loopback(&tone, levers.clone());
         assert_eq!(r.speech_frames, 17, "every input frame went through the clock: {r:?}");
         assert_eq!(r.frames, 17 + HANGOVER_TICKS + 4, "then the hangover and a few idle ticks");
         assert_eq!(r.encoded_frames, r.frames, "every tick's frame became a packet: {r:?}");

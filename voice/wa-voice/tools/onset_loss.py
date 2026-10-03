@@ -7,13 +7,15 @@ Inputs (all written by the sidecar into ~/.cache/console/voice-wire/):
   <callId>-room.wav   this machine's mic during the call (WA_VOICE_ROOM_CAPTURE=<source>),
                       i.e. the phone's speaker, if the phone was on speaker at the desk
 
-For every AL onset: aligns the room recording to tx (global lag, then a local
-refinement on the body of the utterance, which the phone plays intact), then
-reports how much of the utterance start is missing from the room in ms, the
-attenuation of the first 600 ms in 100 ms bins (the shape of whatever eats the
-onset), and — for pre-roll levers — how much of the pre-roll was heard (a 440 Hz
-tone is detected by Goertzel, noise by level). Grouped by the sweep lever that
-governed each onset (`WA_VOICE_SWEEP`), so ONE call answers every A/B at once.
+For every AL utterance: segments the SENT audio into words, aligns the room
+recording sample-accurately on words 2-4 (which the phone plays faithfully), and
+reports the level of what the phone played vs what we sent PER WORD, relative to
+words 3-5 — so the first word's attenuation is a number (3 Oct 2026 sweeps: the
+phone plays "One" 10-20 dB down after a click, every lever, lead-ins included),
+plus the pre-roll's own level and the click. Grouped by the sweep lever that
+governed each utterance (`WA_VOICE_SWEEP`), so ONE call answers every A/B at once.
+`--legacy` prints the earlier envelope/threshold "loss in ms" table, which this
+replaced after it called the first word intact when it was not.
 
     tools/onset_loss.py <callId> [--dir DIR] [--json]
 """
@@ -297,11 +299,156 @@ def print_report(o: dict) -> None:
         print(f"  {lever:<28} n={s['n']}  median loss {med:<8} losses {s['losses_ms']}  nothing heard: {s['nothing_heard']}")
 
 
+# ---------------------------------------------------------------------------
+# Per-word method (3 Oct 2026). The envelope/threshold method above reported
+# "loss in ms" and was WRONG on the first live sweep: a 10 ms band envelope,
+# body-normalised, showed the first word "intact" while the raw waveform and
+# Yousef's ear had it ~20 dB down with a click in front (the phone fades the
+# first word in after a buffer operation). Level per WORD, relative to words
+# 3-5 of the same utterance, is what matches the waveform — this is the
+# primary output now; the envelope table is kept as `--legacy`.
+# ---------------------------------------------------------------------------
+
+CLIPS_DIR = Path(os.path.expanduser("~/.config/console/voice-clips"))
+
+
+def bandpass(x: np.ndarray, lo: float = 200.0, hi: float = 4000.0) -> np.ndarray:
+    X = np.fft.rfft(x)
+    f = np.fft.rfftfreq(len(x), 1 / SR)
+    X[(f < lo) | (f > hi)] = 0
+    return np.fft.irfft(X, len(x))
+
+
+def level_db(x: np.ndarray) -> float:
+    return 20 * math.log10(float(np.sqrt(np.mean(x * x))) + 1e-9)
+
+
+def preroll_samples(lever: str) -> int:
+    """How much pre-roll precedes the speech for this lever label (samples)."""
+    total = 0
+    for atom in lever.split("+"):
+        key, _, arg = atom.partition(":")
+        if key in ("tone", "noise"):
+            ms = int(arg.split("@")[0])
+            total += (ms + 59) // 60 * 60 * SR // 1000
+        elif key == "clip":
+            name = arg.split("@")[0]
+            path = Path(name) if name.startswith("/") else CLIPS_DIR / f"{name}.wav"
+            try:
+                with wave.open(str(path)) as w:
+                    n = w.getnframes()
+                total += (n + 959) // 960 * 960
+            except OSError:
+                total += 300 * SR // 1000
+    return total
+
+
+def segment_words(x: np.ndarray, thr_db: float = -32.0, min_ms: int = 60, gap_ms: int = 80) -> list[tuple[int, int]]:
+    """Runs of 10 ms frames above `thr_db`, bridged across gaps < gap_ms; (start, end) in samples."""
+    n = len(x) // HOP
+    env = np.array([level_db(x[i * HOP : (i + 1) * HOP]) for i in range(n)])
+    on = env > thr_db
+    words, i = [], 0
+    g = gap_ms // 10
+    while i < n:
+        if on[i]:
+            s = i
+            while i < n and (on[i] or on[i : i + g].any()):
+                i += 1
+            if (i - s) * 10 >= min_ms:
+                words.append((s * HOP, i * HOP))
+        i += 1
+    return words
+
+
+def per_word(call_id: str, d: Path) -> dict:
+    log = parse_log(d / f"{call_id}.log")
+    tx = load_wav(d / f"{call_id}-tx.wav")
+    room = load_wav(d / f"{call_id}-room.wav")
+    out = {"callId": call_id, "utterances": []}
+    for i, ev in enumerate(log["starts"]):
+        pre = preroll_samples(ev["lever"])
+        a = int((ev["t"] - 60) / 1000 * SR) + pre
+        # Never let the window reach back into the pre-roll: it would merge into the first word.
+        a0 = a + int(0.01 * SR) if pre else max(a - int(0.15 * SR), 0)
+        T = tx[a0 : a + int(3.0 * SR)]
+        words = segment_words(T)
+        rec = {"n": i + 1, "t_s": round(ev["t"] / 1000, 2), "lever": ev["lever"], "words": len(words)}
+        if len(words) < 3:
+            rec["note"] = "fewer than 3 words found in the sent audio"
+            out["utterances"].append(rec)
+            continue
+        # Sample-accurate lag from words 2..4 of the sent signal against the room.
+        w2s, w4e = words[1][0], words[min(3, len(words) - 1)][1]
+        Tb = bandpass(T[w2s:w4e])
+        best = (0, -1.0)
+        for k in range(0, int(1.2 * SR), 4):
+            R = room[a0 + w2s + k : a0 + w4e + k]
+            if len(R) != len(Tb):
+                break
+            Rb = bandpass(R)
+            c = float(np.dot(Tb, Rb) / (np.linalg.norm(Tb) * np.linalg.norm(Rb) + 1e-9))
+            if c > best[1]:
+                best = (k, c)
+        k, c = best
+        diffs = []
+        for s, e in words[:5]:
+            diffs.append(level_db(bandpass(room[a0 + s + k : a0 + e + k])) - level_db(bandpass(T[s:e])))
+        ref = float(np.median(diffs[2:5])) if len(diffs) >= 4 else float(np.median(diffs[1:]))
+        rec.update(
+            lag_ms=round(k / SR * 1000, 1),
+            align_corr=round(c, 2),
+            word_db=[round(x - ref, 1) for x in diffs[:5]],
+            room_floor_db=round(level_db(bandpass(room[max(a0 + k - SR, 0) : a0 + k])) - ref, 1),
+        )
+        # The fade-in shape: (phone - sent) over the first word in 25 ms steps, same reference.
+        s, e = words[0]
+        step = SR // 40
+        prof = []
+        for j in range(s, min(e, s + 8 * step), step):
+            tw, rw = bandpass(T[j : j + step]), bandpass(room[a0 + j + k : a0 + j + k + step])
+            if len(tw) == step and len(rw) == step:
+                prof.append(round(level_db(rw) - level_db(tw) - ref, 1))
+        rec["first_word_profile_db"] = prof
+        if pre:
+            ps, pe = a - pre, a - int(0.02 * SR)
+            rec["preroll_db"] = round(level_db(bandpass(room[ps + k : pe + k])) - level_db(bandpass(tx[ps:pe])) - ref, 1)
+        # A click right before the first word: short burst in the room 40 ms before speech, absent in tx.
+        s0 = a0 + words[0][0] + k
+        pre_room = bandpass(room[s0 - int(0.05 * SR) : s0])
+        rec["click_db"] = round(level_db(pre_room[-int(0.02 * SR) :]) - level_db(pre_room[: int(0.02 * SR)]), 1)
+        out["utterances"].append(rec)
+    by: dict[str, list] = defaultdict(list)
+    for r in out["utterances"]:
+        if "word_db" in r and r["first_word_profile_db"]:
+            by[r["lever"]].append(round(float(np.mean(r["first_word_profile_db"][:4])), 1))
+    out["by_lever"] = {lv: {"n": len(v), "median_first_100ms_db": round(float(np.median(v)), 1), "first_100ms_db": v} for lv, v in by.items()}
+    return out
+
+
+def print_per_word(o: dict) -> None:
+    print(f"call {o['callId']}: level of what the phone played vs what we sent, per word, relative to words 3-5 (dB; 0 = faithful)")
+    print(f"{'#':>2} {'t(s)':>7} {'lever':<28} {'One':>6} {'two':>6} {'three':>6} {'four':>6} {'five':>6} {'pre-roll':>8} {'click':>6} {'lag':>6} {'corr':>5}  first word, 25 ms steps")
+    for r in o["utterances"]:
+        if "word_db" not in r:
+            print(f"{r['n']:>2} {r['t_s']:>7} {r['lever']:<28} {r.get('note', '')}")
+            continue
+        w = " ".join(f"{x:>+6.1f}" for x in r["word_db"]) + "       " * (5 - len(r["word_db"]))
+        pre = f"{r['preroll_db']:>+8.1f}" if "preroll_db" in r else f"{'':>8}"
+        prof = " ".join(f"{x:+.0f}" for x in r["first_word_profile_db"])
+        print(f"{r['n']:>2} {r['t_s']:>7} {r['lever']:<28} {w} {pre} {r['click_db']:>+6.1f} {r['lag_ms']:>6} {r['align_corr']:>5}  {prof}")
+    print()
+    print("first 100 ms of the first word, by lever (median dB vs words 3-5; 0 = faithful):")
+    for lv, s in o["by_lever"].items():
+        print(f"  {lv:<28} n={s['n']}  median {s['median_first_100ms_db']:+.1f} dB   {s['first_100ms_db']}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("call_id")
     ap.add_argument("--dir", default=os.path.expanduser("~/.cache/console/voice-wire"))
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--legacy", action="store_true", help="the envelope/threshold 'loss in ms' table (misleading on the first sweep; kept for comparison)")
     a = ap.parse_args()
     d = Path(a.dir)
     cid = a.call_id
@@ -310,11 +457,13 @@ def main() -> None:
         if len(cands) != 1:
             sys.exit(f"no unique {cid}*.log in {d}")
         cid = cands[0].stem
-    o = analyse(cid, d)
+    o = analyse(cid, d) if a.legacy else per_word(cid, d)
     if a.json:
         print(json.dumps(o, indent=1))
-    else:
+    elif a.legacy:
         print_report(o)
+    else:
+        print_per_word(o)
 
 
 if __name__ == "__main__":
