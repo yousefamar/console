@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useCalendarStore } from '@/store/calendar'
 import { X } from 'lucide-react'
 import { ContactAutocomplete } from './ContactAutocomplete'
+import { PlaceAutocomplete } from './PlaceAutocomplete'
 import { parseAddressList } from '@/utils/email'
 import type { CalendarEvent, CalendarAttendee } from '@/calendar/types'
 
@@ -243,10 +244,9 @@ export function CalendarEventForm() {
           {/* Location */}
           <div>
             <label className="text-[10px] text-text-tertiary uppercase tracking-wider">Location</label>
-            <input
-              type="text"
+            <PlaceAutocomplete
               value={location}
-              onChange={(e) => setLocation(e.target.value)}
+              onChange={setLocation}
               placeholder="Add location"
               className="w-full bg-surface-1 border border-border rounded-sm px-2 py-1 text-xs text-text-primary placeholder:text-text-tertiary outline-none mt-0.5"
             />

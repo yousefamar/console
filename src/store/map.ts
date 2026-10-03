@@ -1,16 +1,7 @@
 import { create } from 'zustand'
 import { hubFetch } from '@/hub'
-
-// Places Autocomplete session token: groups a burst of keystrokes + the final
-// details fetch into one billable session. Rotated after each details fetch.
-let _gmapsSession: string | null = null
-function gmapsSessionToken(): string {
-  if (!_gmapsSession) _gmapsSession = crypto.randomUUID()
-  return _gmapsSession
-}
-function resetGmapsSession(): void {
-  _gmapsSession = null
-}
+import { autocompletePlaces, fetchPlace, type GPlace, type GSuggestion } from '@/utils/gmaps'
+export type { GPlace, GSuggestion } from '@/utils/gmaps'
 
 // --- OwnTracks --------------------------------------------------------------
 
@@ -115,25 +106,6 @@ export interface MeetupStatus {
 }
 
 // --- Google Maps (search + directions) --------------------------------------
-
-export interface GPlace {
-  id: string
-  name: string
-  address?: string
-  lat: number
-  lon: number
-  types?: string[]
-  rating?: number
-  userRatingCount?: number
-  googleMapsUri?: string
-}
-
-export interface GSuggestion {
-  placeId: string
-  text: string
-  mainText: string
-  secondaryText?: string
-}
 
 export type GTravelMode = 'DRIVE' | 'WALK' | 'BICYCLE' | 'TRANSIT'
 
@@ -636,12 +608,7 @@ export const useMapStore = create<MapState>((set, get) => ({
     }
     set({ gmapsSuggesting: true })
     try {
-      const params = new URLSearchParams({ q, session: gmapsSessionToken() })
-      if (bias) {
-        params.set('lat', String(bias.lat))
-        params.set('lon', String(bias.lon))
-      }
-      const { suggestions } = await hubFetch<{ suggestions: GSuggestion[] }>(`/gmaps/autocomplete?${params.toString()}`)
+      const suggestions = await autocompletePlaces(q, bias)
       // ignore a stale response if the query moved on
       if (get().gmapsQuery.trim() === q) set({ gmapsSuggestions: suggestions })
     } catch {
@@ -654,9 +621,7 @@ export const useMapStore = create<MapState>((set, get) => ({
   pickSuggestion: async (placeId) => {
     set({ gmapsSuggestions: [], gmapsSearching: true, gmapsError: null })
     try {
-      const params = new URLSearchParams({ session: gmapsSessionToken() })
-      const { place } = await hubFetch<{ place: GPlace }>(`/gmaps/place/${encodeURIComponent(placeId)}?${params.toString()}`)
-      resetGmapsSession() // a details fetch ends the billing session
+      const place = await fetchPlace(placeId) // ends the billing session
       set({ gmapsResults: [place], gmapsSelectedPlaceId: place.id, gmapsQuery: place.name })
     } catch (err) {
       set({ gmapsError: (err as Error).message })
