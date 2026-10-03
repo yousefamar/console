@@ -187,6 +187,7 @@ export class RecallIndex {
       if (failures > 5) this.opts.log(`[recall] scan: ${failures} transcripts failed to index (first 5 logged)`)
       this.lastScan = { at: Date.now(), files: files.length, indexed, ms: Date.now() - t0 }
       if (indexed) this.opts.log(`[recall] scan: ${indexed}/${files.length} transcripts (re)indexed (${appended} appended, ${indexed - appended} rebuilt) in ${Date.now() - t0} ms`)
+      await this.trimWal()
     })().finally(() => { this.scanning = null })
     return this.scanning
   }
@@ -202,6 +203,20 @@ export class RecallIndex {
     }, this.debounceMs)
     timer.unref?.()
     this.timers.set(claudeSessionId, timer)
+  }
+
+  /** SQLite reuses the WAL in place and never shrinks it, so one big
+   *  transaction leaves its high-water mark allocated for good — the
+   *  full-rebuild era left a 464 MB WAL beside a 2.2 GB index on a 98%-full
+   *  disk. Truncate it once a scan has settled, when it is worth the pause
+   *  (TRUNCATE waits for readers; a busy result just means next time). */
+  private async trimWal(limitBytes = 64 * 1024 * 1024): Promise<void> {
+    try {
+      if (statSync(`${this.opts.dbPath}-wal`).size < limitBytes) return
+      const r = await this.call<{ busy: number; log: number }>('checkpoint', {})
+      const after = statSync(`${this.opts.dbPath}-wal`).size
+      this.opts.log(`[recall] WAL truncated to ${(after / 1e6).toFixed(0)} MB${r.busy ? ' (readers busy — partial)' : ''}`)
+    } catch { /* no WAL yet, or the worker is down — nothing to reclaim */ }
   }
 
   async indexSession(claudeSessionId: string, cwd: string): Promise<boolean> {

@@ -12,7 +12,7 @@ import { statSync } from 'node:fs'
 
 export interface WorkerRequest {
   id: number
-  method: 'index' | 'search' | 'read' | 'stats' | 'needsIndex'
+  method: 'index' | 'search' | 'read' | 'stats' | 'needsIndex' | 'checkpoint'
   params: Record<string, unknown>
 }
 
@@ -25,7 +25,7 @@ export interface WorkerResponse {
 export type WorkerRole = 'index' | 'query'
 const role: WorkerRole = process.argv[3] === 'query' ? 'query' : 'index'
 const db: DatabaseSync = role === 'query' ? openReadDb(String(process.argv[2])) : openDb(String(process.argv[2]))
-const WRITES = new Set<WorkerRequest['method']>(['index', 'needsIndex'])
+const WRITES = new Set<WorkerRequest['method']>(['index', 'needsIndex', 'checkpoint'])
 
 function handle(req: WorkerRequest): unknown {
   const p = req.params
@@ -44,6 +44,11 @@ function handle(req: WorkerRequest): unknown {
       return runRead(db, p as never)
     case 'stats':
       return stats(db)
+    // Reclaim the WAL file. SQLite reuses the log in place and never shrinks it,
+    // so one big transaction leaves its high-water mark allocated forever (the
+    // full-rebuild era left 464 MB on a 98%-full disk).
+    case 'checkpoint':
+      return db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()
     default:
       throw new Error(`unknown method ${String(req.method)}`)
   }
