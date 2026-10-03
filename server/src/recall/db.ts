@@ -106,6 +106,16 @@ export function openDb(path: string): DatabaseSync {
   return db
 }
 
+/** A read-only connection for the query worker. WAL lets it read the last
+ *  committed snapshot while the index worker holds a long write transaction —
+ *  so a search never waits behind a re-index (a 30-min reindex of a big
+ *  transcript used to stall every search queued behind it). */
+export function openReadDb(path: string): DatabaseSync {
+  const db = new DatabaseSync(path, { readOnly: true })
+  db.exec('PRAGMA busy_timeout = 5000')
+  return db
+}
+
 export interface SessionMeta {
   hubName?: string
   agentKey?: string

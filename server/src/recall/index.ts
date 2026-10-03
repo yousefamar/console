@@ -6,7 +6,7 @@ import { existsSync, readdirSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { cwdToProjectDir } from '../utils.js'
-import type { WorkerRequest, WorkerResponse } from './worker.js'
+import type { WorkerRequest, WorkerResponse, WorkerRole } from './worker.js'
 import type { ReadParams, SearchParams } from './service.js'
 
 export interface SessionNames { hubName?: string; agentKey?: string }
@@ -48,11 +48,84 @@ export function listTranscripts(projectsDir: string): TranscriptFile[] {
   return out
 }
 
-export class RecallIndex {
-  private worker: ChildProcess | null = null
+/** One forked worker process and its RPC bookkeeping. RecallIndex runs two:
+ *  `index` (the writer) and `query` (read-only), so a search never queues behind
+ *  a re-index — the writer's transaction can run for many minutes on a big
+ *  transcript, and WAL lets the reader keep serving the last committed state. */
+class WorkerSlot {
+  private child: ChildProcess | null = null
   private spawnFailures = 0
   private nextId = 1
   private pending = new Map<number, Pending>()
+  /** set after 3 fast startup failures, or by stop() */
+  disabled = false
+
+  constructor(private role: WorkerRole, private dbPath: string, private log: (msg: string) => void) {}
+
+  get running(): boolean { return !!this.child && this.child.connected }
+
+  spawn(): void {
+    if (this.disabled || this.child) return
+    const here = dirname(fileURLToPath(import.meta.url))
+    const ts = join(here, 'worker.ts')
+    const file = existsSync(ts) ? ts : join(here, 'worker.js')
+    // Keep the parent's loader flags (tsx under `npm run dev`) but drop
+    // --env-file*, and silence node:sqlite's experimental notice.
+    const execArgv = process.execArgv.filter((a) => !a.startsWith('--env-file'))
+    execArgv.push('--disable-warning=ExperimentalWarning')
+    const w = fork(file, [this.dbPath, this.role], { execArgv, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
+    const spawnedAt = Date.now()
+    w.on('message', (msg: WorkerResponse) => {
+      this.spawnFailures = 0
+      const p = this.pending.get(msg.id)
+      if (!p) return
+      this.pending.delete(msg.id)
+      if (msg.error !== undefined) p.reject(new Error(msg.error))
+      else p.resolve(msg.result)
+    })
+    w.on('error', (err) => this.log(`[recall] ${this.role} worker error: ${err.message}`))
+    w.on('exit', (code) => {
+      if (this.child !== w) return
+      this.child = null
+      for (const p of this.pending.values()) p.reject(new Error(`recall ${this.role} worker exited (${code})`))
+      this.pending.clear()
+      if (this.disabled) return
+      // A worker that dies within seconds of starting is broken, not unlucky.
+      if (Date.now() - spawnedAt < 10_000 && ++this.spawnFailures >= 3) {
+        this.log(`[recall] ${this.role} worker failed ${this.spawnFailures}× at startup (exit ${code}) — disabled until the hub restarts`)
+        this.disabled = true
+        return
+      }
+      this.log(`[recall] ${this.role} worker exited with ${code}; respawning`)
+      setTimeout(() => { if (!this.disabled) this.spawn() }, 1_000).unref?.()
+    })
+    this.child = w
+  }
+
+  call<T>(method: WorkerRequest['method'], params: Record<string, unknown>): Promise<T> {
+    if (!this.child && !this.disabled) this.spawn()
+    if (!this.child || !this.child.connected) return Promise.reject(new Error(`recall ${this.role} worker not running`))
+    const id = this.nextId++
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
+      this.child!.send({ id, method, params } satisfies WorkerRequest)
+    })
+  }
+
+  stop(): void {
+    this.disabled = true
+    this.child?.kill()
+    this.child = null
+    for (const p of this.pending.values()) p.reject(new Error('recall index stopped'))
+    this.pending.clear()
+  }
+}
+
+export class RecallIndex {
+  private indexer: WorkerSlot
+  /** spawned lazily on the first search/read/stats, so it opens a DB the
+   *  indexer has already created (read-only connections cannot create one) */
+  private querier: WorkerSlot
   private timers = new Map<string, ReturnType<typeof setTimeout>>()
   private rescanTimer: ReturnType<typeof setInterval> | null = null
   private scanning: Promise<void> | null = null
@@ -64,10 +137,12 @@ export class RecallIndex {
   constructor(private opts: RecallOptions) {
     this.debounceMs = opts.debounceMs ?? 8_000
     this.rescanMs = opts.rescanMs ?? 3_600_000
+    this.indexer = new WorkerSlot('index', opts.dbPath, opts.log)
+    this.querier = new WorkerSlot('query', opts.dbPath, opts.log)
   }
 
   start(): void {
-    this.spawn()
+    this.indexer.spawn()
     void this.scanAll()
     this.rescanTimer = setInterval(() => void this.scanAll(), this.rescanMs)
     this.rescanTimer.unref?.()
@@ -78,56 +153,14 @@ export class RecallIndex {
     if (this.rescanTimer) clearInterval(this.rescanTimer)
     for (const t of this.timers.values()) clearTimeout(t)
     this.timers.clear()
-    this.worker?.kill()
-    this.worker = null
-    for (const p of this.pending.values()) p.reject(new Error('recall index stopped'))
-    this.pending.clear()
-  }
-
-  private spawn(): void {
-    const here = dirname(fileURLToPath(import.meta.url))
-    const ts = join(here, 'worker.ts')
-    const file = existsSync(ts) ? ts : join(here, 'worker.js')
-    // Keep the parent's loader flags (tsx under `npm run dev`) but drop
-    // --env-file*, and silence node:sqlite's experimental notice.
-    const execArgv = process.execArgv.filter((a) => !a.startsWith('--env-file'))
-    execArgv.push('--disable-warning=ExperimentalWarning')
-    const w = fork(file, [this.opts.dbPath], { execArgv, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] })
-    const spawnedAt = Date.now()
-    w.on('message', (msg: WorkerResponse) => {
-      this.spawnFailures = 0
-      const p = this.pending.get(msg.id)
-      if (!p) return
-      this.pending.delete(msg.id)
-      if (msg.error !== undefined) p.reject(new Error(msg.error))
-      else p.resolve(msg.result)
-    })
-    w.on('error', (err) => this.opts.log(`[recall] worker error: ${err.message}`))
-    w.on('exit', (code) => {
-      if (this.worker !== w) return
-      this.worker = null
-      for (const p of this.pending.values()) p.reject(new Error(`recall worker exited (${code})`))
-      this.pending.clear()
-      if (this.stopped) return
-      // A worker that dies within seconds of starting is broken, not unlucky.
-      if (Date.now() - spawnedAt < 10_000 && ++this.spawnFailures >= 3) {
-        this.opts.log(`[recall] worker failed ${this.spawnFailures}× at startup (exit ${code}) — recall disabled until the hub restarts`)
-        this.stopped = true
-        return
-      }
-      this.opts.log(`[recall] worker exited with ${code}; respawning`)
-      setTimeout(() => { if (!this.stopped) this.spawn() }, 1_000).unref?.()
-    })
-    this.worker = w
+    this.indexer.stop()
+    this.querier.stop()
   }
 
   private call<T>(method: WorkerRequest['method'], params: Record<string, unknown>): Promise<T> {
-    if (!this.worker || !this.worker.connected) return Promise.reject(new Error('recall index not running'))
-    const id = this.nextId++
-    return new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject })
-      this.worker!.send({ id, method, params } satisfies WorkerRequest)
-    })
+    if (this.stopped) return Promise.reject(new Error('recall index stopped'))
+    const slot = method === 'index' || method === 'needsIndex' ? this.indexer : this.querier
+    return slot.call<T>(method, params)
   }
 
   /** Index every transcript on disk whose size/mtime changed. One file per RPC
@@ -141,7 +174,7 @@ export class RecallIndex {
       let failures = 0
       for (const f of files) {
         if (this.stopped) return
-        if (!this.worker) { this.opts.log('[recall] scan aborted: worker not running'); return }
+        if (!this.indexer.running) { this.opts.log('[recall] scan aborted: index worker not running'); return }
         try {
           const r = await this.call<{ indexed: boolean }>('index', { sessionId: f.sessionId, path: f.path, meta: this.opts.names(f.sessionId) })
           if (r.indexed) indexed++

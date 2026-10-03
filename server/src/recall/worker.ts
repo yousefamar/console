@@ -1,9 +1,12 @@
-// Index worker — a forked child process (not a worker_thread: tsx does not map
-// `.js` → `.ts` inside worker threads) that owns the SQLite connection, so
-// transcript parsing (tens of MB per session) never blocks the hub's event
-// loop. One request per IPC message; the DB path arrives in argv[2].
+// Recall worker — a forked child process (not a worker_thread: tsx does not map
+// `.js` → `.ts` inside worker threads), so transcript parsing (tens of MB per
+// session) never blocks the hub's event loop. One request per IPC message; the
+// DB path arrives in argv[2], the role in argv[3]: `index` owns the writable
+// connection (index/needsIndex), `query` holds a read-only one (search/read/
+// stats) so a long re-index never queues a search behind it.
 
-import { openDb, needsIndex, stats } from './db.js'
+import type { DatabaseSync } from 'node:sqlite'
+import { openDb, openReadDb, needsIndex, stats } from './db.js'
 import { indexFile, runRead, runSearch } from './service.js'
 import { statSync } from 'node:fs'
 
@@ -19,10 +22,14 @@ export interface WorkerResponse {
   error?: string
 }
 
-const db = openDb(String(process.argv[2]))
+export type WorkerRole = 'index' | 'query'
+const role: WorkerRole = process.argv[3] === 'query' ? 'query' : 'index'
+const db: DatabaseSync = role === 'query' ? openReadDb(String(process.argv[2])) : openDb(String(process.argv[2]))
+const WRITES = new Set<WorkerRequest['method']>(['index', 'needsIndex'])
 
 function handle(req: WorkerRequest): unknown {
   const p = req.params
+  if (role === 'query' && WRITES.has(req.method)) throw new Error(`${req.method} sent to the read-only query worker`)
   switch (req.method) {
     case 'index':
       return indexFile(db, String(p.sessionId), String(p.path), (p.meta ?? {}) as { hubName?: string; agentKey?: string }, Boolean(p.force))

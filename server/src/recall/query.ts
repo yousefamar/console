@@ -69,7 +69,7 @@ export interface SessionHit {
   files: string[]
 }
 
-const RELATIVE = /^(\d+)\s*([dwmy])$/i
+const RELATIVE = /^(\d+)\s*([hdwmy])$/i
 
 export function parseSince(value: string, now = new Date()): string {
   const v = value.trim()
@@ -78,12 +78,12 @@ export function parseSince(value: string, now = new Date()): string {
   if (rel) {
     const n = Number(rel[1])
     const unit = rel[2]!.toLowerCase()
-    const days = unit === 'd' ? n : unit === 'w' ? n * 7 : unit === 'm' ? n * 30 : n * 365
+    const days = unit === 'h' ? n / 24 : unit === 'd' ? n : unit === 'w' ? n * 7 : unit === 'm' ? n * 30 : n * 365
     return new Date(now.getTime() - days * 86_400_000).toISOString()
   }
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return `${v}T00:00:00.000Z`
   const d = new Date(v)
-  if (Number.isNaN(d.getTime())) throw new Error(`bad date "${value}" (YYYY-MM-DD, 7d/2w/3m, or ISO)`)
+  if (Number.isNaN(d.getTime())) throw new Error(`bad date "${value}" (YYYY-MM-DD, 6h/7d/2w/3m, or ISO)`)
   return d.toISOString()
 }
 

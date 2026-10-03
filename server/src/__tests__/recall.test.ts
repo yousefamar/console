@@ -296,6 +296,15 @@ describe('read ladder', () => {
   })
 })
 
+describe('relative --since', () => {
+  it('accepts hours as well as days/weeks/months (agents ask for --since 1h)', () => {
+    const now = new Date('2026-10-03T12:00:00.000Z')
+    expect(parseSince('1h', now)).toBe('2026-10-03T11:00:00.000Z')
+    expect(parseSince('2d', now)).toBe('2026-10-01T12:00:00.000Z')
+    expect(() => parseSince('5x', now)).toThrow(/6h\/7d/)
+  })
+})
+
 describe('excerpts (built in JS, not FTS5 snippet())', () => {
   it('termsOf strips the MATCH quoting, prefix stars and operators', () => {
     expect(termsOf(buildMatch('Spaces board* AND timeout'))).toEqual(['spaces', 'board', 'timeout'])
