@@ -22,7 +22,7 @@ import { ringsInCountry, pointInGeometry, nearGeometry, type Geometry, type Ring
 import { PORTAL_BY_COUNTRY, PROPERTY_KINDS, portalOf, layerNameFor, type PropertyKind, type PropertySearch, type PropertySearchStore, type ReviewState } from './store.js'
 import { fetchAll, type PropertyInventoryStore } from './inventory.js'
 import { groupDuplicates } from './dedupe.js'
-import { listingKind, planningLike, fixerLike, footAccessLike, stackedFlatLike } from './land.js'
+import { listingKind, planningLike, fixerLike, footAccessLike, stackedFlatLike, buildingUnitLike } from './land.js'
 import { newBuildLike, type HighStreetIndex } from './place.js'
 import type { Criteria, Listing, PortalClient, Portal } from './types.js'
 import { nearestAirport } from './airport-distance.js'
@@ -850,8 +850,9 @@ export class PropertySync {
       for (const l of kept) {
         if (l.lat == null || l.lon == null) continue
         if (listingKind(l, searchKind) !== kind) continue
-        // The plot layer is land WITH planning consent; a paddock or an auction strip stays off it (fail-closed on silence).
-        if (kind === 'plot' && !interested.has(l.id) && !planningLike(l)) continue
+        // The plot layer is land WITH planning consent; a paddock or an auction strip stays off it (fail-closed on silence),
+        // and so does a floor of an existing building sold with a change-of-use approval.
+        if (kind === 'plot' && !interested.has(l.id) && (!planningLike(l) || buildingUnitLike(l))) continue
         candidates.push({ lat: l.lat, lon: l.lon, price: l.price, bedrooms: l.bedrooms, bedroomsApprox: LOCALI_PORTALS.has(l.portal), source: s.id, fuzzy: l.coordsPrecision === 'area', l, s, primary, dismissed: dismissed.has(l.id), interested: interested.has(l.id) })
       }
     }

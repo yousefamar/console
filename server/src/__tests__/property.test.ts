@@ -12,7 +12,7 @@ import { normaliseHouseType, notifyRejection, needsAirportDistance, withoutAirpo
 import { asEntryArray, exposeFields, ImmoScout24Client } from '../property/immoscout24.js'
 import { isTooSmall, ImmobiliareClient } from '../property/immobiliare.js'
 import { RightmoveClient, unflatten, detailFields, priceQualifier, normalise as rmNormalise } from '../property/rightmove.js'
-import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike, footAccessLike, stackedFlatLike } from '../property/land.js'
+import { plotAreaFromText, listingKind, normaliseTenure, planningLike, fixerLike, footAccessLike, stackedFlatLike, buildingUnitLike } from '../property/land.js'
 import { normalise as otmNormalise } from '../property/onthemarket.js'
 import { boxAround } from '../property/geo.js'
 import { nextWeekdayMorningUtc } from '../property/airport-distance.js'
@@ -1737,6 +1737,29 @@ describe('planningLike', () => {
 
   it('a positive sentence survives a negative one elsewhere in the text', () => {
     expect(planningLike({ summary: 'Full planning permission granted for a 3-bed bungalow. Scope for a larger house subject to planning.' })).toBe(true)
+  })
+})
+
+describe('buildingUnitLike', () => {
+  it('catches floors, flats and parking spaces of an existing building sold as "land" (live plot inventory, 2026-10-03)', () => {
+    expect(buildingUnitLike({ address: 'Union Place, 31 - 34 Bartholomew Street, Newbury, Berkshire, RG14 5LQ', summary: 'The property comprises a brand new ground floor retail space which has Class E planning consent. The proeprty also benefits from planning to create 2 x 1 bedroom apartments.' })).toBe(true)
+    expect(buildingUnitLike({ address: 'First & Second Floors, 45 & 45A Cheap Street, Newbury, West Berkshire, RG14 5BX' })).toBe(true)
+    expect(buildingUnitLike({ address: 'Upper Ground Floor Flat, Spenser Road, Lambeth, London' })).toBe(true)
+    expect(buildingUnitLike({ address: 'First Floor Part, Sutherland House, Russell Way, Three Bridges, Crawley' })).toBe(true)
+    expect(buildingUnitLike({ address: 'Flat A, Elgin Road, Croydon' })).toBe(true)
+    expect(buildingUnitLike({ address: 'Town Centre Parking Spaces, Buryfields House, Guildford, GU2 4AD' })).toBe(true)
+    expect(buildingUnitLike({ address: 'High Street, Reading', summary: 'Vacant first floor offices with prior approval for conversion to two flats.' })).toBe(true)
+    expect(buildingUnitLike({ address: 'Scott Street, Perth', summary: 'Freehold ground floor retail unit with vacant possession on a busy road.' })).toBe(true)
+  })
+
+  it('leaves real plots alone, including sites consented for flats and whole former buildings', () => {
+    expect(buildingUnitLike({ address: 'Land At Rear 36 Crabtree Lane, Lancing, West Sussex, BN15 9PQ', summary: 'Cleared site with planning consent for the construction of 9 flats.' })).toBe(false)
+    expect(buildingUnitLike({ address: 'Former Telephone Exchange, Old Road, Ferniegair, Hamilton', summary: 'Detached former exchange with full planning permission for a 3 bed dwelling.' })).toBe(false)
+    expect(buildingUnitLike({ address: 'Land to the rear of 33 Moyser Road, London', summary: 'Plot with planning permission for a two storey, 3 bedroom house with ground floor open plan living.' })).toBe(false)
+    expect(buildingUnitLike({ address: 'Greengairs Road, Airdrie, Lanarkshire, ML6', summary: 'A spacious plot with planning permission already in place for three ground floor units, two upper one-bedroom flats, and a yard.' })).toBe(false)
+    expect(buildingUnitLike({ address: 'Plot 8, Off New Farm Drive, Romford, RM4 1BD' })).toBe(false)
+    expect(buildingUnitLike({ address: 'Plot adjacent to 1 Second Avenue, Hove', summary: 'Single building plot with outline planning.' })).toBe(false)
+    expect(buildingUnitLike({})).toBe(false)
   })
 })
 

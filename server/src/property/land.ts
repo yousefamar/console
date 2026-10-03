@@ -277,3 +277,26 @@ export function stackedFlatLike(l: ListingText & Pick<Listing, 'propertyType'>):
   if (/\b(?:flat|apartment|maisonette)\b/i.test(l.propertyType ?? '')) return true
   return STACKED_FLAT_RE.test([l.title ?? '', l.summary ?? '', ...(l.keyFeatures ?? [])].join('\n'))
 }
+
+/**
+ * A "plot" that is really part of an existing building — a shell ground
+ * floor under a block of flats, "First & Second Floors", "Flat A", a row of
+ * parking spaces. Rightmove's commercial channel files them under
+ * LAND_AND_DEVELOPMENT and their text passes planningLike on a Class MA
+ * prior approval ("planning to create 2 x 1 bedroom apartments"), so the
+ * plot layer drew a windowless 93 m² retail shell as a self-build site
+ * (RM 775046644146576, Newbury, 2026-10-03). The address line names the
+ * floor or flat; the prose names the unit ("ground floor retail space").
+ * The prose test is anchored on what is SOLD ("comprises a … ground floor
+ * retail space"), not what is permitted: a cleared site "with consent for 9
+ * flats" or "for three ground floor units" is still a plot.
+ */
+const UNIT_ADDRESS_RE =
+  /\b(?:(?:upper|lower)\s+ground|ground|basement|first|second|third|fourth|\d+(?:st|nd|rd|th))(?:\s*(?:,|and|&)\s*(?:second|third|fourth|\d+(?:st|nd|rd|th)))?\s+floors?\b|^\s*flats?\s+[a-z0-9]+\b|\bparking\s+(?:space|bay)s?\b|\bmaisonette\b/i
+const UNIT_TEXT_RE =
+  /\b(?:comprises?|comprising|consists?\s+of|offers?|is|vacant|existing|self-contained|located|situated|freehold|leasehold)\s+(?:(?:a|an|the|of|on|brand|new|newly|built|modern|spacious|vacant|former|refurbished|self-contained)\s+)*(?:(?:upper|lower)\s+ground|ground|basement|first|second|third)[- ]floor\s+(?:\w+\s+){0,2}?(?:retail|commercial|offices?|shops?|units?|premises|lock-?ups?)\b/i
+
+export function buildingUnitLike(l: ListingText & Pick<Listing, 'address'>): boolean {
+  if (UNIT_ADDRESS_RE.test(l.address ?? '') || UNIT_ADDRESS_RE.test(l.title ?? '')) return true
+  return UNIT_TEXT_RE.test([l.summary ?? '', ...(l.keyFeatures ?? []), l.description ?? ''].join('\n'))
+}
