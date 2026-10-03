@@ -68,7 +68,7 @@ export function runRead(db: DatabaseSync, p: ReadParams): { text: string } {
   return { text: viewTurn(db, s, t, events, p.grep ?? '', maxChars) }
 }
 
-export interface IndexResult { indexed: boolean; turns: number; ms: number }
+export interface IndexResult { indexed: boolean; turns: number; ms: number; mode?: 'append' | 'full'; kept?: number; wrote?: number }
 
 /** Parse one transcript and (re)write its rows. Skips unchanged files unless forced. */
 export function indexFile(db: DatabaseSync, sessionId: string, path: string, meta: SessionMeta = {}, force = false): IndexResult {
@@ -77,6 +77,6 @@ export function indexFile(db: DatabaseSync, sessionId: string, path: string, met
   const src = { path, size: st.size, mtimeMs: Math.round(st.mtimeMs) }
   if (!force && !needsIndex(db, sessionId, src)) return { indexed: false, turns: 0, ms: Date.now() - t0 }
   const parsed = parseTranscript(path, sessionId)
-  upsertSession(db, parsed, src, meta)
-  return { indexed: true, turns: parsed.turns.length, ms: Date.now() - t0 }
+  const r = upsertSession(db, parsed, src, meta)
+  return { indexed: true, turns: parsed.turns.length, ms: Date.now() - t0, mode: r.mode, kept: r.kept, wrote: r.wrote }
 }

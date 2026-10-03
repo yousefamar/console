@@ -1,7 +1,7 @@
 // ^jade-bat — past-session recall: JSONL parse, redaction, FTS search, the
 // address ladder (session → turn → tool result), and the render contract the
 // CLI prints for agents.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -332,5 +332,80 @@ describe('discovery', () => {
     const files = listTranscripts(join(dir, 'projects'))
     expect(files.map((f) => f.sessionId).sort()).toEqual([SID_A, SID_B].sort())
     expect(listTranscripts(join(dir, 'nope'))).toEqual([])
+  })
+})
+
+describe('incremental indexing (append the tail, rebuild only on a rewrite)', () => {
+  let d: string
+  let idb: DatabaseSync
+  let path: string
+  const SID = 'cccccccc-3333-4333-8333-333333333333'
+
+  const turn = (n: number, extra = '') => [
+    rec({ type: 'user', uuid: `e000000${n}-0000-4000-8000-00000000000${n}`, timestamp: `2026-09-02T10:0${n}:00.000Z`, cwd: CWD_A, gitBranch: 'main', message: { role: 'user', content: `question ${n} ${extra}` } }),
+    rec({ type: 'assistant', uuid: `a000000${n}`, timestamp: `2026-09-02T10:0${n}:05.000Z`, cwd: CWD_A, message: { role: 'assistant', content: [{ type: 'text', text: `answer ${n} ${extra}` }] } }),
+  ].join('\n') + '\n'
+
+  beforeEach(() => {
+    d = mkdtempSync(join(tmpdir(), 'recall-inc-'))
+    path = join(d, `${SID}.jsonl`)
+    writeFileSync(path, turn(1) + turn(2) + turn(3))
+    idb = openDb(join(d, 'r.db'))
+    expect(indexFile(idb, SID, path).mode).toBe('full')
+  })
+  afterEach(() => { idb.close(); rmSync(d, { recursive: true, force: true }) })
+
+  it('an appended turn writes only the tail and leaves the rest of the rows alone', () => {
+    const before = idb.prepare('SELECT rowid, idx FROM turns WHERE session_id = ? ORDER BY idx').all(SID) as Array<{ rowid: number; idx: number }>
+    writeFileSync(path, turn(1) + turn(2) + turn(3) + turn(4))
+    const r = indexFile(idb, SID, path)
+    expect(r.indexed).toBe(true)
+    // turns 0+1 untouched (same rowids), the last indexed turn redone + the new one
+    expect(r.mode).toBe('append')
+    expect(r.kept).toBe(2)
+    expect(r.wrote).toBe(2)
+    expect(stats(idb).turns).toBe(4)
+    const after = idb.prepare('SELECT rowid, idx FROM turns WHERE session_id = ? ORDER BY idx').all(SID) as Array<{ rowid: number; idx: number }>
+    expect(after.slice(0, 2).map((x) => x.rowid)).toEqual(before.slice(0, 2).map((x) => x.rowid))
+    expect(after.map((x) => x.idx)).toEqual([0, 1, 2, 3])
+    expect(runSearch(idb, { query: 'answer 4', filters: {} }).hits).toBe(1)
+    expect(runSearch(idb, { query: 'answer 1', filters: {} }).hits).toBe(1)
+  })
+
+  it('re-does the LAST indexed turn, so a turn that was mid-write when indexed is corrected', () => {
+    // turn 3 grows (the assistant kept talking after the first index saw it)
+    writeFileSync(path, turn(1) + turn(2) + turn(3) + rec({ type: 'assistant', uuid: 'a0000003b', timestamp: '2026-09-02T10:03:09.000Z', cwd: CWD_A, message: { role: 'assistant', content: [{ type: 'text', text: 'postscript xyzzy' }] } }) + '\n')
+    const r = indexFile(idb, SID, path)
+    expect(r.mode).toBe('append')
+    expect(runSearch(idb, { query: 'xyzzy', filters: {} }).hits).toBe(1)
+    expect(stats(idb).turns).toBe(3)
+  })
+
+  it('a rewritten history rebuilds from scratch (no stale rows survive)', () => {
+    writeFileSync(path, turn(1) + turn(9) + turn(3))
+    const r = indexFile(idb, SID, path)
+    expect(r.mode).toBe('full')
+    expect(stats(idb).turns).toBe(3)
+    expect(runSearch(idb, { query: 'answer 2', filters: {} }).hits).toBe(0)
+    expect(runSearch(idb, { query: 'answer 9', filters: {} }).hits).toBe(1)
+  })
+
+  it('a truncated transcript rebuilds and drops the turns that are gone', () => {
+    writeFileSync(path, turn(1))
+    const r = indexFile(idb, SID, path)
+    expect(r.mode).toBe('full')
+    expect(stats(idb).turns).toBe(1)
+    expect(runSearch(idb, { query: 'answer 3', filters: {} }).hits).toBe(0)
+  })
+
+  it('file counts stay exact across an append (no double-count of the redone turn)', () => {
+    const read = (n: number) => rec({ type: 'assistant', uuid: `aR${n}`, timestamp: `2026-09-02T10:0${n}:06.000Z`, cwd: CWD_A, message: { role: 'assistant', content: [{ type: 'tool_use', id: `tu${n}`, name: 'Read', input: { file_path: '/tmp/same.ts' } }] } })
+    writeFileSync(path, turn(1) + turn(2) + turn(3) + read(3) + '\n')
+    indexFile(idb, SID, path)
+    const once = idb.prepare("SELECT n FROM files WHERE session_id = ? AND path = '/tmp/same.ts'").get(SID) as { n: number } | undefined
+    writeFileSync(path, turn(1) + turn(2) + turn(3) + read(3) + '\n' + turn(4))
+    expect(indexFile(idb, SID, path).mode).toBe('append')
+    const twice = idb.prepare("SELECT n FROM files WHERE session_id = ? AND path = '/tmp/same.ts'").get(SID) as { n: number } | undefined
+    expect(twice?.n).toBe(once?.n)
   })
 })

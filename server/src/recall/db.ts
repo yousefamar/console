@@ -134,7 +134,29 @@ export function needsIndex(db: DatabaseSync, sessionId: string, src: IngestSourc
   return prev.source_path !== src.path || prev.size !== src.size || prev.mtime_ms !== src.mtimeMs
 }
 
-export function upsertSession(db: DatabaseSync, s: ParsedSession, src: IngestSource, meta: SessionMeta = {}, now = Date.now()): void {
+export interface UpsertResult {
+  /** 'append' = only the tail was written; 'full' = every row rebuilt. */
+  mode: 'append' | 'full'
+  /** turns left untouched (0 for a full rebuild) */
+  kept: number
+  /** turns written this time */
+  wrote: number
+}
+
+/** How many leading turns the index already holds verbatim. A transcript only
+ *  ever GROWS (the CLI appends; a compaction appends a boundary + summary), so
+ *  comparing `(idx, uuid)` pairs in order is enough: the first mismatch means
+ *  the file was rewritten or replaced and the session must be rebuilt. */
+function indexedPrefix(db: DatabaseSync, sessionId: string, turns: ParsedSession['turns']): number {
+  const rows = db.prepare('SELECT idx, uuid FROM turns WHERE session_id = ? ORDER BY idx').all(sessionId) as Array<{ idx: number; uuid: string }>
+  let n = 0
+  while (n < rows.length && n < turns.length && rows[n]!.idx === turns[n]!.idx && rows[n]!.uuid === turns[n]!.uuid) n++
+  // Every stored turn matched AND nothing was dropped → a clean prefix. A
+  // stored turn the parse no longer has (n < rows.length) is a rewrite.
+  return n === rows.length ? n : 0
+}
+
+export function upsertSession(db: DatabaseSync, s: ParsedSession, src: IngestSource, meta: SessionMeta = {}, now = Date.now()): UpsertResult {
   const insSession = db.prepare(`INSERT OR REPLACE INTO sessions
     (id, cwd, git_branch, title, hub_name, agent_key, started_at, ended_at, entrypoint, turn_count, first_prompt, last_prompt, last_reply)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -143,18 +165,36 @@ export function upsertSession(db: DatabaseSync, s: ParsedSession, src: IngestSou
   const insFile = db.prepare('INSERT INTO files (session_id, path, action, n) VALUES (?, ?, ?, ?) ON CONFLICT(session_id, path, action) DO UPDATE SET n = n + excluded.n')
   const insState = db.prepare('INSERT OR REPLACE INTO ingest_state (session_id, source_path, size, mtime_ms, indexed_at) VALUES (?, ?, ?, ?, ?)')
 
+  // Append when the stored rows are a verbatim prefix of this parse: deleting
+  // and reinserting every row of a session costs minutes on a big transcript,
+  // nearly all of it FTS5 churn in a multi-GB index (the 217 MB Astera general
+  // transcript took 30-40 min and stalled the whole worker). The LAST indexed
+  // turn is always redone — it may have been mid-write when it was indexed.
+  const prefix = indexedPrefix(db, s.id, s.turns)
+  const keep = prefix > 0 ? prefix - 1 : 0
+
   db.exec('BEGIN')
   try {
-    db.prepare('DELETE FROM tool_events WHERE session_id = ?').run(s.id)
-    db.prepare('DELETE FROM turns WHERE session_id = ?').run(s.id)
+    if (keep > 0) {
+      db.prepare('DELETE FROM tool_events WHERE session_id = ? AND turn_idx >= ?').run(s.id, keep)
+      db.prepare('DELETE FROM turns WHERE session_id = ? AND idx >= ?').run(s.id, keep)
+    } else {
+      db.prepare('DELETE FROM tool_events WHERE session_id = ?').run(s.id)
+      db.prepare('DELETE FROM turns WHERE session_id = ?').run(s.id)
+    }
+    // `files` holds per-path COUNTS summed across turns, so it can't be
+    // appended to incrementally without double-counting the redone turn —
+    // rewritten whole from the parse (no FTS, one row per path, cheap).
     db.prepare('DELETE FROM files WHERE session_id = ?').run(s.id)
     insSession.run(
       s.id, s.cwd, s.gitBranch, s.title, meta.hubName ?? '', meta.agentKey ?? '', s.startedAt, s.endedAt, s.entrypoint,
       s.turns.length, firstHumanPrompt(s).slice(0, 2000), lastHumanPrompt(s).slice(0, 2000), lastReply(s).slice(0, 2000),
     )
     for (const t of s.turns) {
-      insTurn.run(s.id, t.idx, t.uuid, t.ts, t.userText, t.assistantText, t.events.length)
-      for (const e of t.events) insEvent.run(s.id, t.idx, e.seq, e.name, e.inputSummary, e.result, e.truncated ? 1 : 0)
+      if (t.idx >= keep) {
+        insTurn.run(s.id, t.idx, t.uuid, t.ts, t.userText, t.assistantText, t.events.length)
+        for (const e of t.events) insEvent.run(s.id, t.idx, e.seq, e.name, e.inputSummary, e.result, e.truncated ? 1 : 0)
+      }
       for (const [path, actions] of t.files) for (const a of actions) insFile.run(s.id, path, a, 1)
     }
     insState.run(s.id, src.path, src.size, src.mtimeMs, now)
@@ -163,6 +203,7 @@ export function upsertSession(db: DatabaseSync, s: ParsedSession, src: IngestSou
     db.exec('ROLLBACK')
     throw err
   }
+  return { mode: keep > 0 ? 'append' : 'full', kept: keep, wrote: s.turns.filter((t) => t.idx >= keep).length }
 }
 
 export function stats(db: DatabaseSync): { sessions: number; turns: number; toolEvents: number } {

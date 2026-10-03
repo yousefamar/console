@@ -171,20 +171,22 @@ export class RecallIndex {
       const t0 = Date.now()
       const files = listTranscripts(this.opts.projectsDir)
       let indexed = 0
+      let appended = 0
       let failures = 0
       for (const f of files) {
         if (this.stopped) return
         if (!this.indexer.running) { this.opts.log('[recall] scan aborted: index worker not running'); return }
         try {
-          const r = await this.call<{ indexed: boolean }>('index', { sessionId: f.sessionId, path: f.path, meta: this.opts.names(f.sessionId) })
+          const r = await this.call<{ indexed: boolean; mode?: string }>('index', { sessionId: f.sessionId, path: f.path, meta: this.opts.names(f.sessionId) })
           if (r.indexed) indexed++
+          if (r.mode === 'append') appended++
         } catch (err) {
           if (++failures <= 5) this.opts.log(`[recall] index ${f.sessionId.slice(0, 8)} failed: ${err instanceof Error ? err.message : String(err)}`)
         }
       }
       if (failures > 5) this.opts.log(`[recall] scan: ${failures} transcripts failed to index (first 5 logged)`)
       this.lastScan = { at: Date.now(), files: files.length, indexed, ms: Date.now() - t0 }
-      if (indexed) this.opts.log(`[recall] scan: ${indexed}/${files.length} transcripts (re)indexed in ${Date.now() - t0} ms`)
+      if (indexed) this.opts.log(`[recall] scan: ${indexed}/${files.length} transcripts (re)indexed (${appended} appended, ${indexed - appended} rebuilt) in ${Date.now() - t0} ms`)
     })().finally(() => { this.scanning = null })
     return this.scanning
   }
