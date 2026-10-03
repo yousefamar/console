@@ -40,4 +40,5 @@ codegen-units = 4
 # `rev 8b78151c` = upstream `908e62b6` (the rev this ran on until 3 Oct 2026) plus one commit:
 # wacore's MLow encoder now codes silence as INACTIVE frames (TOC 0x10, 0x12 for the DTX hangover)
 # instead of flagging every frame as active voice. Upstream issue oxidezap/whatsapp-rust#1615,
-# PR #1616 (against their main). Drop this fork and go back to an upstream rev once that merges.
+# PR #1616, MERGED 2026-10-03 as upstream 99a9a118. Any upstream rev at or after 99a9a118
+# carries it, so the next upstream bump drops this fork.
