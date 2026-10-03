@@ -48,11 +48,31 @@ export interface UsageWarning {
   resetsAt: number | null
 }
 
+/** A MODEL-scoped window ran out (e.g. `seven_day_opus`, or a Fable one): the
+ *  fleet steps down to the next model on the SAME subscription instead of
+ *  spilling to Bedrock, and steps back up when that window resets. */
+export interface ModelHold {
+  /** model family the window covers (`opus`, `sonnet`, `fable`, …) */
+  family: string
+  /** the hub model when it tripped, and the one stepped down to */
+  from: string
+  to: string
+  hitAt: number
+  resetsAt: number | null
+  returnAt: number
+  rateLimitType: string
+  trippedBy?: string
+  returnedAt?: number
+}
+
 export interface FailoverState {
   preferred: AuthBackend
   active: FailoverEpisode | null
   history: FailoverEpisode[]
   lastWarning: UsageWarning | null
+  modelHold: ModelHold | null
+  /** every model-scoped limit hit — the per-model half of the usage ledger */
+  modelHistory: ModelHold[]
 }
 
 /** No resetsAt on the rejection → hold on Bedrock this long before trying the
@@ -73,6 +93,22 @@ export interface FailoverDeps {
   log: (msg: string) => void
   emit?: (topic: string, data: Record<string, unknown>, key?: string) => void
   now?: () => number
+  /** Step the hub model past `family` on the current backend. Returns the
+   *  models stepped from/to, or null when the active model is not in that
+   *  family (a pinned session hit it) or nothing else is left in the chain. */
+  stepDownFrom?: (family: string, reason: string) => { from: string; to: string } | null
+  /** Put the hub model back to `model` — only if it is still `steppedTo`
+   *  (a human may have picked something else meanwhile). */
+  restoreModel?: (model: string, steppedTo: string, reason: string) => void
+}
+
+/** `seven_day_<family>` is a per-model window; the plan-wide ones are
+ *  five_hour / seven_day / seven_day_overage_included / overage. */
+export function modelFamilyOf(rateLimitType: string | undefined): string | null {
+  if (!rateLimitType) return null
+  const m = /^seven_day_([a-z0-9]+)$/.exec(rateLimitType)
+  if (!m || m[1] === 'overage_included') return null
+  return m[1]!
 }
 
 /** `resetsAt` arrives in epoch seconds from the CLI; be tolerant of ms too. */
@@ -84,8 +120,9 @@ export function normaliseResetsAt(v: unknown, now: number): number | null {
 }
 
 export class BackendFailover {
-  private state: FailoverState = { preferred: 'first_party', active: null, history: [], lastWarning: null }
+  private state: FailoverState = { preferred: 'first_party', active: null, history: [], lastWarning: null, modelHold: null, modelHistory: [] }
   private timer: ReturnType<typeof setTimeout> | null = null
+  private modelTimer: ReturnType<typeof setTimeout> | null = null
   private readonly now: () => number
 
   constructor(private readonly path: string, private readonly deps: FailoverDeps) {
@@ -94,13 +131,18 @@ export class BackendFailover {
   }
 
   getState(): FailoverState {
-    return { ...this.state, history: [...this.state.history] }
+    return { ...this.state, history: [...this.state.history], modelHistory: [...this.state.modelHistory] }
   }
 
   /** Re-arm (or settle) a persisted episode after a hub restart. Also adopts
    *  the on-disk backend as `preferred` when nothing was ever recorded, so a
    *  fleet that was manually on Bedrock before this module existed stays there. */
   boot(): void {
+    const mh = this.state.modelHold
+    if (mh) {
+      if (mh.returnAt <= this.now()) this.restoreModelHold('window reset while the hub was down')
+      else this.armModel(mh.returnAt)
+    }
     const ep = this.state.active
     if (!ep) return
     if (this.state.preferred !== 'first_party') { this.closeEpisode('manual'); return }
@@ -134,6 +176,11 @@ export class BackendFailover {
     }
     if (this.state.preferred !== 'first_party') return // Bedrock by choice — nothing to fail over from
     const returnAt = (resetsAt ?? now + DEFAULT_HOLD_MS) + RETURN_SLACK_MS
+    const family = modelFamilyOf(info.rateLimitType)
+    if (family && this.deps.stepDownFrom) {
+      this.onModelLimit(family, info.rateLimitType!, resetsAt, returnAt, now, from)
+      return
+    }
     const ep = this.state.active
     if (ep) {
       // Already spilled (e.g. the 5 h window tripped, now the weekly one) —
@@ -157,6 +204,61 @@ export class BackendFailover {
     this.deps.emit?.('console.backend.failover', {
       to: 'bedrock', rateLimitType: info.rateLimitType ?? null, resetsAt, returnAt, trippedBy: from ?? null,
     }, `failover:${now}`)
+  }
+
+  /** A per-model window is exhausted: stay on the subscription, step the hub
+   *  model down past that family, and step back up when it resets. */
+  private onModelLimit(family: string, rateLimitType: string, resetsAt: number | null, returnAt: number, now: number, from?: string): void {
+    const held = this.state.modelHold
+    if (held && held.family === family) {
+      if (returnAt > held.returnAt) { held.returnAt = returnAt; held.resetsAt = resetsAt; this.armModel(returnAt); this.save() }
+      return
+    }
+    const why = `${rateLimitType} limit hit by ${from ?? 'a session'}`
+    const step = this.deps.stepDownFrom!(family, why)
+    const hold: ModelHold = { family, from: step?.from ?? '', to: step?.to ?? '', hitAt: now, resetsAt, returnAt, rateLimitType, trippedBy: from }
+    this.state.modelHistory.push(hold)
+    if (this.state.modelHistory.length > HISTORY_CAP) this.state.modelHistory.splice(0, this.state.modelHistory.length - HISTORY_CAP)
+    if (!step) {
+      this.deps.log(`[failover] ${why} — the hub model is not ${family} (a pinned session?); nothing stepped down`)
+      this.save()
+      return
+    }
+    this.state.modelHold = hold
+    this.armModel(returnAt)
+    this.save()
+    this.deps.log(`[failover] ${why} — stepped down ${step.from} → ${step.to} on the same subscription until ${new Date(returnAt).toISOString()}`)
+    this.deps.emit?.('console.backend.model_stepdown', { family, from: step.from, to: step.to, rateLimitType, resetsAt, returnAt, trippedBy: from ?? null }, `stepdown:${now}`)
+  }
+
+  private restoreModelHold(reason: string): void {
+    const mh = this.state.modelHold
+    if (!mh) return
+    mh.returnedAt = this.now()
+    this.state.modelHold = null
+    this.disarmModel()
+    this.save()
+    if (mh.from) this.deps.restoreModel?.(mh.from, mh.to, reason)
+    this.deps.log(`[failover] ${mh.rateLimitType} window reset — back to ${mh.from || 'the chain head'}`)
+    this.deps.emit?.('console.backend.model_restored', { family: mh.family, to: mh.from, rateLimitType: mh.rateLimitType }, `model-restored:${mh.hitAt}`)
+  }
+
+  private armModel(at: number): void {
+    this.disarmModel()
+    const wait = Math.max(0, Math.min(at - this.now(), 0x7fffffff))
+    this.modelTimer = setTimeout(() => { this.modelTimer = null; this.restoreModelHold('window reset') }, wait)
+    this.modelTimer.unref?.()
+  }
+
+  private disarmModel(): void {
+    if (this.modelTimer) { clearTimeout(this.modelTimer); this.modelTimer = null }
+  }
+
+  /** Test hook: fire the model-hold return timer now. */
+  fireModelTimerForTest(): void {
+    if (!this.modelTimer) return
+    this.disarmModel()
+    this.restoreModelHold('window reset')
   }
 
   /** The window reset — back onto the subscription. */
@@ -210,6 +312,8 @@ export class BackendFailover {
         active: raw.active ?? null,
         history: Array.isArray(raw.history) ? raw.history : [],
         lastWarning: raw.lastWarning ?? null,
+        modelHold: raw.modelHold ?? null,
+        modelHistory: Array.isArray(raw.modelHistory) ? raw.modelHistory : [],
       }
     } catch {
       // First boot: whatever settings.json says IS the human's standing choice.

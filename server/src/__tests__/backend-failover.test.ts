@@ -141,3 +141,108 @@ describe('BackendFailover', () => {
     expect(f.getState().active).not.toBeNull() // the episode is still tracked
   })
 })
+
+describe('per-model windows step down on the subscription (Yousef 3 Oct: Fable on Max, never spill for a Fable-only limit)', () => {
+  function modelHarness() {
+    const dir = mkdtempSync(join(tmpdir(), 'failover-model-'))
+    const path = join(dir, 'backend-failover.json')
+    const now = { t: T0 }
+    const switches: AuthBackend[] = []
+    const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const chain = ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5']
+    const st = { model: chain[0]! }
+    const restores: string[] = []
+    const make = () => new BackendFailover(path, {
+      switchTo: (b) => { switches.push(b) },
+      activeBackend: () => 'first_party',
+      log: () => {},
+      emit: (topic, data) => events.push({ topic, data }),
+      now: () => now.t,
+      stepDownFrom: (family) => {
+        if (!st.model.includes(family)) return null
+        const to = chain.find((m) => !m.includes(family))
+        if (!to) return null
+        const from = st.model; st.model = to
+        return { from, to }
+      },
+      restoreModel: (model, steppedTo) => { if (st.model === steppedTo) { st.model = model; restores.push(model) } },
+    })
+    return { dir, path, now, switches, events, st, restores, make }
+  }
+
+  it('modelFamilyOf: seven_day_<family> is per-model; plan-wide windows are not', async () => {
+    const { modelFamilyOf } = await import('../backend-failover.js')
+    expect(modelFamilyOf('seven_day_opus')).toBe('opus')
+    expect(modelFamilyOf('seven_day_fable')).toBe('fable')
+    expect(modelFamilyOf('seven_day_overage_included')).toBeNull()
+    expect(modelFamilyOf('five_hour')).toBeNull()
+    expect(modelFamilyOf('seven_day')).toBeNull()
+    expect(modelFamilyOf(undefined)).toBeNull()
+  })
+
+  it('a Fable-only rejection steps the hub model to Opus on Max, does NOT spill, and steps back at the reset', () => {
+    const m = modelHarness()
+    try {
+      const f = m.make()
+      f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 7200, rateLimitType: 'seven_day_fable' as never }, 'Astera general')
+      expect(m.switches).toEqual([])
+      expect(m.st.model).toBe('claude-opus-5-5')
+      const s = f.getState()
+      expect(s.active).toBeNull()
+      expect(s.modelHold).toMatchObject({ family: 'fable', from: 'claude-fable-5-1', to: 'claude-opus-5-5', returnAt: T0 + 7_200_000 + RETURN_SLACK_MS })
+      expect(s.modelHistory).toHaveLength(1)
+      expect(m.events.map((e) => e.topic)).toEqual(['console.backend.model_stepdown'])
+      f.fireModelTimerForTest()
+      expect(m.st.model).toBe('claude-fable-5-1')
+      expect(f.getState().modelHold).toBeNull()
+      expect(f.getState().modelHistory).toHaveLength(1)
+    } finally { rmSync(m.dir, { recursive: true, force: true }) }
+  })
+
+  it('the reset does not undo a model a human picked meanwhile', () => {
+    const m = modelHarness()
+    try {
+      const f = m.make()
+      f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 3600, rateLimitType: 'seven_day_fable' as never }, 'x')
+      m.st.model = 'claude-sonnet-5'
+      f.fireModelTimerForTest()
+      expect(m.st.model).toBe('claude-sonnet-5')
+      expect(m.restores).toEqual([])
+    } finally { rmSync(m.dir, { recursive: true, force: true }) }
+  })
+
+  it('a per-model limit on a model the hub is not using is recorded but changes nothing', () => {
+    const m = modelHarness()
+    try {
+      const f = m.make()
+      f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 3600, rateLimitType: 'seven_day_sonnet' }, 'pinned fork')
+      expect(m.st.model).toBe('claude-fable-5-1')
+      expect(m.switches).toEqual([])
+      expect(f.getState().modelHold).toBeNull()
+      expect(f.getState().modelHistory).toHaveLength(1)
+    } finally { rmSync(m.dir, { recursive: true, force: true }) }
+  })
+
+  it('plan-wide windows still spill to Bedrock', () => {
+    const m = modelHarness()
+    try {
+      const f = m.make()
+      f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 3600, rateLimitType: 'five_hour' }, 'x')
+      expect(m.switches).toEqual(['bedrock'])
+      expect(f.getState().modelHold).toBeNull()
+    } finally { rmSync(m.dir, { recursive: true, force: true }) }
+  })
+
+  it('a hold survives a hub restart and is restored on boot once its reset has passed', () => {
+    const m = modelHarness()
+    try {
+      m.make().onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 600, rateLimitType: 'seven_day_fable' as never }, 'x')
+      expect(JSON.parse(readFileSync(m.path, 'utf8')).modelHold.family).toBe('fable')
+      m.now.t = T0 + 3_600_000
+      const f2 = m.make()
+      f2.boot()
+      expect(m.st.model).toBe('claude-fable-5-1')
+      expect(f2.getState().modelHold).toBeNull()
+    } finally { rmSync(m.dir, { recursive: true, force: true }) }
+  })
+})

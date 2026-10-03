@@ -67,7 +67,11 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     // below is in the CLI's own model catalog (2.1.280); none is spawn-
     // verified against the Max account yet (its OAuth was expired when this
     // was written) — a 400 auto-advances the chain.
-    chain: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    // Fable leads on the subscription only (Yousef, 3 Oct 2026: Fable is the
+    // default on Max, never off it — the Bedrock chain below keeps Opus first).
+    // Spawn-verified on Max 3 Oct. A Fable-only window steps down to Opus on
+    // Max (backend-failover.ts modelFamilyOf), never to Bedrock.
+    chain: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
   },
   bedrock: {
     id: 'bedrock',

@@ -125,9 +125,11 @@ describe('BACKEND_PRESETS chains', () => {
     }
   })
 
-  it('chains are non-empty and most-capable-first (opus-5 leads both)', () => {
+  it('Fable is the default on Max only; Bedrock (the paid backup) defaults to Opus', () => {
+    expect(BACKEND_PRESETS.first_party.chain[0]).toBe('claude-fable-5-1')
+    expect(BACKEND_PRESETS.first_party.chain[1]).toContain('opus-5')
     expect(BACKEND_PRESETS.bedrock.chain[0]).toContain('opus-5')
-    expect(BACKEND_PRESETS.first_party.chain[0]).toContain('opus-5')
+    expect(BACKEND_PRESETS.bedrock.chain[0]).not.toContain('fable')
   })
 })
 

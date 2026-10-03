@@ -37,7 +37,7 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, broadcastModelState, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, broadcastModelState, restartAllSessionsForModel, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, readSettingsEnv, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BackendFailover } from './backend-failover.js'
 import { SubscriptionUsageLedger, summariseUsage } from './subscription-usage.js'
@@ -869,6 +869,24 @@ const backendFailover = new BackendFailover(join(feedsConfigDir, 'backend-failov
   activeBackend: detectActiveBackend,
   log,
   emit: (topic, data, key) => eventBus.emit({ topic, source: 'backend-failover', key, data }),
+  // A per-model window (e.g. Fable's) stays on the subscription: step the hub
+  // model to the next chain entry outside that family, back up at the reset.
+  stepDownFrom: (family) => {
+    const from = agentCtx.modelConfig.getModel()
+    if (!from.toLowerCase().includes(family)) return null
+    const to = agentCtx.modelConfig.getChain().find((m) => !m.toLowerCase().includes(family))
+    if (!to) return null
+    agentCtx.modelConfig.setModel(to)
+    broadcastModelState(agentCtx)
+    restartAllSessionsForModel(agentCtx)
+    return { from, to }
+  },
+  restoreModel: (model, steppedTo) => {
+    if (agentCtx.modelConfig.getModel() !== steppedTo) return // a human picked something else meanwhile
+    agentCtx.modelConfig.setModel(model)
+    broadcastModelState(agentCtx)
+    restartAllSessionsForModel(agentCtx)
+  },
 })
 agentCtx.failover = backendFailover
 // Utilisation of the Max windows over time — the data behind "how many
@@ -2116,7 +2134,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
         backend: detectActiveBackend(),
         presets: Object.values(BACKEND_PRESETS).map((p) => ({ id: p.id, label: p.label })),
         preferred: failover.preferred,
-        failover: { active: failover.active, lastWarning: failover.lastWarning, history: failover.history.slice(-20) },
+        failover: { active: failover.active, lastWarning: failover.lastWarning, history: failover.history.slice(-20), modelHold: failover.modelHold, modelHistory: failover.modelHistory.slice(-20) },
         usage: {
           latest: subscriptionUsage.latest(),
           authError: usage.authError,

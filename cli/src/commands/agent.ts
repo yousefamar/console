@@ -468,12 +468,13 @@ async function agentReload(args: string[], flags: GlobalFlags): Promise<void> {
 
 interface ModelState { model: string; chain: string[]; lockedByEnv: boolean }
 interface FailoverEpisode { hitAt: number; resetsAt: number | null; returnAt: number; rateLimitType?: string; trippedBy?: string; returnedAt?: number; closedBy?: string }
+interface ModelHold { family: string; from: string; to: string; hitAt: number; returnAt: number; rateLimitType: string; trippedBy?: string; returnedAt?: number }
 interface UsageSample { at: number; windows: Record<string, { utilization: number; resetsAt: number | null }> }
 interface BackendState {
   backend: string
   presets: Array<{ id: string; label: string }>
   preferred: string
-  failover: { active: FailoverEpisode | null; lastWarning: { at: number; utilization?: number; rateLimitType?: string; resetsAt: number | null } | null; history: FailoverEpisode[] }
+  failover: { active: FailoverEpisode | null; lastWarning: { at: number; utilization?: number; rateLimitType?: string; resetsAt: number | null } | null; history: FailoverEpisode[]; modelHold?: ModelHold | null; modelHistory?: ModelHold[] }
   usage: { latest: UsageSample | null; authError: string | null; lastError: string | null; lastOkAt: number | null; last7d: Record<string, { peak: number; mean: number; samplesAbove90: number; samples: number }>; samples: number }
 }
 
@@ -507,6 +508,14 @@ async function agentBackend(args: string[], flags: GlobalFlags): Promise<void> {
     if (h.length) {
       const total = h.reduce((a, e) => a + ((e.returnedAt ?? Date.now()) - e.hitAt), 0)
       lines.push(`spills:     ${h.length} recorded, ${fmtMins(total)} on Bedrock in total; last ${fmtTime(h[h.length - 1]!.hitAt)}`)
+    }
+    const mh = state.failover?.modelHold
+    if (mh) lines.push(`model:      ${mh.from} → ${mh.to} since ${fmtTime(mh.hitAt)} (${mh.rateLimitType}); back at ${fmtTime(mh.returnAt)}`)
+    const mhist = state.failover?.modelHistory ?? []
+    if (mhist.length) {
+      const byWin = new Map<string, number>()
+      for (const m of mhist) byWin.set(m.rateLimitType, (byWin.get(m.rateLimitType) ?? 0) + 1)
+      lines.push(`model limits: ${[...byWin].map(([k, n]) => `${k} ×${n}`).join(', ')}; last ${fmtTime(mhist[mhist.length - 1]!.hitAt)}`)
     }
     const u = state.usage
     if (u?.authError) lines.push(`usage:      ${u.authError}`)
