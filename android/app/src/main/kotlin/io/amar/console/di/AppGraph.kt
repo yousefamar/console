@@ -61,7 +61,7 @@ class AppGraph(context: Context) {
     val propertyDeck = io.amar.console.data.longtail.PropertyDeckRepository(hub, outbox)
     val music = MusicRepository(hub)
     val home = HomeRepository(hub)
-    val money = io.amar.console.data.money.MoneyRepository(db, hub)
+    val money = io.amar.console.data.money.MoneyRepository(db, hub, outbox)
     val hardware = io.amar.console.data.longtail.HardwareRepository(hub)
     val mirror = GlassesMirror(context, appScope, db)
 
@@ -136,6 +136,7 @@ class AppGraph(context: Context) {
         io.amar.console.data.agents.Mic.attach(syncBus)
 
         bookmarks.registerOutboxHandlers()
+        money.registerOutboxHandlers()
         syncEngine.addDomain("bookmarks") { bookmarks.reconcile() }
         syncEngine.addDomain("map") { map.reconcile() }
         // Instant cross-device deltas (a fetch-area / canvas edit on PC updates

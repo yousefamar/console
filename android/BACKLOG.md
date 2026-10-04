@@ -10,15 +10,13 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
 (`android/CLAUDE.md` → "nightly parity sweep") or by SPA forks as they ship.
 
-- Money: editing parity — the read-only pane shipped (^quick-gull); still
-  SPA-only: Budgets (`/finance/budgets` + `/finance/budget-status`), Scenarios
-  (`/finance/scenarios`, comparison chart), Categories + rules CRUD, per-tx
-  override (recategorise / ignore / mark transfer via `/finance/overrides`),
+- Money: editing parity — the read-only pane shipped (^quick-gull) and the
+  per-transaction override landed (^warm-wren); still SPA-only: Budgets
+  (`/finance/budgets` + `/finance/budget-status`), Scenarios
+  (`/finance/scenarios`, comparison chart), Categories + rules CRUD,
   manual-account balance ledger entries (`POST /finance/accounts/:id/balance`),
-  monthly spend chart (`/finance/monthly`), shared-tab panel. Plan: tx detail
-  sheet gains a category picker + ignore/transfer toggles first (one outbox
-  action, `overrides` POST), then a Budgets section under Runway; scenarios
-  and the ledger editor last.
+  monthly spend chart (`/finance/monthly`), shared-tab panel. Plan: a Budgets
+  section under Runway next; scenarios and the ledger editor last.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
@@ -56,6 +54,25 @@ view-mode hub-sync (Room meta is fine on one device).
   of `MapRepository` into a shared stateless `data/gmaps/GmapsClient` (+ a
   per-consumer `GmapsSession` token); one instance in `AppGraph` serves Map and
   `CalendarRepository.places`, so the configured probe and fix caches are shared.
+
+- **Money: recategorise / ignore / mark transfer from the transaction sheet**
+  (^warm-wren; first slice of Open "Money: editing parity"). The sheet said
+  "do it in the web app". Now: tap Category → chip picker of the finance
+  categories; Ignore and Transfer switches; "Reset to rules" when an override
+  exists. One outbox action `money:override` (POST `/finance/overrides`, or
+  DELETE for a reset — a 404 there counts as done) with an optimistic Room write
+  that mirrors the override branch of the hub's `effectiveCategory`; after the
+  write lands the row takes the hub's re-derived classification
+  (`/finance/categorise`) and the runway is refetched, so a reset shows the
+  rule's category. The payload carries the row's before + the replaced
+  override, and `money:override:onFailed` puts both back on a rejected write.
+  Reconcile no longer overwrites a row (or override entry) whose edit is still
+  queued (`OutboxDao.inFlightEntityIds`). Pick/transfer always send
+  `ignore:false` — the hub's upsert merges, so an earlier ignore would
+  otherwise swallow the pick (same as the SPA). Overrides are cached in `meta`
+  (`GET /finance/overrides` on every reconcile). Pure helpers in
+  `data/money/MoneyOverrides.kt`; tests `MoneyOverridesTest` +
+  `MoneyRepositoryOverrideTest`.
 
 ## Shipped
 

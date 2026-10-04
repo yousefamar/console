@@ -15,6 +15,10 @@ interface OutboxDao {
     @Query("SELECT * FROM outbox WHERE status = 'pending' ORDER BY createdAt ASC")
     suspend fun pending(): List<OutboxRow>
 
+    /** Entities with a not-yet-landed action of [type] — a reconcile must not overwrite their optimistic state. */
+    @Query("SELECT DISTINCT entityId FROM outbox WHERE type = :type AND status IN ('pending','processing') AND entityId IS NOT NULL")
+    suspend fun inFlightEntityIds(type: String): List<String>
+
     @Query("SELECT * FROM outbox WHERE status IN ('pending','processing','failed','conflict') ORDER BY createdAt ASC")
     fun observeAll(): Flow<List<OutboxRow>>
 

@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +19,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
@@ -24,6 +28,9 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -56,6 +63,8 @@ import io.amar.console.data.money.MoneyCategory
 import io.amar.console.data.money.MoneyFormat
 import io.amar.console.data.money.MoneyRepository
 import io.amar.console.data.money.NetWorthPoint
+import io.amar.console.data.money.OverrideEdit
+import io.amar.console.data.money.TxOverride
 import io.amar.console.data.money.Runway
 import io.amar.console.ui.components.EmptyState
 import io.amar.console.ui.components.PaneTopBar
@@ -82,7 +91,8 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
     val state by repo.state.collectAsState()
     val txns by repo.observeTransactions(200).collectAsState(initial = emptyList())
     val scope = rememberCoroutineScope()
-    var detail by remember { mutableStateOf<MoneyTxRow?>(null) }
+    // The sheet tracks the id, not a snapshot, so an override edit re-renders it from Room.
+    var detailId by remember { mutableStateOf<String?>(null) }
 
     // Hydrate the cached blobs synchronously-ish, then refresh from the hub.
     LaunchedEffect(Unit) {
@@ -154,16 +164,23 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
             for (g in groups) {
                 item(key = "day-${g.key}") { DayHeader(g.label) }
                 items(g.rows, key = { it.id }) { tx ->
-                    TransactionRow(tx, cats[tx.categoryId], onClick = { detail = tx })
+                    TransactionRow(tx, cats[tx.categoryId], onClick = { detailId = tx.id })
                 }
             }
             item(key = "foot") { Spacer(Modifier.height(24.dp)) }
         }
     }
 
-    detail?.let { tx ->
-        ModalBottomSheet(onDismissRequest = { detail = null }) {
-            TransactionDetail(tx, cats = state.categoriesById)
+    detailId?.let { id -> txns.firstOrNull { it.id == id } }?.let { tx ->
+        ModalBottomSheet(onDismissRequest = { detailId = null }) {
+            TransactionDetail(
+                tx,
+                cats = state.categoriesById,
+                categories = state.categories,
+                override = state.overrides[tx.id],
+                // The screen's scope, not the sheet's: the write must outlive a dismiss.
+                onEdit = { edit -> scope.launch { runCatching { repo.applyOverride(tx.id, edit) } } },
+            )
         }
     }
 }
@@ -383,8 +400,16 @@ private fun TxGlyph(tx: MoneyTxRow, cat: MoneyCategory?, alpha: Float, size: and
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
-private fun TransactionDetail(tx: MoneyTxRow, cats: Map<String, MoneyCategory>) {
+private fun TransactionDetail(
+    tx: MoneyTxRow,
+    cats: Map<String, MoneyCategory>,
+    categories: List<MoneyCategory>,
+    override: TxOverride?,
+    onEdit: (OverrideEdit) -> Unit,
+) {
+    var picking by remember(tx.id) { mutableStateOf(false) }
     val cat = cats[tx.categoryId]
     val zone = ZoneId.systemDefault()
     val createdLabel = if (tx.createdAt > 0) Instant.ofEpochMilli(tx.createdAt).atZone(zone).format(DateTimeFormatter.ofPattern("EEE d MMM yyyy · HH:mm", MoneyFormat.MONTH_LOCALE)) else tx.created
@@ -393,7 +418,10 @@ private fun TransactionDetail(tx: MoneyTxRow, cats: Map<String, MoneyCategory>) 
         tx.settled.isEmpty() -> "Pending"
         else -> runCatching { "Settled ${Instant.parse(tx.settled).atZone(zone).format(DateTimeFormatter.ofPattern("d MMM", MoneyFormat.MONTH_LOCALE))}" }.getOrDefault("Settled")
     }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TxGlyph(tx, cat, 1f, size = 44.dp)
             Column(Modifier.weight(1f)) {
@@ -414,18 +442,54 @@ private fun TransactionDetail(tx: MoneyTxRow, cats: Map<String, MoneyCategory>) 
             },
         )
         HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
-        DetailRow("Category", if (cat != null) "${cat.emoji} ${cat.name}".trim() else "Uncategorised")
-        if (tx.isTransfer) DetailRow("Transfer", "yes — excluded from spend")
-        if (tx.ignored) DetailRow("Ignored", "yes — excluded from spend")
+        Row(
+            Modifier.fillMaxWidth().clickable { picking = !picking },
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Category", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(110.dp))
+            Text(
+                if (cat != null) "${cat.emoji} ${cat.name}".trim() else "Uncategorised",
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
+            )
+            Text(
+                if (picking) "Done" else if (override != null) "Overridden · change" else "Change",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        if (picking) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (c in categories) {
+                    FilterChip(
+                        selected = c.id == tx.categoryId,
+                        onClick = { onEdit(OverrideEdit.SetCategory(c.id)); picking = false },
+                        label = { Text("${c.emoji} ${c.name}".trim(), style = MaterialTheme.typography.labelSmall) },
+                    )
+                }
+            }
+        }
+        SwitchRow("Ignore", "Don't count toward spend", tx.ignored) { onEdit(OverrideEdit.Ignore(it)) }
+        SwitchRow("Transfer", "Between my own accounts", tx.isTransfer, enabled = !tx.ignored) { onEdit(OverrideEdit.Transfer(it)) }
+        if (override != null) {
+            TextButton(onClick = { onEdit(OverrideEdit.Reset) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+                Text("Reset to rules", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
         DetailRow("Monzo category", tx.monzoCategory.replace('_', ' '))
         if (!tx.counterpartyName.isNullOrBlank()) DetailRow("Counterparty", tx.counterpartyName)
         DetailRow("Description", tx.description)
         if (!tx.notes.isNullOrBlank()) DetailRow("Notes", tx.notes)
         if (tx.currency != "GBP") DetailRow("Currency", tx.currency)
-        Text(
-            "Recategorise / ignore / mark transfer in the web app's Money tab.",
-            style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+    }
+}
+
+@Composable
+private fun SwitchRow(label: String, hint: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(110.dp))
+        Text(hint, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 
