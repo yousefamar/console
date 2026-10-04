@@ -405,6 +405,28 @@ fn clip_frames(name: &str, db: Option<f32>) -> Result<VecDeque<Vec<i16>>, String
     Ok(out.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect())
 }
 
+/// Append socket PCM to a slot's outbound queue as 960-sample frames, merging into a partial
+/// frame left at the back by the previous push.
+///
+/// Only a PARTIAL back frame may be taken back off the queue. The first version did
+/// `q.pop_back().filter(|f| f.len() < FRAME_SAMPLES)`, which pops the back frame and drops it when
+/// it is complete. The pipeline sends whole 60 ms frames and bursts ~5 of them at the start of
+/// every sentence to build its 0.3 s lead, so each push deleted the one before it: ~240 ms gone
+/// from the start of every sentence on every call since the first, which is the "never heard the
+/// one" first-word loss chased on the phone side for two weeks (^jade-gull, 4 Oct 2026). Any
+/// lead-in made it worse, because speech queued behind it was deleted the same way.
+pub fn enqueue_pcm(q: &mut VecDeque<Vec<i16>>, mut samples: Vec<i16>) {
+    if q.back().is_some_and(|f| f.len() < FRAME_SAMPLES)
+        && let Some(mut tail) = q.pop_back()
+    {
+        tail.append(&mut samples);
+        samples = tail;
+    }
+    for chunk in samples.chunks(FRAME_SAMPLES) {
+        q.push_back(chunk.to_vec());
+    }
+}
+
 /// How long the source waits, with the queue empty, before it calls the
 /// utterance over. Without it a pipeline that hands over its TTS a little
 /// slower than real time looks like the end of a talkspurt, and the next
@@ -804,14 +826,7 @@ impl CallManager {
             .map(|b| i16::from_le_bytes([b[0], b[1]]))
             .collect();
         let mut q = queue.lock().unwrap_or_else(|p| p.into_inner());
-        // Re-chunk to exactly 960 samples; carry a remainder frame forward.
-        if let Some(mut tail) = q.pop_back().filter(|f| f.len() < FRAME_SAMPLES) {
-            tail.append(&mut samples);
-            samples = tail;
-        }
-        for chunk in samples.chunks(FRAME_SAMPLES) {
-            q.push_back(chunk.to_vec());
-        }
+        enqueue_pcm(&mut q, samples);
         // Overflow is silence on the wire — the frames dropped here are speech
         // the peer will never hear — so it is logged rather than absorbed. Call
         // 00357d4b (21 Sept) discarded a whole call's audio through this branch
@@ -1432,6 +1447,66 @@ mod tests {
             preroll: if preroll_frames == 0 { Preroll::Off } else { Preroll::Noise },
             preroll_frames,
             preroll_db: -30.0,
+        }
+    }
+
+    /// The pipeline bursts whole frames at the start of a sentence (its 0.3 s lead); none of them
+    /// may be lost, and the mic clock must hand every sample to the encoder exactly once, in order.
+    /// This is the 4 Oct 2026 first-word loss: the old re-chunk dropped every complete back frame.
+    #[test]
+    fn a_burst_of_whole_frames_is_queued_without_loss() {
+        let mut q: VecDeque<Vec<i16>> = VecDeque::new();
+        for k in 0..5i16 {
+            enqueue_pcm(&mut q, vec![1000 + k; FRAME_SAMPLES]);
+        }
+        assert_eq!(q.len(), 5, "five whole frames pushed back to back are five queued frames");
+        assert_eq!(q.iter().map(|f| f[0]).collect::<Vec<_>>(), vec![1000, 1001, 1002, 1003, 1004]);
+    }
+
+    #[test]
+    fn partial_pushes_are_merged_in_order() {
+        let mut q: VecDeque<Vec<i16>> = VecDeque::new();
+        let all: Vec<i16> = (0..(FRAME_SAMPLES as i16 * 3)).map(|i| i % 30000).collect();
+        // Odd-sized pushes that straddle frame boundaries.
+        let mut at = 0usize;
+        for n in [500usize, 700, 960, 100, 620] {
+            enqueue_pcm(&mut q, all[at..at + n].to_vec());
+            at += n;
+        }
+        let flat: Vec<i16> = q.iter().flatten().copied().collect();
+        assert_eq!(flat, all[..at].to_vec(), "every sample once, in order");
+        assert!(q.iter().rev().skip(1).all(|f| f.len() == FRAME_SAMPLES), "only the back frame may be partial");
+    }
+
+    /// End to end through the mic clock, with and without a pre-roll: the pipeline's burst-then-pace
+    /// pattern goes in, every speech sample must come out of `next_frame`, in order.
+    #[test]
+    fn burst_then_paced_speech_reaches_the_clock_intact() {
+        for preroll in [0usize, 6] {
+            let mut src = MicSource::new(levers(preroll));
+            let mut q: VecDeque<Vec<i16>> = VecDeque::new();
+            let utterance: Vec<Vec<i16>> = (0..20i16).map(|k| vec![1000 + k; FRAME_SAMPLES]).collect();
+            let mut sent = Vec::new();
+            // Burst: five frames before the first tick, then one push per tick.
+            for f in &utterance[..5] {
+                enqueue_pcm(&mut q, f.clone());
+            }
+            let mut next = 5;
+            for _ in 0..60 {
+                let (f, _) = src.next_frame(&mut q);
+                if is_speech(&f) {
+                    sent.push(f[0]);
+                }
+                if next < utterance.len() {
+                    enqueue_pcm(&mut q, utterance[next].clone());
+                    next += 1;
+                }
+            }
+            assert_eq!(
+                sent,
+                (0..20).map(|k| 1000 + k as i16).collect::<Vec<_>>(),
+                "pre-roll {preroll}: every frame of the utterance reaches the encoder, in order"
+            );
         }
     }
 
