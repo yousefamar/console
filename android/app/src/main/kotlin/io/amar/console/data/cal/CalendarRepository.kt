@@ -3,6 +3,7 @@ package io.amar.console.data.cal
 import androidx.room.withTransaction
 import io.amar.console.core.HubClient
 import io.amar.console.core.HubPrefs
+import io.amar.console.data.gmaps.GmapsClient
 import io.amar.console.data.db.CalEventRow
 import io.amar.console.data.db.CalendarRow
 import io.amar.console.data.db.ConsoleDb
@@ -50,6 +51,8 @@ class CalendarRepository(
     private val hub: HubClient,
     private val syncBus: SyncBusClient,
     private val outbox: Outbox,
+    /** Places type-ahead for the event form's Location field (shared with Map). */
+    val places: GmapsClient = GmapsClient(hub),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 

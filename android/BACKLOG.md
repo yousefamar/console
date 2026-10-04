@@ -42,6 +42,21 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **Calendar event form: Google Places autocomplete on Location** (^busy-pony,
+  SPA 3e9708db ^deft-bass parity; Yousef: "When I'm creating a new event I'd
+  like the location to query Google Maps and autocomplete just like it does in
+  Maps."). The form's Location was a plain `OutlinedTextField`; it is now
+  `ui/components/PlaceAutocompleteField` — ≥2 chars + 250 ms debounce →
+  `GET /gmaps/autocomplete` biased to the phone's last `/location` fix (cached
+  10 min), stale responses dropped, tapping a suggestion resolves it via
+  `/gmaps/place/<id>` (ends the billing session) and writes
+  `placeLocationText` ("Name, address"; the address alone when it starts with
+  the name — verbatim port of `src/utils/gmaps.ts`, unit-tested). No Maps key
+  on the hub, or offline → the plain field, no error. The wire calls moved out
+  of `MapRepository` into a shared stateless `data/gmaps/GmapsClient` (+ a
+  per-consumer `GmapsSession` token); one instance in `AppGraph` serves Map and
+  `CalendarRepository.places`, so the configured probe and fix caches are shared.
+
 ## Shipped
 
 ### v107 (2026-10-02)

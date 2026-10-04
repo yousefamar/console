@@ -45,6 +45,7 @@ import io.amar.console.data.cal.CalendarRepository
 import io.amar.console.data.cal.parseEventDetails
 import io.amar.console.data.db.CalEventRow
 import io.amar.console.data.db.CalendarRow
+import io.amar.console.ui.components.PlaceAutocompleteField
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -163,9 +164,9 @@ fun EventFormDialog(
                         pickDateTime(endMs, allDay) { picked -> if (picked > startMs) endMs = picked }
                     }) { Text(fmt(endMs)) }
                 }
-                OutlinedTextField(
+                PlaceAutocompleteField(
                     value = location, onValueChange = { location = it },
-                    label = { Text("Location") }, singleLine = true, keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences),
+                    places = repo.places, label = "Location",
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(

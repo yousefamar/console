@@ -8,6 +8,7 @@ import io.amar.console.data.cal.CalendarRepository
 import io.amar.console.data.chat.ChatRepository
 import io.amar.console.data.db.ConsoleDb
 import io.amar.console.data.feeds.FeedsRepository
+import io.amar.console.data.gmaps.GmapsClient
 import io.amar.console.data.longtail.BookmarksRepository
 import io.amar.console.data.longtail.HomeRepository
 import io.amar.console.data.longtail.MapRepository
@@ -40,7 +41,10 @@ class AppGraph(context: Context) {
 
     val chat = ChatRepository(db, hub, syncBus, outbox)
     val mail = MailRepository(db, hub, syncBus, outbox)
-    val calendar = CalendarRepository(db, hub, syncBus, outbox)
+    /** Google Places over the hub — one instance so the configured probe and
+     *  location-fix caches are shared by Map and the calendar event form. */
+    val gmaps = GmapsClient(hub)
+    val calendar = CalendarRepository(db, hub, syncBus, outbox, gmaps)
     val notes = NotesRepository(db, hub, syncBus, outbox)
     val feeds = FeedsRepository(db, hub, outbox)
     val agents = AgentsRepository(appScope, db, hub, outbox)
@@ -53,7 +57,7 @@ class AppGraph(context: Context) {
         spacesFlow = spaces.spaces,
     )
     val bookmarks = BookmarksRepository(db, hub, outbox)
-    val map = MapRepository(db, hub)
+    val map = MapRepository(db, hub, gmaps)
     val propertyDeck = io.amar.console.data.longtail.PropertyDeckRepository(hub, outbox)
     val music = MusicRepository(hub)
     val home = HomeRepository(hub)

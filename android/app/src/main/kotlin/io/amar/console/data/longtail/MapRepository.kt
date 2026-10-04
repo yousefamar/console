@@ -5,6 +5,8 @@ import io.amar.console.data.db.ConsoleDb
 import io.amar.console.data.db.GeocacheRow
 import io.amar.console.data.db.MeetupEventRow
 import io.amar.console.data.db.MetaRow
+import io.amar.console.data.gmaps.GmapsClient
+import io.amar.console.data.gmaps.GmapsSession
 import io.amar.console.sync.SyncBusClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -244,7 +246,11 @@ private const val LAYER_VIS_KEY = "console:map:layerVisible"
 /** Last `/location/map` fences + fix, so the fences layer draws before the WS connects. */
 private const val LOCATION_SNAPSHOT_KEY = "console:map:location:v1"
 
-class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
+class MapRepository(
+    private val db: ConsoleDb,
+    private val hub: HubClient,
+    private val gmaps: GmapsClient = GmapsClient(hub),
+) {
     private val _state = MutableStateFlow(MapUiState())
     val state: StateFlow<MapUiState> = _state
 
@@ -598,11 +604,9 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
 
     // --- Google Maps search + directions (hub /gmaps/* proxy) ---------------- //
 
-    // ONE autocomplete billing session per keystroke run: the same token rides
-    // every /autocomplete call AND the /place details fetch that ends the run,
-    // so Google bills the whole run as one session (store/map.ts parity).
-    private var gmapsSession: String? = null
-    private fun gmapsSessionToken(): String = gmapsSession ?: java.util.UUID.randomUUID().toString().also { gmapsSession = it }
+    // ONE autocomplete billing session per keystroke run (store/map.ts parity);
+    // the wire calls live in the shared data/gmaps client.
+    private val gmapsSession = GmapsSession()
     private var autocompleteSeq = 0
 
     /** Type-ahead. Bias = current map centre. Callers debounce (~250 ms); a
@@ -615,14 +619,10 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         }
         val seq = ++autocompleteSeq
         _state.value = _state.value.copy(gmapsSuggesting = true)
-        val raw = runCatching {
-            val sb = StringBuilder("/gmaps/autocomplete?q=").append(enc(q)).append("&session=").append(gmapsSessionToken())
-            if (bias != null) sb.append("&lat=").append(bias.lat).append("&lon=").append(bias.lon)
-            hub.get(sb.toString())
-        }.getOrNull()
+        val suggestions = runCatching { gmaps.autocomplete(q, gmapsSession, bias) }.getOrNull()
         if (seq != autocompleteSeq) return // stale — a newer keystroke owns the state
         _state.value = _state.value.copy(
-            gmapsSuggestions = raw?.let { parseSuggestions(it) } ?: emptyList(),
+            gmapsSuggestions = suggestions ?: emptyList(),
             gmapsSuggesting = false,
         )
     }
@@ -633,9 +633,7 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
         ++autocompleteSeq // any in-flight autocomplete is now stale
         _state.value = _state.value.copy(gmapsSuggestions = emptyList(), gmapsSearching = true, gmapsError = null)
         try {
-            val raw = hub.get("/gmaps/place/${enc(placeId)}?session=${gmapsSessionToken()}")
-            gmapsSession = null // a details fetch ends the session
-            val place = parsePlaceEnvelope(raw) ?: throw IllegalStateException("place not found")
+            val place = gmaps.place(placeId, gmapsSession) // ends the billing session
             _state.value = _state.value.copy(
                 gmapsResults = listOf(place), gmapsSelectedPlaceId = place.id,
                 gmapsRoutes = emptyList(), gmapsRouteTo = null, gmapsRouteFrom = null,
@@ -687,7 +685,7 @@ class MapRepository(private val db: ConsoleDb, private val hub: HubClient) {
 
     fun clearGmapsSearch() {
         ++autocompleteSeq
-        gmapsSession = null
+        gmapsSession.reset()
         _state.value = _state.value.copy(
             gmapsSuggestions = emptyList(), gmapsResults = emptyList(), gmapsSelectedPlaceId = null,
             gmapsRoutes = emptyList(), gmapsRouteTo = null, gmapsRouteFrom = null, gmapsSelectedRoute = 0,
