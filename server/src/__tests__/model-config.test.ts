@@ -3,7 +3,7 @@
 // runtime-configurable model with an auto-advancing fallback chain.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ModelConfig, looksLikeModelError, DEFAULT_MODEL_CHAIN } from '../model-config.js'
@@ -112,5 +112,43 @@ describe('ModelConfig env override', () => {
     expect(c.getState().lockedByEnv).toBe(true)
     const r = c.reportFailure('claude-haiku-4-5')
     expect(r.changed).toBe(false) // env-locked: no auto-fallback
+  })
+})
+
+describe('ModelConfig preset reconcile (^shy-kite)', () => {
+  const OLD_MAX = ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001']
+  const NEW_MAX = ['claude-fable-5-1', ...OLD_MAX]
+
+  it('adopts a newer preset over an unedited copy of the old one, model follows the head', () => {
+    fresh().applyPreset(OLD_MAX)
+    const c = fresh()
+    expect(c.reconcilePreset(NEW_MAX)).toBe(true)
+    expect(c.getState()).toMatchObject({ model: 'claude-fable-5-1', chain: NEW_MAX })
+    expect(fresh().getChain()).toEqual(NEW_MAX) // persisted
+  })
+
+  it('migrates a pre-presetChain file whose entries all sit in the new preset (the live 3 Oct state)', () => {
+    writeFileSync(file, JSON.stringify({ model: 'claude-opus-5-5', chain: OLD_MAX }))
+    const d = fresh()
+    expect(d.reconcilePreset(NEW_MAX)).toBe(true)
+    expect(d.getModel()).toBe('claude-fable-5-1')
+  })
+
+  it('keeps a stepped-down or human-picked model that is not the old head', () => {
+    const c = fresh(); c.applyPreset(OLD_MAX); c.setModel('claude-sonnet-5')
+    const d = fresh()
+    expect(d.reconcilePreset(NEW_MAX)).toBe(true)
+    expect(d.getModel()).toBe('claude-sonnet-5')
+  })
+
+  it('leaves a hand-edited chain alone, even a subset of the preset', () => {
+    const c = fresh(); c.applyPreset(NEW_MAX); c.setChain(['claude-opus-5', 'claude-haiku-4-5-20251001'])
+    expect(fresh().reconcilePreset(NEW_MAX)).toBe(false)
+    expect(fresh().getChain()).toEqual(['claude-opus-5', 'claude-haiku-4-5-20251001'])
+  })
+
+  it('is a no-op when the chain already matches', () => {
+    fresh().applyPreset(NEW_MAX)
+    expect(fresh().reconcilePreset(NEW_MAX)).toBe(false)
   })
 })

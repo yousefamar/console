@@ -53,7 +53,14 @@ export interface FallbackResult {
 interface PersistedState {
   model: string
   chain: string[]
+  /** The backend preset chain this chain was last seeded from (`applyPreset`).
+   *  Equal to `chain` = nobody has edited it since, so a newer preset in code
+   *  may replace it at boot (`reconcilePreset`). `[]` = a human set the chain
+   *  (`setChain`), so it is never replaced. Absent = file predates this field. */
+  presetChain?: string[]
 }
+
+const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i])
 
 /** Heuristic: does this error/stderr text indicate the *model* is the problem
  *  (removed, renamed, unavailable, not entitled) rather than a transient API or
@@ -118,9 +125,43 @@ export class ModelConfig {
     const cleaned = chain.map((c) => c.trim()).filter(Boolean)
     if (cleaned.length === 0) throw new Error('chain must be non-empty')
     this.state.chain = cleaned
+    this.state.presetChain = []
     if (!cleaned.includes(this.state.model)) this.state.model = cleaned[0]!
     this.persist()
     return this.getState()
+  }
+
+  /** Seed chain + model from a backend preset (backend switch). Remembers the
+   *  preset so a later code change to it can be adopted at boot. */
+  applyPreset(chain: string[]): ModelConfigState {
+    this.setChain(chain)
+    this.state.model = this.state.chain[0]!
+    this.state.presetChain = [...this.state.chain]
+    this.persist()
+    return this.getState()
+  }
+
+  /** Boot: adopt `preset` when the persisted chain is an unedited copy of an
+   *  older preset. Without this a preset change in code (e.g. Fable first on
+   *  Max, 3 Oct) never reached the hub until the next backend switch, and a
+   *  spill that returned under old code re-persisted the old chain. The model
+   *  follows only if it was the old chain's head (a step-down or a human pick
+   *  stays). Files from before `presetChain` existed count as preset-seeded
+   *  when every entry is in the new preset. Returns true when it changed. */
+  reconcilePreset(preset: string[]): boolean {
+    const { chain, presetChain } = this.state
+    if (sameList(chain, preset)) return false
+    const unedited = presetChain
+      ? presetChain.length > 0 && sameList(chain, presetChain)
+      : chain.every((m) => preset.includes(m))
+    if (!unedited) return false
+    const oldHead = chain[0]
+    this.state.chain = [...preset]
+    this.state.presetChain = [...preset]
+    if (this.state.model === oldHead || !preset.includes(this.state.model)) this.state.model = preset[0]!
+    this.persist()
+    this.log(`[model] chain updated to the current preset: ${preset.join(', ')} (model ${this.state.model})`)
+    return true
   }
 
   /** A session reported a model-unavailable failure. If `failed` is still the
@@ -145,6 +186,7 @@ export class ModelConfig {
       const raw = JSON.parse(readFileSync(this.file, 'utf-8')) as Partial<PersistedState>
       if (typeof raw.model === 'string' && raw.model) this.state.model = raw.model
       if (Array.isArray(raw.chain) && raw.chain.length > 0) this.state.chain = raw.chain.filter((c): c is string => typeof c === 'string')
+      if (Array.isArray(raw.presetChain)) this.state.presetChain = raw.presetChain.filter((c): c is string => typeof c === 'string')
       // Guarantee the active model is reachable in the chain for fallback.
       if (!this.state.chain.includes(this.state.model)) this.state.chain = [this.state.model, ...this.state.chain]
     } catch (e) {

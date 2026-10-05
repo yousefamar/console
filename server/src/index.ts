@@ -270,6 +270,8 @@ const inboxRulesStore = new InboxRulesStore(feedsConfigDir)
 // NOW, before any session is spawned (restore loop, Al, fresh) so every spawn
 // resolves the configured model rather than a hardcoded const.
 const modelConfig = new ModelConfig(join(feedsConfigDir, 'agent-model.json'), (m) => log(m))
+// A preset chain changed in code reaches the hub on restart, not only on the next backend switch.
+modelConfig.reconcilePreset(BACKEND_PRESETS[detectActiveBackend()].chain)
 setAgentModelResolver(() => modelConfig.getModel())
 // Prompt-cache TTL policy (agents/cache-ttl.ts): decided per spawn, so install
 // before the first spawn too. Every spawn with history gets 1h since

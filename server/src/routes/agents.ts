@@ -207,8 +207,7 @@ function forceRestartAllSessionsForBackend(ctx: AgentContext) {
 export function applyBackendSwitch(ctx: AgentContext, backend: AuthBackend): BackendPreset {
   const preset = BACKEND_PRESETS[backend]
   writeBackendSettings(backend)
-  ctx.modelConfig.setChain(preset.chain)
-  ctx.modelConfig.setModel(preset.chain[0]!)
+  ctx.modelConfig.applyPreset(preset.chain)
   // A per-session model pin carries a model id from whichever backend it was
   // set under — it won't auto-translate. Surface any that now look mismatched
   // (heuristic: a Bedrock id carries the `us.anthropic.` prefix, or IS a Bedrock
