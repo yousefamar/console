@@ -221,6 +221,14 @@ while the app is foregrounded (plus short background borrows), so a remote
   `Frontmatter.kt`, `AgentLabels.kt` are the precedents).
 - Same wire shape ≠ same rendering: check `ui/<domain>/*.kt`, not just the
   React component — e.g. map features live in `MapScreen.kt`/`MapRenderer.kt`.
+- **Places autocomplete is billed per SESSION, so every surface owns its own
+  token**: `data/gmaps/GmapsClient` is one stateless instance in `AppGraph`
+  (Map + `CalendarRepository.places`), but each consumer holds its own
+  `GmapsSession` — the token rides every keystroke of one run and
+  `client.place()` rotates it, which is what ends the session. Sharing one
+  token across two fields interleaves their runs into one bill. A new surface
+  takes a `GmapsSession`, never the Map's (^busy-pony). No Maps key on the hub
+  → `configured()` is false and the field stays plain, never an error.
 - MapLibre Native's paint properties are not all data-driven the way GL JS's
   are: `line-dasharray` (and `line-pattern`, `fill-pattern`) take no
   per-feature expression natively. A `case`/`match` the SPA uses there must
