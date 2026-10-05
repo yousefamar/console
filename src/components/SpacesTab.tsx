@@ -1109,7 +1109,6 @@ function SpaceCentre({ space }: { space: SpaceSummary }) {
           ) : null}
           <ViewTab label="Docs" icon={<FileText size={10} />} active={!showBoard} onClick={() => setActiveView('docs')} />
         </div>
-        {showBoard && <HideBlockedToggle />}
       </div>
       {showBoard
         ? <BoardView />
@@ -1118,30 +1117,29 @@ function SpaceCentre({ space }: { space: SpaceSummary }) {
   )
 }
 
-// One switch for every board (hub-synced pref, follows the user across
-// devices). Appears only while the open board actually has blocked cards —
+// One switch PER COLUMN (hub-synced pref, follows the user across devices),
+// keyed by column title so the choice carries across boards sharing a column
+// name. A column's toggle appears only while that column has blocked cards —
 // with none there is nothing to hide, and a pref left on stays effective
 // silently until the next card blocks.
-const HIDE_BLOCKED_PREF = 'spaces.hideBlocked'
+const HIDE_BLOCKED_PREF = 'spaces.hideBlockedColumns'
 
-function HideBlockedToggle() {
-  const board = useSpacesStore((s) => s.board)
-  const [hideBlocked, setHideBlocked] = usePref<boolean>(HIDE_BLOCKED_PREF, false)
-  const count = board?.columns
-    .filter((c) => !DONE_COLUMN_RE.test(c.title))
-    .reduce((n, c) => n + c.cards.filter((card) => card.blocked).length, 0) ?? 0
+function ColumnBlockedToggle({ column, count }: { column: string; count: number }) {
+  const [hidden, setHidden] = usePref<Record<string, boolean>>(HIDE_BLOCKED_PREF, {})
   if (count === 0) return null
+  const hide = !!hidden[column]
+  const plural = count === 1 ? '' : 's'
   return (
     <button
-      onClick={() => setHideBlocked(!hideBlocked)}
+      onClick={() => setHidden({ ...hidden, [column]: !hide })}
       className={clsx(
-        'ml-auto flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-[10px] transition-colors',
-        hideBlocked ? 'text-text-tertiary hover:text-text-secondary' : 'bg-red-500/10 text-red-500 hover:bg-red-500/15',
+        'flex items-center gap-0.5 rounded-sm px-1 text-[9px] transition-colors',
+        hide ? 'text-text-tertiary hover:text-text-secondary' : 'bg-red-500/10 text-red-500 hover:bg-red-500/15',
       )}
-      title={hideBlocked ? `Show ${count} blocked card${count === 1 ? '' : 's'}` : `Hide ${count} blocked card${count === 1 ? '' : 's'}`}
+      title={hide ? `Show ${count} blocked card${plural} in ${column}` : `Hide ${count} blocked card${plural} in ${column}`}
     >
-      {hideBlocked ? <EyeOff size={10} /> : <Eye size={10} />}
-      {count} blocked{hideBlocked && ' hidden'}
+      {hide ? <EyeOff size={9} /> : <Eye size={9} />}
+      {count} blocked
     </button>
   )
 }
@@ -1199,7 +1197,7 @@ function BoardView() {
   // Filter the board to one assignee's cards — how a fork (or you) views ITS
   // OWN queue rather than the whole master board. null = everyone.
   const [assigneeFilter, setAssigneeFilter] = useState<string | null>(null)
-  const [hideBlocked] = usePref<boolean>(HIDE_BLOCKED_PREF, false)
+  const [hiddenBlocked] = usePref<Record<string, boolean>>(HIDE_BLOCKED_PREF, {})
   // Assign picker target (card ref) — replaces the raw @key text prompt.
   const [assignTarget, setAssignTarget] = useState<{ ref: CardRef; card: BoardCard } | null>(null)
   // Card detail modal — the roomy editing surface (title, details, assignee,
@@ -1365,6 +1363,7 @@ function BoardView() {
                   queued ({queuedCount})
                 </span>
               )}
+              <ColumnBlockedToggle column={col.title} count={col.cards.filter((card) => card.blocked).length} />
             </span>
             <button
               onClick={() => setAddingTo(addingTo === col.title ? null : col.title)}
@@ -1392,7 +1391,7 @@ function BoardView() {
             {/* Filter hides non-matching cards but `index` stays the column-
                 relative position — CardRef must address the REAL board. */}
             {col.cards.map((card, index) => (
-              (activeAssignee === null || (card.agentKey && rootOf(card.agentKey) === activeAssignee)) && !(hideBlocked && card.blocked) ? (
+              (activeAssignee === null || (card.agentKey && rootOf(card.agentKey) === activeAssignee)) && !(hiddenBlocked[col.title] && card.blocked) ? (
                 <CardTile
                   key={card.blockId ?? `${col.title}:${index}`}
                   card={card}
