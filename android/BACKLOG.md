@@ -17,6 +17,19 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
   manual-account balance ledger entries (`POST /finance/accounts/:id/balance`),
   monthly spend chart (`/finance/monthly`), shared-tab panel. Plan: a Budgets
   section under Runway next; scenarios and the ledger editor last.
+- Board: the blocked-card filter is PER COLUMN on the SPA now (^cool-crow
+  35982e53, Yousef 5 Oct: "I need that per-column, not global please"). The
+  chip moved into each column header and the pref became
+  `spaces.hideBlockedColumns`, a column-title → bool map (hub-synced, keyed by
+  title so the same column name behaves the same on every board). The phone
+  still reads the old boolean `spaces.hideBlocked` (`BoardFilters.HIDE_BLOCKED_PREF`,
+  `SpacesScreen.kt` ~l.814, `SpacesRepository.setHideBlocked`), so its toggle is
+  now phone-only and global — the desktop no longer writes that key. Plan:
+  `BoardFilters` takes the map (`visibleCards(column, hidden: Set<String>)`,
+  `blockedCount` unchanged), the chip renders in the column header like the SPA,
+  `setHideBlocked(column, bool)` patches one key of the map; migrate a leftover
+  `true` on the old boolean into every column title on first read, then stop
+  writing it. `BoardFiltersTest` covers the map + migration.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
