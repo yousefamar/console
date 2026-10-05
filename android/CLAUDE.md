@@ -313,6 +313,20 @@ Six parallel forks sharing one gradle cache produced 15–30 min builds, phantom
 `CompilationException`/IR-lowering crashes and OOMs. If a compile error looks
 impossible: `./gradlew --stop`, retry once; for real OOM
 `GRADLE_OPTS="-Dorg.gradle.jvmargs=-Xmx4096m" ./gradlew … --no-daemon`.
+**`org.gradle.daemon=false` is set in `gradle.properties`** — the resident
+daemon kept 3.6 GB (+1.6 GB Kotlin) after a release build on a host that runs
+the whole fleet (Astera's RAM guard caught it at 0 GB free / 7 GB swap / load
+25, 5 Oct 2026). If you ever start one by hand, `./gradlew --stop` may report
+"1 Daemon stopped" and leave yours alive — check `ps` for `GradleDaemon` and
+`KotlinCompileDaemon` (a separate process, never stopped by `--stop`) and kill
+both by pid.
+**The harness caps a background Bash command at 10 minutes, which is shorter
+than a cold suite or release build** — those get killed mid-task with nothing
+written. Launch them detached and poll the log:
+`nohup setsid ../scripts/heavy.sh ./gradlew :app:testDebugUnitTest > /tmp/x.log 2>&1 < /dev/null & disown`.
+A `:app:testDebugUnitTest FROM-CACHE` line is a PASS, not a skip: the cache key
+is the inputs, so it restores the full `TEST-*.xml` set from a run with
+identical sources — check the counts and mtimes rather than re-running.
 `SyncBusClientTest` is a known flake in the full run — re-run in isolation;
 green there = fine. Headless `autowt cleanup` needs `--mode merged|all`; it can
 leave an unregistered dir under `~/proj/code/console-worktrees/` — verify with

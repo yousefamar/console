@@ -53,6 +53,9 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+## Shipped
+
+### v108 (2026-10-05)
 - **Calendar event form: Google Places autocomplete on Location** (^busy-pony,
   SPA 3e9708db ^deft-bass parity; Yousef: "When I'm creating a new event I'd
   like the location to query Google Maps and autocomplete just like it does in
@@ -86,8 +89,6 @@ view-mode hub-sync (Room meta is fine on one device).
   (`GET /finance/overrides` on every reconcile). Pure helpers in
   `data/money/MoneyOverrides.kt`; tests `MoneyOverridesTest` +
   `MoneyRepositoryOverrideTest`.
-
-## Shipped
 
 ### v107 (2026-10-02)
 - **Inbox source chip / Inbox|Feed toggle survive opening an item** (^blue-pony).
