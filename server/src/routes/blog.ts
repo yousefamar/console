@@ -194,6 +194,27 @@ export function handleBlogRoutes(
     return true
   }
 
+  // GET /blog/site-status → the blog server's own build clock
+  // (`/rebuild/status`). Authoritative, unlike a page's Last-Modified: Eleventy
+  // honours the vault's .gitignore, so a template can silently drop out of the
+  // build and serve a frozen orphan forever (the memo index did, 3 Oct 2026).
+  // 500 there means the last build FAILED — the body still carries it.
+  if (path === '/blog/site-status' && req.method === 'GET') {
+    fetch('https://yousefamar.com/rebuild/status', { signal: AbortSignal.timeout(10000) })
+      .then(async (r) => {
+        const body = (await r.json()) as {
+          rebuilding?: boolean
+          lastBuild?: { ok?: boolean; startedAt?: string; finishedAt?: string; error?: string } | null
+        }
+        json(res, 200, {
+          rebuilding: !!body.rebuilding,
+          lastBuild: body.lastBuild ?? null,
+        })
+      })
+      .catch((err) => json(res, 502, { error: (err as Error).message }))
+    return true
+  }
+
   // POST /blog/republish { path } → re-trigger the Eleventy build for an
   // already-published post (edits go live; no move, date unchanged).
   if (path === '/blog/republish' && req.method === 'POST') {

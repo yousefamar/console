@@ -137,6 +137,9 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
     const blog = useBlogStore.getState()
     const notes = useNotesStore.getState()
     ui.pushToast({ kind: 'info', message: 'Publishing…' })
+    // Baseline BEFORE the rebuild is triggered, so the verify below can tell
+    // our build apart from the one already on record.
+    const baseline = (await blog.fetchSiteStatus())?.lastBuild?.startedAt ?? null
     const r = await blog.publish(path)
     if (!r.ok) {
       ui.pushToast({ kind: 'error', message: `Publish failed: ${r.error}` })
@@ -177,15 +180,14 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
       const url = permalinkForLogPath(newPath)
       if (url) {
         void (async () => {
-          const baseline = await blog.fetchPageEtag(url)
-          const live = await blog.waitForSiteUpdate(url, baseline)
+          const built = await blog.waitForBuild(baseline)
           // Resolve the final state via mtime comparison — the user may have
           // saved MORE edits while the build was in flight, in which case the
           // chip should land on 'stale', not 'live'.
           await blog.checkLiveStatus(newPath)
-          ui.pushToast(live
+          ui.pushToast(built.ok
             ? { kind: 'success', message: 'Post is live', href: url }
-            : { kind: 'error', message: 'Build still not live after 3min — check manually', href: url })
+            : { kind: 'error', message: built.error ? `Build failed: ${built.error}` : 'No build in 3min — check manually', href: url })
         })()
       }
     }
@@ -201,7 +203,7 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
     const blog = useBlogStore.getState()
     const notes = useNotesStore.getState()
     if (isFileDirty(activeFilePath)) await notes.saveFile()
-    const baseline = permalink ? await blog.fetchPageEtag(permalink) : null
+    const baseline = (await blog.fetchSiteStatus())?.lastBuild?.startedAt ?? null
     ui.pushToast({ kind: 'info', message: 'Re-publish queued…' })
     const r = await blog.republish(activeFilePath)
     if (!r.ok) { ui.pushToast({ kind: 'error', message: `Re-publish failed: ${r.error}` }); return }
@@ -214,12 +216,12 @@ export const NotesEditor = memo(function NotesEditor({ scopePrefixes, singleBuff
       const path = activeFilePath
       blog.setLiveStatus(path, 'building')
       void (async () => {
-        const live = await blog.waitForSiteUpdate(url, baseline)
+        const built = await blog.waitForBuild(baseline)
         // mtime comparison is ground truth — covers edits saved mid-build.
         await blog.checkLiveStatus(path)
-        ui.pushToast(live
+        ui.pushToast(built.ok
           ? { kind: 'success', message: 'Edit is live', href: url }
-          : { kind: 'error', message: 'Build still not live after 3min — check manually', href: url })
+          : { kind: 'error', message: built.error ? `Build failed: ${built.error}` : 'No build in 3min — check manually', href: url })
       })()
     }
   }

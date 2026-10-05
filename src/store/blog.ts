@@ -3,10 +3,13 @@
 
 import { create } from 'zustand'
 import { hubFetch } from '@/hub'
-import { stalePostCandidates, projectForPostPath } from '@/blog/stale'
+import { stalePostCandidates, projectForPostPath, buildClock, type SiteStatus } from '@/blog/stale'
 
-/** Any page works as the build clock; the memo index is small and always rebuilt. */
-const SITE_PROBE_URL = 'https://yousefamar.com/memo/'
+/** Last-resort build clock, for when the blog server has no build on record
+ *  (it forgets across restarts). The log index is regenerated whenever a post
+ *  is added, so it tracks publishing far better than the memo landing page —
+ *  which has not been written since 3 Oct 2026 (see `@/blog/stale`). */
+const SITE_PROBE_URL = 'https://yousefamar.com/memo/log/'
 
 export interface DraftSummary {
   path: string
@@ -84,7 +87,7 @@ export interface CreateProjectResult {
   error?: string
 }
 
-export type LiveStatus = 'live' | 'stale' | 'building' | 'unknown'
+export type LiveStatus = 'live' | 'stale' | 'building' | 'failed' | 'unknown'
 
 /** A published post saved after the site's last build — its edits aren't live. */
 export interface StalePost {
@@ -120,20 +123,24 @@ interface BlogState {
   publish: (path: string) => Promise<PublishResult>
   /** Re-trigger the Eleventy build for an already-published log/ post. */
   republish: (path: string) => Promise<PublishResult>
-  /** Current ETag/Last-Modified of a live page (null if unreachable). */
-  fetchPageEtag: (url: string) => Promise<string | null>
-  /** Poll a permalink until its ETag moves off the given baseline (build
-   *  landed). Resolves false after ~3 minutes. */
-  waitForSiteUpdate: (url: string, baselineEtag: string | null) => Promise<boolean>
-  /** Persistent live-state per published post path. 'live' = the deployed
-   *  page was built after the local file's last save; 'stale' = local edits
-   *  not yet on the site; 'building' = a queued build is being polled. */
+  /** The blog server's build record (null if unreachable). */
+  fetchSiteStatus: () => Promise<SiteStatus | null>
+  /** Poll until the blog server reports a build newer than `baselineStartedAt`
+   *  (capture it BEFORE triggering the rebuild). Gives up after ~3 minutes. */
+  waitForBuild: (baselineStartedAt: string | null) => Promise<{ ok: boolean; error?: string }>
+  /** Persistent live-state per published post path. 'live' = the last build
+   *  read the file as you last saved it; 'stale' = local edits not yet on the
+   *  site; 'building' = a queued build is being polled; 'failed' = the site's
+   *  last build errored, so nothing new is live. */
   liveStatusByPath: Record<string, LiveStatus>
   setLiveStatus: (path: string, status: LiveStatus) => void
-  /** Last-Modified of the live site (ms) — every page shares it, a rebuild
-   *  rewrites them all. null = not probed / unreachable. */
+  /** Start of the site's last successful build (ms). Files saved before it are
+   *  live. null = no build on record and the site unreachable. */
   siteBuiltAt: number | null
-  /** Probe the site's build time and recompute `stalePosts`. */
+  /** `[11ty]` problem lines when the site's last build FAILED — the site is
+   *  frozen at the previous build until it is fixed. */
+  siteBuildError: string | null
+  /** Probe the site's build clock and recompute `stalePosts`. */
   refreshSiteBuiltAt: () => Promise<void>
   /** Published posts whose vault file is newer than `siteBuiltAt` — the
    *  sidebar twin of drafts ("saved, not live"). */
@@ -141,8 +148,8 @@ interface BlogState {
   /** Re-derive `stalePosts` from the notes store's file list (cheap; frontmatter
    *  is fetched only for new stale paths). */
   recomputeStalePosts: () => Promise<void>
-  /** Probe the permalink and compare its Last-Modified against the local
-   *  file's mtime; updates liveStatusByPath. */
+  /** Compare the site's build clock against the local file's mtime; updates
+   *  liveStatusByPath. */
   checkLiveStatus: (path: string) => Promise<void>
   setProjectStatus: (slug: string, status: 'active' | 'dormant' | 'complete' | null) => Promise<{ ok: boolean; error?: string }>
   /**
@@ -296,16 +303,6 @@ export const useBlogStore = create<BlogState>((set, get) => ({
     }
   },
 
-  fetchPageEtag: async (url: string): Promise<string | null> => {
-    // Via the hub — the SPA can't HEAD yousefamar.com cross-origin (no CORS).
-    try {
-      const r = await hubFetch<{ etag: string | null }>(`/blog/page-etag?url=${encodeURIComponent(url)}`, { timeoutMs: 12000 })
-      return r.etag
-    } catch {
-      return null
-    }
-  },
-
   liveStatusByPath: {},
 
   setLiveStatus: (path, status) => {
@@ -313,15 +310,31 @@ export const useBlogStore = create<BlogState>((set, get) => ({
   },
 
   siteBuiltAt: null,
+  siteBuildError: null,
   stalePosts: [],
 
-  refreshSiteBuiltAt: async () => {
+  fetchSiteStatus: async () => {
     try {
-      const r = await hubFetch<{ lastModified: string | null }>(`/blog/page-etag?url=${encodeURIComponent(SITE_PROBE_URL)}`, { timeoutMs: 12000 })
-      const ms = r.lastModified ? Date.parse(r.lastModified) : NaN
-      set({ siteBuiltAt: Number.isNaN(ms) ? null : ms })
+      return await hubFetch<SiteStatus>('/blog/site-status', { timeoutMs: 12000 })
     } catch {
-      set({ siteBuiltAt: null })
+      return null
+    }
+  },
+
+  refreshSiteBuiltAt: async () => {
+    const clock = buildClock(await useBlogStore.getState().fetchSiteStatus(), get().siteBuiltAt)
+    if (clock.builtAt !== null || clock.error) {
+      set({ siteBuiltAt: clock.builtAt, siteBuildError: clock.error })
+    } else {
+      // No build on record (blog server restarted) and nothing cached — fall
+      // back to a page's Last-Modified as a lower bound.
+      try {
+        const r = await hubFetch<{ lastModified: string | null }>(`/blog/page-etag?url=${encodeURIComponent(SITE_PROBE_URL)}`, { timeoutMs: 12000 })
+        const ms = r.lastModified ? Date.parse(r.lastModified) : NaN
+        set({ siteBuiltAt: Number.isNaN(ms) ? null : ms, siteBuildError: null })
+      } catch {
+        set({ siteBuiltAt: null, siteBuildError: null })
+      }
     }
     await useBlogStore.getState().recomputeStalePosts()
   },
@@ -357,44 +370,39 @@ export const useBlogStore = create<BlogState>((set, get) => ({
   },
 
   checkLiveStatus: async (path: string) => {
-    const { permalinkForLogPath } = await import('@/utils/frontmatter')
-    const url = permalinkForLogPath(path)
-    if (!url) return
-    try {
-      const r = await hubFetch<{ lastModified: string | null }>(`/blog/page-etag?url=${encodeURIComponent(url)}`, { timeoutMs: 12000 })
-      const pageMs = r.lastModified ? Date.parse(r.lastModified) : NaN
-      const { useNotesStore } = await import('./notes')
-      const fileMtime = useNotesStore.getState().files.find((f) => f.path === path)?.mtime ?? 0
-      if (Number.isNaN(pageMs)) {
-        useBlogStore.getState().setLiveStatus(path, 'unknown')
-      } else {
-        // Page built after the local file's last write → in sync. Small
-        // clock skew between this machine and the VPS can blur the boundary;
-        // a save always flips to 'stale' locally regardless.
-        useBlogStore.getState().setLiveStatus(path, pageMs >= fileMtime ? 'live' : 'stale')
-      }
-    } catch {
-      useBlogStore.getState().setLiveStatus(path, 'unknown')
-    }
+    const { useNotesStore } = await import('./notes')
+    const fileMtime = useNotesStore.getState().files.find((f) => f.path === path)?.mtime ?? 0
+    await useBlogStore.getState().refreshSiteBuiltAt()
+    const { siteBuiltAt, siteBuildError } = get()
+    // The build read the vault at `siteBuiltAt`, so anything saved before it
+    // is live. Small clock skew between this machine and the VPS can blur the
+    // boundary; a save always flips to 'stale' locally regardless.
+    const status: LiveStatus =
+      siteBuildError ? 'failed' :
+      siteBuiltAt === null ? 'unknown' :
+      siteBuiltAt >= fileMtime ? 'live' : 'stale'
+    useBlogStore.getState().setLiveStatus(path, status)
   },
 
-  waitForSiteUpdate: async (url: string, baselineEtag: string | null): Promise<boolean> => {
+  waitForBuild: async (baselineStartedAt: string | null): Promise<{ ok: boolean; error?: string }> => {
     // The blog's /rebuild endpoint only QUEUES a build (3s debounce +
     // Syncthing propagation + Eleventy run), so "queued: true" says nothing
-    // about the page being live. Poll the permalink until its ETag /
-    // Last-Modified moves off the pre-publish baseline — robust to clock
-    // skew and to the site's 200-for-unbuilt-URLs catch-all.
+    // about the post being live. Wait for the build RECORD to move off the
+    // pre-publish baseline: a page's ETag can never move (Eleventy writes
+    // byte-identical output, or the template is not in the build at all) and
+    // the record also carries the failure reason.
     const INTERVAL_MS = 5000
     const MAX_TRIES = 36 // ~3 minutes
     for (let i = 0; i < MAX_TRIES; i++) {
       await new Promise((r) => setTimeout(r, INTERVAL_MS))
-      const etag = await useBlogStore.getState().fetchPageEtag(url)
-      if (etag && etag !== baselineEtag) {
-        void useBlogStore.getState().refreshSiteBuiltAt()
-        return true
-      }
+      const status = await useBlogStore.getState().fetchSiteStatus()
+      const last = status?.lastBuild
+      if (!last || last.startedAt === baselineStartedAt) continue
+      void useBlogStore.getState().refreshSiteBuiltAt()
+      if (last.ok === false) return { ok: false, error: last.error?.trim() || 'the build failed' }
+      return { ok: true }
     }
-    return false
+    return { ok: false }
   },
 
   createDraft: async ({ title, project, area }): Promise<CreateDraftResult> => {

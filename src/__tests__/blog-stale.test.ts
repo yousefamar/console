@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { stalePostCandidates, projectForPostPath } from '@/blog/stale'
+import { stalePostCandidates, projectForPostPath, buildClock } from '@/blog/stale'
 
 const T = 1_000_000
 
@@ -28,6 +28,39 @@ describe('stalePostCandidates', () => {
 
   it('a build newer than every save clears the list', () => {
     expect(stalePostCandidates(files, T + 60_000)).toEqual([])
+  })
+})
+
+describe('buildClock', () => {
+  const started = '2026-10-05T19:38:04.522Z'
+  const ms = Date.parse(started)
+
+  it('reads the clock off the last successful build, at its START', () => {
+    const finished = '2026-10-05T19:38:39.176Z'
+    expect(buildClock({ rebuilding: false, lastBuild: { ok: true, startedAt: started, finishedAt: finished } }, null))
+      .toEqual({ builtAt: ms, error: null, rebuilding: false })
+  })
+
+  it('keeps the previous clock and names the error when the last build FAILED', () => {
+    const err = '[11ty] Problem writing Eleventy templates: expected variable end'
+    expect(buildClock({ rebuilding: false, lastBuild: { ok: false, startedAt: started, error: err } }, 500))
+      .toEqual({ builtAt: 500, error: err, rebuilding: false })
+  })
+
+  it('a failed build with no error text still reports a failure', () => {
+    expect(buildClock({ rebuilding: false, lastBuild: { ok: false, startedAt: started } }, 500).error)
+      .toBe('The last site build failed')
+  })
+
+  it('keeps the previous clock when the blog server has no build on record', () => {
+    expect(buildClock({ rebuilding: true, lastBuild: null }, 500)).toEqual({ builtAt: 500, error: null, rebuilding: true })
+    expect(buildClock(null, 500)).toEqual({ builtAt: 500, error: null, rebuilding: false })
+    // Nothing cached either → the store falls back to a page probe.
+    expect(buildClock(null, null).builtAt).toBeNull()
+  })
+
+  it('ignores an unparseable timestamp rather than blanking the clock', () => {
+    expect(buildClock({ lastBuild: { ok: true, startedAt: 'not a date' } }, 500).builtAt).toBe(500)
   })
 })
 

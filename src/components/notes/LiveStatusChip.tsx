@@ -42,22 +42,27 @@ export function LiveStatusChip({ path }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedContent])
 
+  const buildError = useBlogStore((s) => s.siteBuildError)
+
   const dot =
     status === 'live' ? 'bg-green-400' :
     status === 'stale' ? 'bg-yellow-400' :
     status === 'building' ? 'bg-blue-400 animate-pulse' :
+    status === 'failed' ? 'bg-red-500' :
     'bg-text-tertiary opacity-50'
 
   const label =
     status === 'live' ? 'live' :
     status === 'stale' ? 'stale' :
     status === 'building' ? 'building…' :
+    status === 'failed' ? 'build failed' :
     '?'
 
   const title =
     status === 'live' ? 'The live page includes your latest save' :
     status === 'stale' ? 'Local edits are NOT live yet — re-publish to deploy' :
     status === 'building' ? 'Build queued — waiting for the site to update' :
+    status === 'failed' ? `The site's last build failed:\n${buildError ?? ''}`.trim() :
     'Live status unknown — click to re-check'
 
   return (
