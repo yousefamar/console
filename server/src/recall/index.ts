@@ -159,7 +159,7 @@ export class RecallIndex {
 
   private call<T>(method: WorkerRequest['method'], params: Record<string, unknown>): Promise<T> {
     if (this.stopped) return Promise.reject(new Error('recall index stopped'))
-    const slot = method === 'index' || method === 'needsIndex' ? this.indexer : this.querier
+    const slot = method === 'index' || method === 'needsIndex' || method === 'checkpoint' ? this.indexer : this.querier
     return slot.call<T>(method, params)
   }
 
@@ -216,7 +216,12 @@ export class RecallIndex {
       const r = await this.call<{ busy: number; log: number }>('checkpoint', {})
       const after = statSync(`${this.opts.dbPath}-wal`).size
       this.opts.log(`[recall] WAL truncated to ${(after / 1e6).toFixed(0)} MB${r.busy ? ' (readers busy — partial)' : ''}`)
-    } catch { /* no WAL yet, or the worker is down — nothing to reclaim */ }
+    } catch (err) {
+      // No WAL file yet is the normal case; anything else must be visible —
+      // the first version routed `checkpoint` to the read-only worker and this
+      // catch hid the refusal while the WAL sat at 518 MB on a 98%-full disk.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') this.opts.log(`[recall] WAL trim failed: ${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 
   async indexSession(claudeSessionId: string, cwd: string): Promise<boolean> {
