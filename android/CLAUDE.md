@@ -140,6 +140,13 @@ while the app is foregrounded (plus short background borrows), so a remote
   restore `before`) because the seq-based reconcile never sees a divergence
   the hub never saw. The first `reconcile()` per process and pull-to-refresh
   take the FULL rooms snapshot for the same reason.
+- **A reconcile must not overwrite a row whose own edit is still queued.** A
+  domain that writes optimistically and refetches the same rows from the hub
+  will re-apply the pre-edit server copy for as long as the action sits in the
+  outbox (seconds offline, longer on a flaky link) — the edit visibly reverts
+  and then comes back. Skip those ids: `OutboxDao.inFlightEntityIds(type)` is
+  the query (`money:override` is the precedent, ^warm-wren). And a DELETE-shaped
+  action treats **404 as `Done`** — the thing it was told to remove is gone.
 
 **Coroutine cancellation (three separate incidents)**
 - Never let a debounce cancel the job the WORK runs inside. `trigger()`
