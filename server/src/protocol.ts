@@ -120,7 +120,15 @@ export type HubMessage =
   /** Active agent model + fallback chain. Broadcast on change (manual set or
    *  auto-fallback). `autoFellBack` + `failedModel` are set only when the hub
    *  advanced the model itself after a model-unavailable failure. */
-  | { type: 'model_state'; model: string; chain: string[]; lockedByEnv: boolean; backend?: 'first_party' | 'bedrock'; autoFellBack?: boolean; failedModel?: string }
+  | {
+      type: 'model_state'; model: string; chain: string[]; lockedByEnv: boolean
+      backend?: 'first_party' | 'bedrock'
+      /** The human's standing backend choice; `backend !== preferred` = spilled. */
+      preferred?: 'first_party' | 'bedrock' | null
+      /** The open failover episode, so the SPA can show a spill at a glance. */
+      spill?: { since: number; window: string | null; returnAt: number; trippedBy: string | null } | null
+      autoFellBack?: boolean; failedModel?: string
+    }
   /** An agent emitted `@handoff(<agentKey>)` — Al wants to put Yousef in direct
    *  contact with that agent. The SPA renders an opt-in "Talk to X" affordance. */
   | { type: 'session_handoff'; sessionId: string; targetAgentKey: string }

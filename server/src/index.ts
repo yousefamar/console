@@ -2711,7 +2711,13 @@ wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
   sendTo(ws, { type: 'project_dirs', dirs })
 
   // Send current agent-model + backend config so the pickers reflect reality on connect.
-  sendTo(ws, { type: 'model_state', ...modelConfig.getState(), backend: detectActiveBackend() })
+  // Same shape as broadcastModelState (routes/agents.ts) so a fresh client sees
+  // a live spill immediately, not only after the next change.
+  const fo = backendFailover.getState()
+  sendTo(ws, {
+    type: 'model_state', ...modelConfig.getState(), backend: detectActiveBackend(), preferred: fo.preferred,
+    spill: fo.active ? { since: fo.active.hitAt, window: fo.active.rateLimitType ?? null, returnAt: fo.active.returnAt, trippedBy: fo.active.trippedBy ?? null } : null,
+  })
 
   // Send current session list (including Al if connected)
   const active = Array.from(sessions.values()).map((s) => s.getInfo())

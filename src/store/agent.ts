@@ -187,6 +187,12 @@ interface AgentState {
    *  from agentModel — switching this rewrites ~/.claude/settings.json's env
    *  and forces a full respawn. Use for Max-subscription session limits. */
   agentBackend: 'first_party' | 'bedrock' | null
+  /** The human's standing choice. `agentBackend !== agentBackendPreferred`
+   *  means the fleet is SPILLED — on pay-per-token Bedrock because a
+   *  subscription window is exhausted, not because anyone chose it. */
+  agentBackendPreferred: 'first_party' | 'bedrock' | null
+  /** The open failover episode, when there is one. */
+  agentSpill: { since: number; window: string | null; returnAt: number; trippedBy: string | null } | null
   /** Set when the hub auto-fell-back after a model became unavailable. Drives a
    *  dismissible banner; cleared by dismissModelFallbackNotice. */
   modelFallbackNotice: { failedModel: string; model: string } | null
@@ -350,6 +356,8 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   agentModelChain: [],
   agentModelLockedByEnv: false,
   agentBackend: null,
+  agentBackendPreferred: null,
+  agentSpill: null,
   modelFallbackNotice: null,
 
   sessions: [],
@@ -954,6 +962,8 @@ function handleHubMessage(msg: Record<string, unknown>) {
         agentModelChain: (msg.chain as string[]) ?? [],
         agentModelLockedByEnv: !!msg.lockedByEnv,
         ...(msg.backend ? { agentBackend: msg.backend as 'first_party' | 'bedrock' } : {}),
+        ...(msg.preferred !== undefined ? { agentBackendPreferred: msg.preferred as 'first_party' | 'bedrock' | null } : {}),
+        ...(msg.spill !== undefined ? { agentSpill: msg.spill as { since: number; window: string | null; returnAt: number; trippedBy: string | null } | null } : {}),
         ...(msg.autoFellBack
           ? { modelFallbackNotice: { failedModel: msg.failedModel as string, model: msg.model as string } }
           : {}),

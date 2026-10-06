@@ -60,6 +60,7 @@ export function SpacesFleetMenu() {
 
   return (
     <>
+      <BackendChip />
       <button
         ref={btnRef}
         onClick={() => setOpen((v) => !v)}
@@ -136,6 +137,33 @@ function ModelPicker() {
       </select>
       {lockedByEnv && <span className="text-[9px] uppercase tracking-wider text-amber-400/80" title="Pinned by CLAUDE_MODEL">env</span>}
     </div>
+  )
+}
+
+/** Always-visible: which backend the fleet is spawning under, and whether that
+ *  was CHOSEN or forced. Amber = spilled onto pay-per-token Bedrock because a
+ *  subscription window is exhausted. Yousef, 6 Oct 2026 ("I also need a way to
+ *  see what we're on") after a spill ran 17 h unnoticed inside a gear popover. */
+function BackendChip() {
+  const backend = useAgentStore((s) => s.agentBackend)
+  const preferred = useAgentStore((s) => s.agentBackendPreferred)
+  const spill = useAgentStore((s) => s.agentSpill)
+  if (!backend) return null
+  const spilled = backend === 'bedrock' && preferred === 'first_party'
+  const label = backend === 'first_party' ? 'Max' : 'Bedrock'
+  const back = spill?.returnAt
+    ? new Date(spill.returnAt).toLocaleString([], { weekday: 'short', hour: '2-digit', minute: '2-digit' })
+    : null
+  const title = spilled
+    ? `Spilled to pay-per-token Bedrock${spill?.window ? ` — ${spill.window} exhausted` : ''}${spill?.trippedBy ? ` (tripped by ${spill.trippedBy})` : ''}${back ? `; due back on the subscription ${back}` : ''}`
+    : backend === 'first_party' ? 'Claude Max subscription' : 'Amazon Bedrock — chosen, pay-per-token'
+  return (
+    <span
+      title={title}
+      className={clsx('px-1 text-[10px] font-medium leading-none', spilled ? 'text-amber-400' : 'text-text-tertiary')}
+    >
+      {label}{spilled ? ' ⚠' : ''}
+    </span>
   )
 }
 

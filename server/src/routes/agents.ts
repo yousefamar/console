@@ -240,7 +240,15 @@ export function applyUserBackendChoice(ctx: AgentContext, backend: AuthBackend):
 
 /** Broadcast the current model + backend state to all clients. */
 export function broadcastModelState(ctx: AgentContext, extra?: { autoFellBack?: boolean; failedModel?: string }) {
-  broadcast(ctx.clients, { type: 'model_state', ...ctx.modelConfig.getState(), backend: detectActiveBackend(), ...extra })
+  // The SPA needs more than WHICH backend: on Bedrock while `preferred` is the
+  // subscription, the fleet is SPILLED (paying per token) and that must be
+  // visible at a glance, not buried in a popover — Yousef, 6 Oct 2026: "I also
+  // need a way to see what we're on", after a spill ran unnoticed for 17 h.
+  const f = ctx.failover?.getState()
+  const spill = f?.active
+    ? { since: f.active.hitAt, window: f.active.rateLimitType ?? null, returnAt: f.active.returnAt, trippedBy: f.active.trippedBy ?? null }
+    : null
+  broadcast(ctx.clients, { type: 'model_state', ...ctx.modelConfig.getState(), backend: detectActiveBackend(), preferred: f?.preferred ?? null, spill, ...extra })
 }
 
 /** Apply a user-driven model change: persist, broadcast, heal the fleet. */
