@@ -168,6 +168,9 @@ fun SpacesScreen(
     // Unpublished drafts: project drafts under their project, area-tagged
     // drafts under every area their tags name (SPA ^tidy-swan/^sly-deer).
     val drafts by notes.blog.drafts.collectAsState()
+    // Stale published posts (saved after the site's last build) row like
+    // drafts — the rail twin of "saved, not live" (SPA ^calm-otter).
+    val stalePosts by notes.blog.stalePosts.collectAsState()
     LaunchedEffect(Unit) { notes.blog.refreshDrafts() }
     val dirtyPaths = remember(notesFiles) { notesFiles.filter { it.dirty }.map { it.path }.toHashSet() }
     val areaSlugs = remember(spaces) { spaces.filter { it.kind == "area" }.map { it.slug }.toHashSet() }
@@ -232,6 +235,16 @@ fun SpacesScreen(
                 val inSpace = f.path.startsWith("projects/$slug/") || f.path == "projects/$slug.md"
                 if (inSpace) items.add(SpaceAlertItem("file", f.path, f.path.substringAfterLast('/'), "dirty"))
             }
+        }
+        // Stale published posts (saved after the site's last build): under
+        // their project and every area their tags name. SPA rank puts them
+        // between dirty and draft.
+        for (p in stalePosts) {
+            val mine = if (kind == "project") p.project == slug
+            else slug in areaSlugs && slug in p.tags && p.project != slug
+            if (!mine) continue
+            if (items.any { it.kind == "file" && it.id == p.path }) continue
+            items.add(SpaceAlertItem("file", p.path, p.title.ifBlank { p.path.substringAfterLast('/') }, if (p.path in dirtyPaths) "dirty" else "stale"))
         }
         // Unsaved (amber) beats unpublished (blue): a dirty draft already has
         // its amber row above (projects) or takes the dirty level here (areas).
@@ -332,7 +345,7 @@ fun SpacesScreen(
                         boundWorking = boundHere.any { activity[it.id]?.running == true },
                         boundUnread = boundHere.any { it.hasUnread && !isHandback(it) },
                         reviewUnread = boundHere.any { isHandback(it) },
-                        draftCount = items.count { it.kind == "file" && it.level == "draft" },
+                        draftCount = items.count { it.kind == "file" && (it.level == "draft" || it.level == "stale") },
                         onClick = { onOpenSpace("${sp.kind}/${sp.slug}") },
                     )
                 }
@@ -689,6 +702,8 @@ private fun AlertRow(a: SpaceAlertItem, onClick: () -> Unit) {
             "context" -> Dot(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f))
             // Unpublished draft (blue); "dirty" (unsaved, amber pen) wins over it.
             "draft" -> Dot(MaterialTheme.colorScheme.primary.copy(alpha = 0.7f))
+            // Published but the edits aren't live yet (yellow).
+            "stale" -> Dot(MaterialTheme.accents.yellow)
             else -> Text("✎", style = MaterialTheme.typography.labelSmall, color = AMBER)
         }
         if (a.fork) {
@@ -1801,6 +1816,8 @@ private fun SpaceDocsList(
     val postsByProject by notes.blog.postsByProject.collectAsState()
     val tabs by notes.tabs.state.collectAsState()
     val devlogDrafts = remember(drafts, slug) { DevlogLogic.draftsFor(drafts, slug, "project") }
+    val stalePosts by notes.blog.stalePosts.collectAsState()
+    val stalePaths = remember(stalePosts) { stalePosts.map { it.path }.toHashSet() }
     val dirty = remember(files, tabs) {
         (files.filter { it.dirty }.map { it.path } + tabs.open.filter { it.dirty }.map { it.path }).toHashSet()
     }
@@ -1810,7 +1827,7 @@ private fun SpaceDocsList(
     if (newPost) NewPostDialog(notes, title = "New devlog post", project = slug, onDismiss = { newPost = false }, onOpenNote = onOpenNote)
     LazyColumn(Modifier.fillMaxSize()) {
         projectDevlogStrip(
-            slug, devlogDrafts, postsByProject[slug], dirty,
+            slug, devlogDrafts, postsByProject[slug], dirty, stalePaths,
             expanded = devlogExpanded, onToggle = { devlogExpanded = !devlogExpanded },
             onNew = { newPost = true }, onOpenNote = onOpenNote,
         )

@@ -88,17 +88,19 @@ data class ConsoleAccents(
     val green: Color,
     val red: Color,
     val amber: Color,
+    /** Stale / "not live yet" — distinct from amber (unsaved), as in the SPA. */
+    val yellow: Color,
     val violet: Color,
     val blue: Color,
 )
 
 private val DarkAccents = ConsoleAccents(
     green = Color(0xFF4ADE80), red = Color(0xFFF87171), amber = Color(0xFFF59E0B),
-    violet = Color(0xFFA78BFA), blue = Color(0xFF60A5FA),
+    yellow = Color(0xFFFACC15), violet = Color(0xFFA78BFA), blue = Color(0xFF60A5FA),
 )
 private val LightAccents = ConsoleAccents(
     green = Color(0xFF16A34A), red = Color(0xFFDC2626), amber = Color(0xFFD97706),
-    violet = Color(0xFF7C3AED), blue = Color(0xFF2563EB),
+    yellow = Color(0xFFCA8A04), violet = Color(0xFF7C3AED), blue = Color(0xFF2563EB),
 )
 
 private val LocalConsoleAccents = staticCompositionLocalOf { DarkAccents }

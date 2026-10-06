@@ -232,7 +232,7 @@ fun WriteActionBar(
     }
 
     LaunchedEffect(path) {
-        if (isPublished) repo.blog.checkLiveStatus(path, System.currentTimeMillis())
+        if (isPublished) repo.blog.checkLiveStatus(path)
     }
 
     Row(
@@ -281,7 +281,7 @@ fun WriteActionBar(
         Box(Modifier.weight(1f))
         // Live-status chip for published posts.
         if (isPublished && live != null) LiveStatusChip(live) {
-            scope.launch { repo.blog.checkLiveStatus(path, System.currentTimeMillis()) }
+            scope.launch { repo.blog.checkLiveStatus(path) }
         }
         if (isPublished) {
             ActBtn(Icons.Filled.OpenInNew, "View live") {
@@ -301,6 +301,9 @@ fun WriteActionBar(
                         publishing = true
                         try {
                             if (dirty) onSaved()
+                            // Baseline BEFORE the trigger: waitForBuild looks
+                            // for a build record that moved off it.
+                            val baselineBuild = repo.blog.fetchSiteStatus()?.lastBuild?.startedAt
                             android.widget.Toast.makeText(context, if (isDraft) "Publishing…" else "Re-publish queued…", android.widget.Toast.LENGTH_SHORT).show()
                             val r = if (isDraft) repo.blog.publish(path) else repo.blog.republish(path)
                             if (r.ok) {
@@ -312,14 +315,24 @@ fun WriteActionBar(
                                     r.newPath?.let { repo.openInTabs(it) }
                                     repo.blog.refreshDrafts(); repo.blog.refreshRecentPosts()
                                 }
-                                // Background-verify via ETag polling (~3 min).
-                                val url = FrontmatterParser.permalinkForLogPath(postPath)
-                                if (url != null) {
-                                    val baseline = repo.blog.fetchPageEtag(url)
-                                    val live = waitForSiteUpdate(repo, url, baseline)
-                                    repo.blog.setLiveStatus(postPath, if (live) BlogRepository.LiveStatus.LIVE else BlogRepository.LiveStatus.STALE)
-                                    android.widget.Toast.makeText(context, if (live) (if (isDraft) "Post is live" else "Edit is live") else "Build still not live after 3min", android.widget.Toast.LENGTH_LONG).show()
-                                }
+                                // Background-verify against the blog server's
+                                // own build record (~3 min). A page ETag can
+                                // never move — see BlogStale.
+                                val (built, buildErr) = repo.blog.waitForBuild(baselineBuild)
+                                repo.blog.setLiveStatus(postPath, when {
+                                    built -> BlogRepository.LiveStatus.LIVE
+                                    buildErr != null -> BlogRepository.LiveStatus.FAILED
+                                    else -> BlogRepository.LiveStatus.STALE
+                                })
+                                android.widget.Toast.makeText(
+                                    context,
+                                    when {
+                                        built -> if (isDraft) "Post is live" else "Edit is live"
+                                        buildErr != null -> "Site build failed: $buildErr"
+                                        else -> "Build still not live after 3min"
+                                    },
+                                    android.widget.Toast.LENGTH_LONG,
+                                ).show()
                             } else android.widget.Toast.makeText(context, "Publish failed: ${r.error ?: "unknown"}", android.widget.Toast.LENGTH_LONG).show()
                         } finally { publishing = false }
                     }
@@ -329,22 +342,13 @@ fun WriteActionBar(
     }
 }
 
-/** Poll the permalink ETag every 5s up to ~3 min; true when it moves. */
-private suspend fun waitForSiteUpdate(repo: NotesRepository, url: String, baseline: String?): Boolean {
-    repeat(36) {
-        kotlinx.coroutines.delay(5000)
-        val etag = repo.blog.fetchPageEtag(url)
-        if (etag != null && etag != baseline) return true
-    }
-    return false
-}
-
 @Composable
 private fun LiveStatusChip(status: BlogRepository.LiveStatus, onClick: () -> Unit) {
     val (label, color) = when (status) {
         BlogRepository.LiveStatus.LIVE -> "live" to MaterialTheme.accents.green
         BlogRepository.LiveStatus.STALE -> "stale" to MaterialTheme.accents.amber
         BlogRepository.LiveStatus.BUILDING -> "building" to MaterialTheme.accents.blue
+        BlogRepository.LiveStatus.FAILED -> "build failed" to MaterialTheme.accents.red
         BlogRepository.LiveStatus.UNKNOWN -> "?" to MaterialTheme.colorScheme.onSurfaceVariant
     }
     Row(

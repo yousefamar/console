@@ -63,6 +63,16 @@ object DevlogLogic {
     /** `2026-09-05 10:00:00` / ISO → `2026-09-05`; blank → null. */
     fun shortDate(date: String?): String? = date?.trim()?.takeIf { it.length >= 10 }?.substring(0, 10)
 
+    /** What a published post's trailing slot shows. Unsaved (amber) beats
+     *  not-live-yet (yellow) beats the post date — SPA AreaDevlog/ProjectDevlog. */
+    enum class PostMark { UNSAVED, STALE, DATE }
+
+    fun postMark(path: String, dirty: Set<String>, stale: Set<String>): PostMark = when {
+        path in dirty -> PostMark.UNSAVED
+        path in stale -> PostMark.STALE
+        else -> PostMark.DATE
+    }
+
     /** Header count: drafts + posts, or null when nothing is known yet. */
     fun count(drafts: List<BlogRepository.Draft>, posts: List<BlogRepository.Post>?): Int? =
         if (posts == null && drafts.isEmpty()) null else drafts.size + (posts?.size ?: 0)
@@ -70,6 +80,7 @@ object DevlogLogic {
 
 private val DRAFT_BLUE: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.blue
 private val UNSAVED_AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
+private val STALE_YELLOW: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.yellow
 
 /** Area detail: the writing IS the content — full-height, always expanded. */
 @Composable
@@ -79,6 +90,8 @@ fun AreaDevlog(notes: NotesRepository, slug: String, onOpenNote: (String) -> Uni
     val posts = postsByArea[slug]
     val mine = remember(drafts, slug) { DevlogLogic.draftsFor(drafts, slug, "area") }
     val dirty = dirtyPaths(notes)
+    val stalePosts by notes.blog.stalePosts.collectAsState()
+    val stale = remember(stalePosts) { stalePosts.map { it.path }.toHashSet() }
     var newPost by remember { mutableStateOf(false) }
     LaunchedEffect(slug) { notes.blog.refreshAreaPosts(slug); notes.blog.refreshDrafts() }
 
@@ -87,7 +100,7 @@ fun AreaDevlog(notes: NotesRepository, slug: String, onOpenNote: (String) -> Uni
             label = "Posts", count = DevlogLogic.count(mine, posts),
             expanded = null, onToggle = null, onNew = { newPost = true },
         )
-        devlogRows(mine, posts, dirty, showProject = true, emptyText = "No posts tagged $slug yet", onOpenNote)
+        devlogRows(mine, posts, dirty, stale, showProject = true, emptyText = "No posts tagged $slug yet", onOpenNote)
     }
     if (newPost) NewPostDialog(notes, title = "New $slug post", area = slug, onDismiss = { newPost = false }, onOpenNote = onOpenNote)
 }
@@ -98,13 +111,15 @@ fun LazyListScope.projectDevlogStrip(
     drafts: List<BlogRepository.Draft>,
     posts: List<BlogRepository.Post>?,
     dirty: Set<String>,
+    /** Published posts whose edits aren't live yet (BlogRepository.stalePosts). */
+    stale: Set<String>,
     expanded: Boolean,
     onToggle: () -> Unit,
     onNew: () -> Unit,
     onOpenNote: (String) -> Unit,
 ) {
     devlogHeader(label = "Devlog", count = DevlogLogic.count(drafts, posts), expanded = expanded, onToggle = onToggle, onNew = onNew)
-    if (expanded) devlogRows(drafts, posts, dirty, showProject = false, emptyText = "No posts or drafts for $slug", onOpenNote)
+    if (expanded) devlogRows(drafts, posts, dirty, stale, showProject = false, emptyText = "No posts or drafts for $slug", onOpenNote)
 }
 
 @Composable
@@ -181,6 +196,7 @@ private fun LazyListScope.devlogRows(
     drafts: List<BlogRepository.Draft>,
     posts: List<BlogRepository.Post>?,
     dirty: Set<String>,
+    stale: Set<String>,
     showProject: Boolean,
     emptyText: String,
     onOpenNote: (String) -> Unit,
@@ -196,7 +212,11 @@ private fun LazyListScope.devlogRows(
     items(posts ?: emptyList(), key = { "post:" + it.path }) { p ->
         DevlogRow(
             title = p.title.ifBlank { p.path.substringAfterLast('/') },
-            trailing = DevlogLogic.shortDate(p.date)?.let { Pair<String, Color?>(it, null) },
+            trailing = when (DevlogLogic.postMark(p.path, dirty, stale)) {
+                DevlogLogic.PostMark.UNSAVED -> Pair<String, Color?>("unsaved", UNSAVED_AMBER)
+                DevlogLogic.PostMark.STALE -> Pair<String, Color?>("stale", STALE_YELLOW)
+                DevlogLogic.PostMark.DATE -> DevlogLogic.shortDate(p.date)?.let { Pair<String, Color?>(it, null) }
+            },
             chip = if (showProject) p.project else null,
             onClick = { onOpenNote(p.path) },
         )

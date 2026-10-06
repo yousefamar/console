@@ -107,6 +107,9 @@ data class NoteFileRow(
     val dirty: Boolean = false,
 )
 
+/** Projection for [NotesDao.allPathMtimes]. */
+data class PathMtime(val path: String, val mtime: Long)
+
 @Dao
 interface NotesDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -126,6 +129,11 @@ interface NotesDao {
 
     @Query("SELECT path FROM notes_files")
     suspend fun allPaths(): List<String>
+
+    /** path + real disk mtime for every vault file — the staleness input
+     *  (projection, so a 2k-row vault costs no cached bodies). */
+    @Query("SELECT path, mtime FROM notes_files")
+    suspend fun allPathMtimes(): List<PathMtime>
 
     @Query("UPDATE notes_files SET cachedContent = :content, contentMtime = :mtime, dirty = :dirty WHERE path = :path")
     suspend fun setContent(path: String, content: String?, mtime: Long?, dirty: Boolean)

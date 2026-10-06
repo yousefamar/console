@@ -62,6 +62,43 @@ view-mode hub-sync (Room meta is fine on one device).
   cannot delete a key, so retiring it that way is what keeps the migration
   one-shot. 12 `BoardFiltersTest` cases cover the map, the flip, the migration
   and its no-ops, and `count == 0` hiding the chip.
+- **Blog build clock: the phone trusted a page's Last-Modified, which stopped
+  moving** (^cool-goat; SPA f6ea17d2 ^jade-yak + ^calm-otter ca1b356b parity).
+  Root cause: Eleventy honours the vault's `.gitignore`, and a `root/`
+  directory glob landed there on 3 Oct 2026 — the `/memo/` index dropped out of
+  the build while Caddy kept serving the file Eleventy last wrote, so its
+  `Last-Modified`/`ETag` froze at 3 Oct 14:38. Both phone paths keyed on that
+  frozen header: `BlogRepository.checkLiveStatus` compared it to the file mtime
+  (every post published after 3 Oct read `stale` forever) and
+  `NotesWriteChrome.waitForSiteUpdate` polled the permalink's ETag for ~3 min
+  after a publish (it can also never move when Eleventy writes byte-identical
+  output), so a successful publish reported "Build still not live after 3min".
+  Now the clock comes from the blog server's own build record via hub
+  `GET /blog/site-status`: `data/notes/BlogStale.kt` is the pure port of
+  `src/blog/stale.ts` (`buildClock` — the last SUCCESSFUL build's `startedAt`,
+  because that is when Eleventy read the vault; a FAILED build keeps the
+  previous clock and surfaces its `[11ty]` lines; `stalePostCandidates`;
+  `projectForPostPath`), unit-tested against the SPA's own cases.
+  `BlogRepository` holds one `siteBuiltAt` + `siteBuildError` + `stalePosts`
+  (StateFlow), refreshed at boot, on every notes reconcile and every 2 min
+  (`AppGraph`, SPA `stale-subscribe.ts` cadence); `checkLiveStatus(path)` takes
+  the post's REAL disk mtime from the notes Room row (new `allPathMtimes()`
+  projection) instead of `System.currentTimeMillis()`, and a failed build shows
+  a new red `build failed` chip (`LiveStatus.FAILED`) with the error in the
+  toast. Publish/re-publish now wait for the build RECORD to move off its
+  pre-publish baseline (`waitForBuild`, 5 s × 36) and name the failure.
+  `fetchPageEtag` is gone; `fetchPageLastModifiedMs` survives only as the
+  fallback lower bound when the blog server reports no build at all, and probes
+  `/memo/log/` (which a publish does regenerate), not the frozen index.
+- **Stale published posts in the Spaces rail + devlog** (^cool-goat, the
+  never-ported half of SPA ^calm-otter): a published post whose vault mtime is
+  newer than the build clock now rows like a draft under its project and under
+  every area its tags name — yellow dot, ranked between dirty and draft,
+  counted into the space's file badge — and the devlog strips show a yellow
+  `stale` chip in the date's place (`DevlogLogic.postMark`: unsaved amber still
+  wins, unit-tested). Added `ConsoleAccents.yellow` (dark `#FACC15`, light
+  `#CA8A04`) because the SPA deliberately separates yellow "not live" from
+  amber "unsaved". An unknown build time marks nothing stale, by design.
 
 ## Shipped
 

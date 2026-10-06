@@ -15,8 +15,15 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
-/** Blog tooling — Kotlin mirror of src/store/blog.ts over the hub /blog endpoints. */
-class BlogRepository(private val hub: HubClient) {
+/** Blog tooling — Kotlin mirror of src/store/blog.ts over the hub /blog endpoints.
+ *
+ *  [vaultFiles] yields every vault file with its REAL disk mtime (the notes
+ *  Room rows) — the staleness comparison and the live-status chip both read the
+ *  file's own mtime, never a wall clock. */
+class BlogRepository(
+    private val hub: HubClient,
+    private val vaultFiles: suspend () -> List<BlogStale.Candidate> = { emptyList() },
+) {
     private val json = Json { ignoreUnknownKeys = true }
 
     data class Draft(
@@ -60,8 +67,18 @@ class BlogRepository(private val hub: HubClient) {
     )
     data class FormatResult(val ok: Boolean, val text: String? = null, val error: String? = null)
 
-    // Live status per published post path.
-    enum class LiveStatus { LIVE, STALE, BUILDING, UNKNOWN }
+    /** A published post saved after the site's last build — its edits aren't live. */
+    data class StalePost(
+        val path: String,
+        val title: String,
+        val project: String?,
+        val tags: List<String>,
+        val mtime: Long,
+    )
+
+    /** Live status per published post path. FAILED = the site's last build
+     *  errored, so nothing new is live however long you wait. */
+    enum class LiveStatus { LIVE, STALE, BUILDING, FAILED, UNKNOWN }
 
     private val _drafts = MutableStateFlow<List<Draft>>(emptyList())
     val drafts: StateFlow<List<Draft>> = _drafts
@@ -81,6 +98,21 @@ class BlogRepository(private val hub: HubClient) {
     val liveStatus: StateFlow<Map<String, LiveStatus>> = _liveStatus
     private val _refreshing = MutableStateFlow(false)
     val refreshing: StateFlow<Boolean> = _refreshing
+
+    /** Start of the site's last successful build (ms). Files saved before it
+     *  are live. null = no build on record and the site unreachable. */
+    private val _siteBuiltAt = MutableStateFlow<Long?>(null)
+    val siteBuiltAt: StateFlow<Long?> = _siteBuiltAt
+
+    /** `[11ty]` problem lines when the site's last build FAILED — the site is
+     *  frozen at the previous build until it is fixed. */
+    private val _siteBuildError = MutableStateFlow<String?>(null)
+    val siteBuildError: StateFlow<String?> = _siteBuildError
+
+    /** Published posts whose vault file is newer than [siteBuiltAt] — the rail
+     *  twin of drafts ("saved, not live"). */
+    private val _stalePosts = MutableStateFlow<List<StalePost>>(emptyList())
+    val stalePosts: StateFlow<List<StalePost>> = _stalePosts
 
     fun setLiveStatus(path: String, status: LiveStatus) {
         _liveStatus.value = _liveStatus.value + (path to status)
@@ -201,31 +233,120 @@ class BlogRepository(private val hub: HubClient) {
         toCreateResult(json.parseToJsonElement(resp).jsonObject)
     }.getOrElse { CreateResult(false, error = it.message) }
 
-    /** ETag / Last-Modified of a live page via the hub (SPA can't HEAD cross-origin). */
-    suspend fun fetchPageEtag(url: String): String? = runCatching {
-        val resp = hub.get("/blog/page-etag?url=${enc(url)}")
-        json.parseToJsonElement(resp).jsonObject["etag"]?.jsonPrimitive?.content
-    }.getOrNull()
-
-    /** Last-Modified epoch-ms of a live page, or null when unreachable/unparsable. */
+    /** Last-Modified epoch-ms of a live page, or null when unreachable/unparsable.
+     *  Only a FALLBACK lower bound for the build clock — a page's Last-Modified
+     *  is not a build clock (see [BlogStale]). */
     suspend fun fetchPageLastModifiedMs(url: String): Long? = runCatching {
         val resp = hub.get("/blog/page-etag?url=${enc(url)}")
         val lm = json.parseToJsonElement(resp).jsonObject["lastModified"]?.jsonPrimitive?.content
         lm?.let { runCatching { java.util.Date(it).time }.getOrNull() }
     }.getOrNull()
 
+    /** The blog server's own build record (null when unreachable). */
+    suspend fun fetchSiteStatus(): BlogStale.SiteStatus? = runCatching {
+        val o = json.parseToJsonElement(hub.get("/blog/site-status")).jsonObject
+        val lb = o["lastBuild"]?.let { it as? JsonObject }
+        BlogStale.SiteStatus(
+            rebuilding = o["rebuilding"]?.jsonPrimitive?.booleanOrNull ?: false,
+            lastBuild = lb?.let {
+                BlogStale.SiteBuild(
+                    ok = it["ok"]?.jsonPrimitive?.booleanOrNull,
+                    startedAt = it["startedAt"]?.jsonPrimitive?.content,
+                    finishedAt = it["finishedAt"]?.jsonPrimitive?.content,
+                    error = it["error"]?.jsonPrimitive?.content,
+                )
+            },
+        )
+    }.getOrNull()
+
+    /** Probe the site's build clock and re-derive [stalePosts]. Never throws. */
+    suspend fun refreshSiteBuiltAt() {
+        val clock = BlogStale.buildClock(fetchSiteStatus(), _siteBuiltAt.value)
+        if (clock.builtAt != null || clock.error != null) {
+            _siteBuiltAt.value = clock.builtAt
+            _siteBuildError.value = clock.error
+        } else {
+            // No build on record (blog server restarted) and nothing cached —
+            // fall back to a page's Last-Modified as a lower bound. /memo/log/
+            // IS regenerated by a publish, unlike the frozen /memo/ index.
+            _siteBuiltAt.value = fetchPageLastModifiedMs(SITE_PROBE_URL)
+            _siteBuildError.value = null
+        }
+        recomputeStalePosts()
+    }
+
+    /** Re-derive [stalePosts] from the vault file list (cheap; frontmatter is
+     *  fetched only for newly-stale paths). */
+    suspend fun recomputeStalePosts() {
+        val candidates = BlogStale.stalePostCandidates(
+            runCatching { vaultFiles() }.getOrDefault(emptyList()),
+            _siteBuiltAt.value,
+        )
+        val prev = _stalePosts.value.associateBy { it.path }
+        val next = candidates.map { c ->
+            prev[c.path]?.takeIf { it.mtime == c.mtime } ?: run {
+                val fallbackTitle = c.path.substringAfterLast('/').removeSuffix(".md")
+                runCatching {
+                    val resp = hub.get("/notes/file/${enc(c.path)}")
+                    val content = json.parseToJsonElement(resp).jsonObject["content"]?.jsonPrimitive?.content ?: ""
+                    val fm = FrontmatterParser.parse(content)
+                    StalePost(
+                        path = c.path,
+                        title = fm.title?.trim()?.ifEmpty { null } ?: fallbackTitle,
+                        project = BlogStale.projectForPostPath(c.path) ?: fm.project,
+                        tags = fm.tags,
+                        mtime = c.mtime,
+                    )
+                }.getOrElse {
+                    StalePost(c.path, fallbackTitle, BlogStale.projectForPostPath(c.path), emptyList(), c.mtime)
+                }
+            }
+        }
+        val cur = _stalePosts.value
+        // Runs on every reconcile tick — skip the emit when nothing moved.
+        if (cur.size == next.size && cur.indices.all { cur[it].path == next[it].path && cur[it].mtime == next[it].mtime }) return
+        _stalePosts.value = next
+    }
+
     /**
-     * Probe the permalink; compare page Last-Modified to the local file mtime.
-     * pageMs >= mtime → LIVE, else STALE; unparsable → UNKNOWN.
+     * Compare the site's build clock against the post's own file mtime.
+     * builtAt >= mtime → LIVE, else STALE; a failed build → FAILED; no clock
+     * at all → UNKNOWN. (The old implementation probed the permalink's
+     * Last-Modified, which never moves for a page Eleventy has stopped
+     * building — every post published after 3 Oct 2026 read stale forever.)
      */
-    suspend fun checkLiveStatus(path: String, fileMtime: Long) {
-        val url = FrontmatterParser.permalinkForLogPath(path) ?: return
-        val pageMs = fetchPageLastModifiedMs(url)
+    suspend fun checkLiveStatus(path: String) {
+        if (!FrontmatterParser.isPublishedPath(path)) return
+        val fileMtime = runCatching { vaultFiles().firstOrNull { it.path == path }?.mtime }.getOrNull() ?: 0L
+        refreshSiteBuiltAt()
+        val builtAt = _siteBuiltAt.value
         setLiveStatus(path, when {
-            pageMs == null -> LiveStatus.UNKNOWN
-            pageMs >= fileMtime -> LiveStatus.LIVE
+            _siteBuildError.value != null -> LiveStatus.FAILED
+            builtAt == null -> LiveStatus.UNKNOWN
+            builtAt >= fileMtime -> LiveStatus.LIVE
             else -> LiveStatus.STALE
         })
+    }
+
+    /**
+     * Poll until the blog server reports a build newer than [baselineStartedAt]
+     * (capture it BEFORE triggering the rebuild). `/rebuild` only QUEUES a build
+     * (3 s debounce + Syncthing propagation + Eleventy run), so the response
+     * says nothing about the post being live — and a page's ETag can never move
+     * when Eleventy writes byte-identical output or has dropped the template
+     * from the build entirely. The build RECORD also carries the failure reason.
+     * Gives up after ~3 minutes.
+     */
+    suspend fun waitForBuild(baselineStartedAt: String?): Pair<Boolean, String?> {
+        repeat(36) {
+            kotlinx.coroutines.delay(5_000)
+            val last = fetchSiteStatus()?.lastBuild ?: return@repeat
+            if (last.startedAt == baselineStartedAt) return@repeat
+            refreshSiteBuiltAt()
+            if (last.ok == false) return false to (last.error?.trim()?.ifEmpty { null } ?: "the build failed")
+            return true to null
+        }
+        return false to null
     }
 
     private fun mtimeOf(o: JsonObject, key: String): Long? =
@@ -284,4 +405,10 @@ class BlogRepository(private val hub: HubClient) {
     )
 
     private fun enc(s: String): String = java.net.URLEncoder.encode(s, "UTF-8").replace("+", "%20")
+
+    companion object {
+        /** Fallback build-clock probe. Deliberately /memo/log/, which a publish
+         *  DOES regenerate — the /memo/ index is a frozen orphan (^jade-yak). */
+        const val SITE_PROBE_URL = "https://yousefamar.com/memo/log/"
+    }
 }

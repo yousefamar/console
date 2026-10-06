@@ -99,7 +99,11 @@ class NotesRepository(
     }
 
     /** Blog tooling (drafts/projects/tags/publish) — shares the hub client. */
-    val blog: BlogRepository by lazy { BlogRepository(hub) }
+    val blog: BlogRepository by lazy {
+        BlogRepository(hub) {
+            db.notes().allPathMtimes().map { BlogStale.Candidate(it.path, it.mtime) }
+        }
+    }
 
     /** The on-screen buffer → hub `/notes/live` (agents' `con notes live`). */
     val liveBuffer: LiveBufferMirror by lazy {

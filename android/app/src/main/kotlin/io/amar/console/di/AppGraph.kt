@@ -103,7 +103,21 @@ class AppGraph(context: Context) {
         }
 
         notes.registerOutboxHandlers()
-        syncEngine.addDomain("notes") { notes.reconcile() }
+        syncEngine.addDomain("notes") {
+            notes.reconcile()
+            // Re-derive the stale-post set off the fresh mtimes (SPA
+            // stale-subscribe.ts: boot + reconnect + every 2 min). Boot-wired
+            // because the Spaces rail counts stale posts before it is ever
+            // opened, and Spaces mounts lazily.
+            notes.blog.refreshSiteBuiltAt()
+        }
+        appScope.launch {
+            notes.blog.refreshSiteBuiltAt()
+            while (true) {
+                kotlinx.coroutines.delay(2 * 60 * 1000L)
+                if (AppLifecycle.foregroundFlow.value) notes.blog.refreshSiteBuiltAt()
+            }
+        }
         // Eager pen live-activity wiring: the Notes tile's red dot + auto-open
         // work even before the Notes pane is first opened (SyncBus 'pen').
         notes.wirePenActivity(appScope)

@@ -47,6 +47,15 @@ class DevlogLogicTest {
     }
 
     @Test
+    fun `postMark puts unsaved over stale over the date`() {
+        val dirty = setOf("log/a.md")
+        val stale = setOf("log/a.md", "log/b.md")
+        assertEquals(DevlogLogic.PostMark.UNSAVED, DevlogLogic.postMark("log/a.md", dirty, stale))
+        assertEquals(DevlogLogic.PostMark.STALE, DevlogLogic.postMark("log/b.md", dirty, stale))
+        assertEquals(DevlogLogic.PostMark.DATE, DevlogLogic.postMark("log/c.md", dirty, stale))
+    }
+
+    @Test
     fun `count is null until posts are known and nothing is drafted`() {
         assertNull(DevlogLogic.count(emptyList(), null))
         assertEquals(1, DevlogLogic.count(listOf(draft("x.md")), null))
