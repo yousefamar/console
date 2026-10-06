@@ -652,13 +652,20 @@ async function agentModel(args: string[], flags: GlobalFlags): Promise<void> {
     if (!target || (sub === 'pin' && !model)) {
       exitWithError('USAGE', `Usage: con agent model ${sub === 'pin' ? 'pin <session-id|name> <model-id>' : 'unpin <session-id|name>'}`, flags)
     }
+    // `pin <session> none` reads like the clearing form but stored the literal
+    // string 'none' as the model, which then 400s on that session's next spawn
+    // (done it, 2026-10-06). Accept the obvious intent instead of the garbage.
+    const clearing = sub === 'unpin' || (model !== null && /^(none|off|clear|default)$/i.test(model))
+    if (!clearing && model !== null && !/^(claude-|us\.anthropic\.|arn:aws:bedrock:|haiku|sonnet|opus|fable)/i.test(model)) {
+      exitWithError('USAGE', `'${model}' is not a model id. Use a full id (claude-opus-5-5, us.anthropic.claude-sonnet-5, an inference-profile ARN) or an alias (haiku/sonnet/opus/fable); 'con agent model unpin <session>' clears a pin.`, flags)
+    }
     let hubId = target!
     if (!/^session_/.test(hubId)) {
       try { hubId = (await resolveByName(target!)).id } catch { /* assume it's a hub id */ }
     }
     const { sendAndReceive, NO_RESPONSE } = await import('../ws-client.js')
-    await sendAndReceive({ type: 'set_session_model', sessionId: hubId, model }, NO_RESPONSE)
-    output(sub === 'pin' ? { pinned: hubId, model } : { unpinned: hubId }, flags)
+    await sendAndReceive({ type: 'set_session_model', sessionId: hubId, model: clearing ? null : model }, NO_RESPONSE)
+    output(clearing ? { unpinned: hubId } : { pinned: hubId, model }, flags)
     return
   }
   exitWithError('USAGE', `Unknown: con agent model ${sub}. Usage: con agent model [get | set <model-id> | chain <ids…> | pin <session> <model-id> | unpin <session>]`, flags)
