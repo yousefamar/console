@@ -128,11 +128,27 @@ export function saveManifest(sessions: Map<string, Session>) {
 /** Kept for callsite compatibility — manifest is always written synchronously now. */
 export const saveManifestSync = saveManifest
 
+/** A claudeSessionId is a UUID. The 8-char ids `con agent search/read` print are
+ *  display prefixes and `session_N_…` is a hub id; `claude --resume` accepts
+ *  neither, so an entry keyed by one can never init. */
+export const CLAUDE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export function loadManifest(): ManifestEntry[] {
   if (!existsSync(MANIFEST_PATH)) return []
   try {
     const data = readFileSync(MANIFEST_PATH, 'utf-8')
-    return JSON.parse(data) as ManifestEntry[]
+    const entries = JSON.parse(data) as ManifestEntry[]
+    // Drop unresumable rows rather than spawning a child per boot that exits 1
+    // before init. Left in, they read to the fallback chain as "this model is
+    // unavailable" — on 6 Oct 2026 six of them walked all seven Bedrock entries
+    // in 70 s and parked the fleet on haiku. They are never re-saved, since
+    // saveManifest writes from live sessions, so this self-heals.
+    const good = entries.filter((e) => CLAUDE_SESSION_ID_RE.test(e?.claudeSessionId ?? ''))
+    if (good.length !== entries.length) {
+      const bad = entries.filter((e) => !CLAUDE_SESSION_ID_RE.test(e?.claudeSessionId ?? '')).map((e) => e?.claudeSessionId)
+      console.log(`[manifest] dropped ${entries.length - good.length} unresumable entr${entries.length - good.length === 1 ? 'y' : 'ies'} (not a claudeSessionId UUID): ${bad.join(', ')}`)
+    }
+    return good
   } catch {
     return []
   }

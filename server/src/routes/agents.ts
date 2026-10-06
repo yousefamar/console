@@ -20,7 +20,7 @@ import { missingSessionMessage } from '../agents/stale-id.js'
 import type { ClientMessage, HubMessage, ClaudeRateLimitInfo } from '../protocol.js'
 import type { BackendFailover } from '../backend-failover.js'
 import { loadSessionHistory, listPastSessions } from '../history.js'
-import { saveManifest } from '../manifest.js'
+import { saveManifest, CLAUDE_SESSION_ID_RE } from '../manifest.js'
 import { isAlName } from '../al/identity.js'
 import type { ForkCostLedger } from '../agents/fork-cost.js'
 import type { RecallIndex } from '../recall/index.js'
@@ -1112,6 +1112,16 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
     }
 
     case 'resume_session': {
+      // `claude --resume` only accepts a full UUID. Anything else spawns a child
+      // that exits 1 before init — and since the hub persists the attempt, the
+      // doomed spawn repeats on every boot forever. Six such rows (seeded by the
+      // 8-char display ids and one hub id) were the fleet-wide pre-init fault
+      // that walked the model chain to haiku on 6 Oct 2026. Refuse up front.
+      if (!CLAUDE_SESSION_ID_RE.test(msg.sessionId ?? '')) {
+        sendTo(ws, { type: 'hub_error', message: `Cannot resume "${msg.sessionId}": a claudeSessionId is a UUID. The 8-char form printed by 'con agent search' is a display prefix, and a 'session_N_…' id is a hub id, not a claude session id.` })
+        log(`[agents] refused resume_session for non-UUID id "${msg.sessionId}"`)
+        break
+      }
       const session = createSession(ctx, {
         prompt: msg.prompt,
         cwd: msg.cwd,

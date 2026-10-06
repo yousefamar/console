@@ -39,6 +39,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
 // tool-result read, never from search snippets.
 // --------------------------------------------------------------------------
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const SEARCH_FLAGS = ['project', 'here', 'since', 'until', 'file', 'branch', 'session', 'limit', 'tools', 'self']
 const READ_FLAGS = ['grep', 'turns', 'tools', 'max']
 
@@ -401,7 +402,19 @@ async function agentSend(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function agentResume(args: string[], flags: GlobalFlags): Promise<void> {
   const sessionId = args[0]
-  if (!sessionId) exitWithError('USAGE', 'Usage: con agent resume <session-id> [<prompt>]', flags)
+  if (!sessionId) exitWithError('USAGE', 'Usage: con agent resume <claudeSessionId> [<prompt>]', flags)
+  // The CLI's `--resume` only accepts a full UUID, so any other ref produces a
+  // session that can never init — and, because it persists to the manifest, one
+  // that re-fails on every boot thereafter (7 Oct 2026: six such rows, seeded by
+  // the 8-char ids `con agent search/read` print, were the fleet-wide pre-init
+  // fault that walked the model chain down to haiku). Same check as `con cron`
+  // and `con listen` apply to --session.
+  if (!UUID_RE.test(sessionId!)) {
+    exitWithError('USAGE', `con agent resume needs a full claudeSessionId (UUID), not "${sessionId}". `
+      + `The 8-char form printed by 'con agent search' is a display prefix — get the full id from that session's `
+      + `'cite:' line ('con agent read <session8>') or from ~/.claude/projects/<dir>/<uuid>.jsonl.`, flags)
+    return
+  }
   const opts = parseFlags(args.slice(1))
   const prompt = args[1] && !args[1].startsWith('--') ? args[1] : opts.prompt
 
