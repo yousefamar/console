@@ -31,7 +31,10 @@ import kotlinx.coroutines.flow.StateFlow
  * Editing: per-transaction overrides (recategorise / ignore / transfer) go
  * through the outbox as `money:override` — optimistic Room write, POST or
  * DELETE `/finance/overrides`, then the hub's re-derived classification is
- * pulled back over the row. Budgets / scenarios / rules CRUD are still
+ * pulled back over the row. Manual-account balance readings go the same way as
+ * `money:balance` (`POST/PATCH/DELETE /finance/accounts/:id/balance`): only
+ * Monzo auto-syncs, so every other account's balance IS its ledger and logging
+ * one happens wherever he is. Budgets / scenarios / rules CRUD are still
  * SPA-only (BACKLOG Open follow-ups).
  */
 class MoneyRepository(
@@ -42,7 +45,10 @@ class MoneyRepository(
     companion object {
         const val TX_LIMIT = 500
         const val TYPE_OVERRIDE = "money:override"
+        const val TYPE_BALANCE = "money:balance"
         private const val META_OVERRIDES = "money:overrides"
+        private const val META_ACCOUNTS = "money:accounts"
+        private const val META_BALANCES = "money:balances"
         private const val META_RUNWAY = "money:runway"
         private const val META_NETWORTH = "money:networth"
         private const val META_CATEGORIES = "money:categories"
@@ -54,6 +60,10 @@ class MoneyRepository(
         val projection: ProjectionResult? = null,
         val netWorthHistory: List<NetWorthPoint> = emptyList(),
         val categories: List<MoneyCategory> = emptyList(),
+        /** `/finance/all` → accounts (Monzo + manual, archived included). */
+        val accounts: List<Account> = emptyList(),
+        /** `/finance/networth` → balance per account id (empty when that route failed). */
+        val balances: Map<String, Long> = emptyMap(),
         val emergencyFund: EmergencyFund? = null,
         /** Per-transaction overrides by txId (`GET /finance/overrides`, optimistic on edit). */
         val overrides: Map<String, TxOverride> = emptyMap(),
@@ -67,6 +77,19 @@ class MoneyRepository(
         val hydrated: Boolean = false,
     ) {
         val categoriesById: Map<String, MoneyCategory> get() = categories.associateBy { it.id }
+
+        /** Live accounts in display order, grouped the way the SPA's Net worth view does. */
+        fun accountsByLiquidity(liquidity: String): List<Account> = accounts
+            .filter { !it.archived && it.liquidity == liquidity }
+            .sortedWith(compareBy({ it.sort ?: Int.MAX_VALUE }, { it.name.lowercase() }))
+
+        /**
+         * What to show as an account's balance: the hub's own figure when
+         * `/finance/networth` answered, else its newest ledger reading (a
+         * manual account's ledger is the whole truth, so this works offline).
+         */
+        fun balanceOf(account: Account): Long? =
+            balances[account.id] ?: account.latestEntry?.balancePence
     }
 
     private val _state = MutableStateFlow(State())
@@ -86,8 +109,12 @@ class MoneyRepository(
         val ef = meta.get(META_EMERGENCY)?.let { MoneyJson.decodeEmergencyFund(it) }
         val last = meta.get(META_LAST_SYNC)?.toLongOrNull()
         val ovs = meta.get(META_OVERRIDES)?.let { MoneyOverrides.parseOverrides(it) }
+        val accs = meta.get(META_ACCOUNTS)?.let { MoneyJson.decodeAccounts(it) } ?: emptyList()
+        val bals = meta.get(META_BALANCES)?.let { MoneyJson.decodeBalances(it) } ?: emptyMap()
         _state.value = _state.value.copy(
             overrides = ovs ?: _state.value.overrides,
+            accounts = if (accs.isNotEmpty()) accs else _state.value.accounts,
+            balances = if (bals.isNotEmpty()) bals else _state.value.balances,
             projection = projection ?: _state.value.projection,
             netWorthHistory = if (history.isNotEmpty()) history else _state.value.netWorthHistory,
             categories = if (cats.isNotEmpty()) cats else _state.value.categories,
@@ -116,6 +143,9 @@ class MoneyRepository(
             val allD = async { runCatching { hub.get("/finance/all") } }
             val statusD = async { runCatching { hub.get("/money/status") } }
             val ovD = async { runCatching { hub.get("/finance/overrides") } }
+            // Per-account balances; needs a live Monzo token, so a failure here
+            // must not cost us the accounts list (the ledger fallback covers it).
+            val balD = async { runCatching { hub.get("/finance/networth") } }
 
             val txBody = txD.await().onFailure(::noteError).getOrNull()
             val classes = clsD.await().onFailure(::noteError).getOrNull()
@@ -156,6 +186,14 @@ class MoneyRepository(
                     categories = if (cats.isNotEmpty()) cats else _state.value.categories,
                     emergencyFund = ef ?: _state.value.emergencyFund,
                 )
+                storeAccounts(withInFlightLedgers(MoneyJson.parseAccounts(body)))
+            }
+            balD.await().getOrNull()?.let { body ->
+                val bals = MoneyJson.parseNetWorthBalances(body)
+                if (bals.isNotEmpty()) {
+                    meta.put(MetaRow(META_BALANCES, MoneyJson.encodeBalances(bals)))
+                    _state.value = _state.value.copy(balances = bals)
+                }
             }
             ovD.await().getOrNull()?.let { body -> storeOverrides(withInFlight(MoneyOverrides.parseOverrides(body))) }
             statusD.await().getOrNull()?.let { body ->
@@ -224,6 +262,120 @@ class MoneyRepository(
         val ob = outbox ?: return
         ob.register(TYPE_OVERRIDE) { row, _ -> handleOverride(row) }
         ob.register("$TYPE_OVERRIDE:onFailed") { row, _ -> healOverride(row) }
+        ob.register(TYPE_BALANCE) { row, _ -> handleBalance(row) }
+        ob.register("$TYPE_BALANCE:onFailed") { row, _ -> healBalance(row) }
+    }
+
+    // ---------------------------------------------------------------- //
+    // Manual-account balance ledger
+
+    private suspend fun inFlightLedgers(): Set<String> =
+        if (outbox == null) emptySet() else db.outbox().inFlightEntityIds(TYPE_BALANCE).toSet()
+
+    /**
+     * The hub's accounts with the still-queued local ledgers laid back over
+     * them — otherwise every reconcile while an entry sits in the outbox
+     * re-applies the pre-edit copy and the reading visibly reverts.
+     *
+     * [settled] is the account whose write just landed: its own row is still
+     * `processing` while its handler runs, so without this the hub's now-
+     * authoritative ledger would be overwritten by our optimistic guess and the
+     * local id would stick around until the next reconcile. A LATER edit to the
+     * same account (another row, still `pending`) keeps the overlay.
+     */
+    private suspend fun withInFlightLedgers(hubAccounts: List<Account>, settled: String? = null): List<Account> {
+        var inFlight = inFlightLedgers()
+        if (settled != null && inFlight.contains(settled) && !hasQueuedBalanceEdit(settled)) inFlight = inFlight - settled
+        if (inFlight.isEmpty()) return hubAccounts
+        val local = _state.value.accounts.associateBy { it.id }
+        return hubAccounts.map { a ->
+            if (a.id !in inFlight) a else local[a.id]?.let { a.copy(ledger = it.ledger) } ?: a
+        }
+    }
+
+    /** Another ledger edit for [accountId] still waiting (the in-flight one is `processing`). */
+    private suspend fun hasQueuedBalanceEdit(accountId: String): Boolean =
+        db.outbox().pending().any { it.type == TYPE_BALANCE && it.entityId == accountId }
+
+    private suspend fun storeAccounts(accounts: List<Account>) {
+        db.meta().put(MetaRow(META_ACCOUNTS, MoneyJson.encodeAccounts(accounts)))
+        _state.value = _state.value.copy(accounts = accounts)
+    }
+
+    /**
+     * Log / edit / delete one dated balance reading on a manual account: the
+     * ledger changes now, the hub write rides the outbox (so it survives being
+     * offline — logging a balance standing at a cash machine is the point), and
+     * [refreshAfterBalance] pulls the hub's stored entry, the recomputed
+     * net-worth history and the runway back once it lands.
+     */
+    suspend fun applyBalanceEdit(accountId: String, edit: LedgerEdit) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        val account = _state.value.accounts.firstOrNull { it.id == accountId }
+            ?: error("Unknown account $accountId")
+        val action = MoneyLedger.action(account, edit)
+        storeAccounts(MoneyLedger.replace(_state.value.accounts, MoneyLedger.optimistic(account, edit)))
+        ob.enqueue(TYPE_BALANCE, MoneyLedger.encodeAction(action), entityId = accountId)
+    }
+
+    private suspend fun handleBalance(row: OutboxRow): Outbox.Result {
+        val a = MoneyLedger.decodeAction(row.payloadJson) ?: return Outbox.Result.Fail("bad payload")
+        return try {
+            when (a.method) {
+                "POST" -> hub.post(a.path, a.body ?: "{}")
+                "PATCH" -> hub.patch(a.path, a.body ?: "{}")
+                "DELETE" -> try {
+                    hub.delete(a.path)
+                } catch (e: HubClient.HttpException) {
+                    if (e.code != 404) throw e else "" // already gone = the delete we wanted
+                }
+                else -> return Outbox.Result.Fail("bad method ${a.method}")
+            }
+            runCatching { refreshAfterBalance(a.accountId) }
+            Outbox.Result.Done
+        } catch (e: HubClient.HttpException) {
+            if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+        } catch (e: Exception) {
+            Outbox.retryOrNotReady(e, "network")
+        }
+    }
+
+    /**
+     * Terminal failure: the hub never took the reading, so put the account's
+     * pre-edit ledger back. The next reconcile would also fix it, but only
+     * while online — this heals now, and an optimistic row that stood would
+     * otherwise read as a logged balance that no desktop ever sees.
+     */
+    private suspend fun healBalance(row: OutboxRow): Outbox.Result {
+        val a = MoneyLedger.decodeAction(row.payloadJson) ?: return Outbox.Result.Done
+        val current = _state.value.accounts.firstOrNull { it.id == a.accountId } ?: return Outbox.Result.Done
+        storeAccounts(MoneyLedger.replace(_state.value.accounts, MoneyLedger.healed(current, a.beforeLedger)))
+        return Outbox.Result.Done
+    }
+
+    /** The ledger IS the net-worth input, so the history + runway move with it. */
+    private suspend fun refreshAfterBalance(settled: String) {
+        runCatching { storeAccounts(withInFlightLedgers(MoneyJson.decodeAccounts(hub.get("/finance/accounts")), settled = settled)) }
+        runCatching {
+            val pts = MoneyJson.parseNetWorthHistory(hub.get("/finance/networth/history?months=12"))
+            if (pts.isNotEmpty()) {
+                db.meta().put(MetaRow(META_NETWORTH, MoneyJson.encodeNetWorthHistory(pts)))
+                _state.value = _state.value.copy(netWorthHistory = pts)
+            }
+        }
+        runCatching {
+            val bals = MoneyJson.parseNetWorthBalances(hub.get("/finance/networth"))
+            if (bals.isNotEmpty()) {
+                db.meta().put(MetaRow(META_BALANCES, MoneyJson.encodeBalances(bals)))
+                _state.value = _state.value.copy(balances = bals)
+            }
+        }
+        runCatching {
+            MoneyJson.parseProjection(hub.get("/finance/projection"))?.let { p ->
+                db.meta().put(MetaRow(META_RUNWAY, MoneyJson.encodeRunway(p)))
+                _state.value = _state.value.copy(projection = p)
+            }
+        }
     }
 
     private suspend fun handleOverride(row: OutboxRow): Outbox.Result {

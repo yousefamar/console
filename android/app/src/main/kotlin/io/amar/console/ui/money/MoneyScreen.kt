@@ -2,7 +2,9 @@ package io.amar.console.ui.money
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,10 +26,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.TextButton
@@ -47,7 +54,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,17 +68,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.amar.console.data.db.MoneyTxRow
+import io.amar.console.data.money.Account
+import io.amar.console.data.money.BalanceEntry
+import io.amar.console.data.money.LedgerEdit
 import io.amar.console.data.money.MoneyCategory
+import io.amar.console.data.money.MoneyLedger
 import io.amar.console.data.money.MoneyFormat
 import io.amar.console.data.money.MoneyRepository
 import io.amar.console.data.money.NetWorthPoint
 import io.amar.console.data.money.OverrideEdit
 import io.amar.console.data.money.TxOverride
 import io.amar.console.data.money.Runway
+import io.amar.console.ui.cal.showDateTimePicker
 import io.amar.console.ui.components.EmptyState
 import io.amar.console.ui.components.PaneTopBar
 import kotlinx.coroutines.launch
 import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -93,6 +108,11 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     // The sheet tracks the id, not a snapshot, so an override edit re-renders it from Room.
     var detailId by remember { mutableStateOf<String?>(null) }
+    // One open ledger at a time (SPA NetWorthView). Saveable: opening a tx sheet
+    // or leaving for another route must not collapse it.
+    var openLedger by rememberSaveable { mutableStateOf<String?>(null) }
+    // Non-null while the balance form is up: the account, and the entry being edited.
+    var balanceTarget by rememberSaveable(stateSaver = BalanceTargetSaver) { mutableStateOf<BalanceTarget?>(null) }
 
     // Hydrate the cached blobs synchronously-ish, then refresh from the hub.
     LaunchedEffect(Unit) {
@@ -156,6 +176,13 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
             item(key = "networth") {
                 SectionTitle("Net worth", trailing = "12 months")
                 NetWorthSection(state.netWorthHistory, state.projection?.runway)
+                AccountsBlock(
+                    state = state,
+                    openLedger = openLedger,
+                    onToggle = { id -> openLedger = if (openLedger == id) null else id },
+                    onLog = { acc -> balanceTarget = BalanceTarget(acc.id, null) },
+                    onEditEntry = { acc, e -> balanceTarget = BalanceTarget(acc.id, e.id) },
+                )
             }
             item(key = "tx-head") {
                 SectionTitle("Recent transactions", trailing = if (txns.isNotEmpty()) "${txns.size}" else null)
@@ -168,6 +195,22 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                 }
             }
             item(key = "foot") { Spacer(Modifier.height(24.dp)) }
+        }
+    }
+
+    balanceTarget?.let { target -> state.accounts.firstOrNull { it.id == target.accountId } }?.let { acc ->
+        val entry = balanceTarget?.entryId?.let { id -> acc.ledger.firstOrNull { it.id == id } }
+        ModalBottomSheet(onDismissRequest = { balanceTarget = null }) {
+            BalanceSheet(
+                account = acc,
+                entry = entry,
+                // The screen's scope, not the sheet's: the write must outlive the dismiss.
+                onSubmit = { edit ->
+                    balanceTarget = null
+                    scope.launch { runCatching { repo.applyBalanceEdit(acc.id, edit) } }
+                },
+                onCancel = { balanceTarget = null },
+            )
         }
     }
 
@@ -267,6 +310,255 @@ private fun NetWorthSection(history: List<NetWorthPoint>, runway: Runway?) {
                 Text(MoneyFormat.fmtMonthShort(history.last().date), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------- //
+// Accounts + the manual balance ledger
+
+/** Which account's balance form is up, and the entry it edits (null = a new reading). */
+data class BalanceTarget(val accountId: String, val entryId: String?)
+
+/** `rememberSaveable` needs a saver: the pair survives as two strings. */
+private val BalanceTargetSaver = androidx.compose.runtime.saveable.listSaver<BalanceTarget?, String>(
+    save = { t -> if (t == null) emptyList() else listOf(t.accountId, t.entryId ?: "") },
+    restore = { l -> l.getOrNull(0)?.let { BalanceTarget(it, l.getOrNull(1)?.takeIf { e -> e.isNotEmpty() }) } },
+)
+
+private val LIQUIDITY_SECTIONS = listOf(
+    "liquid" to "Liquid",
+    "investment" to "Investments",
+    "illiquid" to "Illiquid / external",
+)
+
+/**
+ * The accounts list under the chart. Only Monzo auto-syncs, so a manual
+ * account expands to its balance ledger — the dated readings that ARE its
+ * balance — with "Log balance" to add today's.
+ */
+@Composable
+private fun AccountsBlock(
+    state: MoneyRepository.State,
+    openLedger: String?,
+    onToggle: (String) -> Unit,
+    onLog: (Account) -> Unit,
+    onEditEntry: (Account, BalanceEntry) -> Unit,
+) {
+    val groups = remember(state.accounts) {
+        LIQUIDITY_SECTIONS.map { (key, label) -> label to state.accountsByLiquidity(key) }.filter { it.second.isNotEmpty() }
+    }
+    if (groups.isEmpty()) {
+        Hint(if (state.loading) "Loading accounts…" else "No accounts yet — add one in the web app's Money tab.")
+        return
+    }
+    Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        for ((label, rows) in groups) {
+            Text(
+                label.uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+            for (acc in rows) {
+                AccountRow(
+                    account = acc,
+                    balance = state.balanceOf(acc),
+                    expanded = openLedger == acc.id,
+                    onToggle = { onToggle(acc.id) },
+                )
+                if (openLedger == acc.id && acc.isManual) {
+                    LedgerList(acc, onLog = { onLog(acc) }, onEditEntry = { e -> onEditEntry(acc, e) })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountRow(account: Account, balance: Long?, expanded: Boolean, onToggle: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .then(if (account.isManual) Modifier.clickable(onClick = onToggle) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (account.isManual) {
+            Icon(
+                if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
+                if (expanded) "Collapse" else "Expand",
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Spacer(Modifier.width(16.dp))
+        }
+        Text(account.glyph, style = MaterialTheme.typography.bodyMedium)
+        Column(Modifier.weight(1f)) {
+            Text(account.name, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            val sub = buildString {
+                if (account.type == "monzo") append("Monzo · auto") else append("manual")
+                if (account.isExternal) append(" · held externally")
+                account.latestEntry?.let { if (account.isManual) append(" · last ${MoneyLedger.fmtDate(it.date)}") }
+            }
+            Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        Text(
+            if (balance == null) "—" else MoneyFormat.fmtPence(balance, abs = true),
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+    HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+/** The account's readings, newest first; tap one to edit, long-press is the same. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LedgerList(account: Account, onLog: () -> Unit, onEditEntry: (BalanceEntry) -> Unit) {
+    val entries = remember(account.ledger) { MoneyLedger.newestFirst(account.ledger) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(start = 36.dp, end = 12.dp, top = 6.dp, bottom = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        if (entries.isEmpty()) {
+            Text(
+                "No readings yet — log today's balance to start.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            for (e in entries) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(onClick = { onEditEntry(e) }, onLongClick = { onEditEntry(e) })
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        MoneyLedger.fmtDate(e.date),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(88.dp),
+                    )
+                    Text(MoneyFormat.fmtPence(e.balancePence, abs = true), style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                    Text(
+                        if (e.isLocal) "syncing…" else e.note.orEmpty(),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (e.isLocal) AMBER else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+        TextButton(onClick = onLog, contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)) {
+            Icon(Icons.Filled.Add, null, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("Log balance", style = MaterialTheme.typography.labelMedium)
+        }
+    }
+    HorizontalDivider(thickness = 0.5.dp, color = MaterialTheme.colorScheme.outlineVariant)
+}
+
+/** Log or edit one dated reading: date (today by default), balance in pounds, optional note. */
+@Composable
+private fun BalanceSheet(
+    account: Account,
+    entry: BalanceEntry?,
+    onSubmit: (LedgerEdit) -> Unit,
+    onCancel: () -> Unit,
+) {
+    val context = LocalContext.current
+    var date by remember(entry?.id) { mutableStateOf(entry?.date ?: MoneyLedger.today()) }
+    var pounds by remember(entry?.id) { mutableStateOf(entry?.let { MoneyLedger.poundsInput(it.balancePence) } ?: "") }
+    var note by remember(entry?.id) { mutableStateOf(entry?.note.orEmpty()) }
+    val pence = MoneyLedger.parsePounds(pounds)
+
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(
+            if (entry == null) "Log balance" else "Edit reading",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Text(
+            "${account.glyph} ${account.name}".trim(),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable {
+                    val millis = runCatching {
+                        LocalDate.parse(date).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                    }.getOrDefault(System.currentTimeMillis())
+                    showDateTimePicker(context, millis, dateOnly = true) { picked ->
+                        date = Instant.ofEpochMilli(picked).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+                    }
+                }
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Date", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(110.dp))
+            Text(MoneyLedger.fmtDate(date), style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+            Text("Change", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        }
+        OutlinedTextField(
+            value = pounds,
+            onValueChange = { pounds = it },
+            label = { Text("Balance (£)") },
+            placeholder = { Text("0.00") },
+            singleLine = true,
+            isError = pounds.isNotBlank() && pence == null,
+            supportingText = if (pounds.isNotBlank() && pence == null) {
+                { Text("Not a number", color = RED) }
+            } else null,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = note,
+            onValueChange = { note = it },
+            label = { Text("Note (optional)") },
+            singleLine = true,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.Sentences,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = {
+                    val p = pence ?: return@Button
+                    onSubmit(
+                        if (entry == null) LedgerEdit.Add(date, p, note)
+                        else LedgerEdit.Update(entry.id, date, p, note),
+                    )
+                },
+                enabled = pence != null,
+            ) { Text(if (entry == null) "Log" else "Save") }
+            TextButton(onClick = onCancel) { Text("Cancel") }
+            Spacer(Modifier.weight(1f))
+            if (entry != null) {
+                TextButton(onClick = { onSubmit(LedgerEdit.Delete(entry.id)) }) {
+                    Text("Delete", color = RED, style = MaterialTheme.typography.labelMedium)
+                }
+            }
+        }
+        Hint("Works offline — the reading is queued and lands on the hub when you're back.", padded = false)
     }
 }
 

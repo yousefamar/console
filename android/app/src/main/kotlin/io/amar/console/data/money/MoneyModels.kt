@@ -59,6 +59,51 @@ data class NetWorthPoint(
     val totalPence: Long,
 )
 
+/** One dated balance reading on a manual account (`finance-accounts.json` → `ledger[]`). */
+data class BalanceEntry(
+    val id: String,
+    /** YYYY-MM-DD */
+    val date: String,
+    val balancePence: Long,
+    val note: String? = null,
+) {
+    /** A local id minted by an optimistic add, not yet replaced by the hub's. */
+    val isLocal: Boolean get() = id.startsWith(LOCAL_PREFIX)
+
+    companion object { const val LOCAL_PREFIX = "local_" }
+}
+
+/**
+ * A Money account (`/finance/all` → `accounts`). Only Monzo accounts auto-sync;
+ * a `manual` one's balance IS its [ledger] — a dated reading logged whenever
+ * Yousef checks the account, which is what the phone edits.
+ */
+data class Account(
+    val id: String,
+    val name: String,
+    /** `monzo` | `manual`. */
+    val type: String,
+    /** `liquid` | `investment` | `illiquid`. */
+    val liquidity: String,
+    val currency: String = "GBP",
+    val emoji: String? = null,
+    /** Held by someone else on his behalf — in net worth, not drawable. */
+    val isExternal: Boolean = false,
+    val sort: Int? = null,
+    val notes: String? = null,
+    val archived: Boolean = false,
+    /** Manual balance entries, oldest first (the hub sorts by date on write). */
+    val ledger: List<BalanceEntry> = emptyList(),
+) {
+    val isManual: Boolean get() = type == "manual"
+
+    /** Default glyph when the account carries no emoji (SPA NetWorthView). */
+    val glyph: String get() = emoji?.takeIf { it.isNotBlank() } ?: if (type == "monzo") "\uD83D\uDFE7" else "\uD83D\uDCB3"
+
+    /** Newest reading, or null for an empty ledger. */
+    val latestEntry: BalanceEntry? get() = ledger.maxWithOrNull(compareBy({ it.date }, { it.id }))
+}
+
 data class MoneyCategory(
     val id: String,
     val name: String,
@@ -157,6 +202,65 @@ object MoneyJson {
                 kind = o["kind"].str() ?: "expense",
             )
         }
+    }
+
+    /** `/finance/all` → `accounts`. */
+    fun parseAccounts(allBody: String): List<Account> {
+        val root = runCatching { json.parseToJsonElement(allBody).jsonObject }.getOrNull() ?: return emptyList()
+        return parseAccountArray(root["accounts"])
+    }
+
+    /** `/finance/accounts` (a bare array) or the `accounts` field of `/finance/all`. */
+    fun parseAccountArray(el: JsonElement?): List<Account> {
+        val arr = el as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { a -> (a as? JsonObject)?.let(::parseAccount) }
+    }
+
+    fun parseAccount(o: JsonObject): Account? {
+        val id = o["id"].str() ?: return null
+        val name = o["name"].str() ?: return null
+        return Account(
+            id = id,
+            name = name,
+            type = o["type"].str() ?: "manual",
+            liquidity = o["liquidity"].str() ?: "liquid",
+            currency = o["currency"].str() ?: "GBP",
+            emoji = o["emoji"].str()?.takeIf { it.isNotBlank() },
+            isExternal = o["isExternal"].bool(),
+            sort = o["sort"].longOr(Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE }?.toInt(),
+            notes = o["notes"].str()?.takeIf { it.isNotBlank() },
+            archived = o["archived"].bool(),
+            ledger = parseLedger(o["ledger"]),
+        )
+    }
+
+    fun parseLedger(el: JsonElement?): List<BalanceEntry> {
+        val arr = el as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { e -> (e as? JsonObject)?.let(::parseBalanceEntry) }
+    }
+
+    fun parseBalanceEntry(o: JsonObject): BalanceEntry? {
+        val id = o["id"].str() ?: return null
+        val date = o["date"].str() ?: return null
+        return BalanceEntry(
+            id = id,
+            date = date,
+            balancePence = o["balancePence"].longOr(),
+            note = o["note"].str()?.takeIf { it.isNotBlank() },
+        )
+    }
+
+    /** `/finance/networth` → per-account balance (Monzo live + manual interpolated). */
+    fun parseNetWorthBalances(body: String): Map<String, Long> {
+        val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return emptyMap()
+        val arr = root["byAccount"] as? JsonArray ?: return emptyMap()
+        val out = HashMap<String, Long>(arr.size)
+        for (el in arr) {
+            val o = el as? JsonObject ?: continue
+            val id = o["accountId"].str() ?: continue
+            out[id] = o["balancePence"].longOr()
+        }
+        return out
     }
 
     fun parseEmergencyFund(allBody: String): EmergencyFund? {
@@ -282,6 +386,45 @@ object MoneyJson {
 
     fun decodeCategories(body: String): List<MoneyCategory> =
         parseCategoryArray(runCatching { json.parseToJsonElement(body) }.getOrNull())
+
+    fun encodeAccounts(accounts: List<Account>): String = json.encodeToString(
+        JsonArray.serializer(),
+        JsonArray(accounts.map(::accountJson)),
+    )
+
+    fun accountJson(a: Account): JsonObject = kotlinx.serialization.json.buildJsonObject {
+        put("id", JsonPrimitive(a.id))
+        put("name", JsonPrimitive(a.name))
+        put("type", JsonPrimitive(a.type))
+        put("liquidity", JsonPrimitive(a.liquidity))
+        put("currency", JsonPrimitive(a.currency))
+        a.emoji?.let { put("emoji", JsonPrimitive(it)) }
+        if (a.isExternal) put("isExternal", JsonPrimitive(true))
+        a.sort?.let { put("sort", JsonPrimitive(it)) }
+        a.notes?.let { put("notes", JsonPrimitive(it)) }
+        if (a.archived) put("archived", JsonPrimitive(true))
+        put("ledger", JsonArray(a.ledger.map(::balanceEntryJson)))
+    }
+
+    fun balanceEntryJson(e: BalanceEntry): JsonObject = kotlinx.serialization.json.buildJsonObject {
+        put("id", JsonPrimitive(e.id))
+        put("date", JsonPrimitive(e.date))
+        put("balancePence", JsonPrimitive(e.balancePence))
+        e.note?.let { put("note", JsonPrimitive(it)) }
+    }
+
+    fun decodeAccounts(body: String): List<Account> =
+        parseAccountArray(runCatching { json.parseToJsonElement(body) }.getOrNull())
+
+    fun encodeBalances(map: Map<String, Long>): String = json.encodeToString(
+        JsonObject.serializer(),
+        kotlinx.serialization.json.buildJsonObject { for ((k, v) in map) put(k, JsonPrimitive(v)) },
+    )
+
+    fun decodeBalances(body: String): Map<String, Long> {
+        val o = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return emptyMap()
+        return o.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.longOrNull?.let { k to it } }.toMap()
+    }
 
     fun encodeEmergencyFund(ef: EmergencyFund): String = json.encodeToString(
         JsonObject.serializer(),
