@@ -19,8 +19,8 @@ import { buildMergeRequest, buildMergeEnvelope, buildForkSeed } from '../agents/
 import { missingSessionMessage } from '../agents/stale-id.js'
 import type { ClientMessage, HubMessage, ClaudeRateLimitInfo } from '../protocol.js'
 import type { BackendFailover } from '../backend-failover.js'
-import { loadSessionHistory, listPastSessions } from '../history.js'
-import { saveManifest, CLAUDE_SESSION_ID_RE } from '../manifest.js'
+import { loadSessionHistory, listPastSessions, findTranscriptIdentity } from '../history.js'
+import { saveManifest, loadManifest, CLAUDE_SESSION_ID_RE } from '../manifest.js'
 import { isAlName } from '../al/identity.js'
 import type { ForkCostLedger } from '../agents/fork-cost.js'
 import type { RecallIndex } from '../recall/index.js'
@@ -1122,18 +1122,50 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         log(`[agents] refused resume_session for non-UUID id "${msg.sessionId}"`)
         break
       }
+      // A resume used to carry only {sessionId, prompt, cwd}, so every resumed
+      // ticket-fork came back BARE — no name, agentKey, project or parent — and
+      // the board, which links a card to its fork by agentKey or name, showed it
+      // as Unassigned and detached from its card. Worse, an absent cwd defaulted
+      // to the hub's own directory, so the resume looked for the transcript in
+      // the wrong place. Identity is a property of the conversation, so recover
+      // it: explicit fields win, then the manifest row for this csid, then what
+      // the transcript itself records.
+      const prior = loadManifest().find((e) => e.claudeSessionId === msg.sessionId)
+      const fromTranscript = findTranscriptIdentity(msg.sessionId)
+      const cwd = msg.cwd ?? prior?.cwd ?? fromTranscript?.cwd
+      const identity = {
+        name: msg.name ?? prior?.name ?? fromTranscript?.name,
+        agentKey: msg.agentKey ?? prior?.agentKey,
+        project: msg.project ?? prior?.project,
+        parentClaudeSessionId: msg.parentClaudeSessionId ?? prior?.parentClaudeSessionId,
+        areas: prior?.areas,
+        forkContext: prior?.forkContext,
+        spawnKind: prior?.spawnKind,
+        effort: prior?.effort,
+        cacheTtl: prior?.cacheTtl,
+        modelOverride: prior?.modelOverride,
+      }
       const session = createSession(ctx, {
         prompt: msg.prompt,
-        cwd: msg.cwd,
+        cwd,
         resume: msg.sessionId,
+        ...identity,
       })
       const createdMsg = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: msg.prompt }
       session.logMessage(createdMsg)
       broadcast(clients, createdMsg)
-      log(`Session resumed: ${session.id} cwd=${session.cwd} (claude session: ${msg.sessionId})`)
+      const recovered = [
+        !msg.cwd && cwd ? `cwd from ${prior ? 'manifest' : 'transcript'}` : null,
+        !msg.name && identity.name ? 'name' : null,
+        !msg.agentKey && identity.agentKey ? 'agentKey' : null,
+        !msg.project && identity.project ? 'project' : null,
+      ].filter(Boolean)
+      log(`Session resumed: ${session.id} cwd=${session.cwd} (claude session: ${msg.sessionId})`
+        + `${identity.name ? ` as "${identity.name}"` : ''}${recovered.length ? ` [recovered: ${recovered.join(', ')}]` : ''}`)
+      if (!cwd) log(`  WARNING: no cwd for ${msg.sessionId} — neither a manifest row nor a transcript was found, so --resume may not find its history`)
 
-      if (msg.cwd) {
-        const history = loadSessionHistory(msg.sessionId, msg.cwd)
+      if (cwd) {
+        const history = loadSessionHistory(msg.sessionId, cwd)
         if (history.length > 0) {
           const historyMsg = { type: 'session_history' as const, sessionId: session.id, messages: history }
           broadcast(clients, historyMsg)

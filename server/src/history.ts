@@ -19,6 +19,33 @@ export interface HistoryMessage {
   images?: string[]
 }
 
+/** What a transcript knows about itself: the cwd its turns ran in, and the
+ *  session's recorded agent name. Found by locating `<csid>.jsonl` under
+ *  ~/.claude/projects/ — the directory name encodes the cwd lossily (slashes
+ *  become dashes), so the cwd is read from a message line instead of decoded.
+ *  Lets a resume recover its identity with no manifest row to inherit from. */
+export function findTranscriptIdentity(claudeSessionId: string): { cwd?: string; name?: string } | null {
+  const root = join(homedir(), '.claude', 'projects')
+  if (!existsSync(root)) return null
+  let filePath: string | undefined
+  for (const dir of readdirSync(root)) {
+    const candidate = join(root, dir, `${claudeSessionId}.jsonl`)
+    if (existsSync(candidate)) { filePath = candidate; break }
+  }
+  if (!filePath) return null
+  const out: { cwd?: string; name?: string } = {}
+  try {
+    // The cwd appears on the first real message line, well inside the head.
+    for (const line of readFileSync(filePath, 'utf-8').split('\n', 50)) {
+      if (!line.trim()) continue
+      const obj = JSON.parse(line) as { cwd?: string; agentName?: string }
+      if (!out.name && typeof obj.agentName === 'string' && obj.agentName) out.name = obj.agentName
+      if (typeof obj.cwd === 'string' && obj.cwd) { out.cwd = obj.cwd; break }
+    }
+  } catch { /* a truncated or non-JSON head just yields less */ }
+  return out.cwd || out.name ? out : null
+}
+
 /**
  * Read a Claude JSONL session file and extract the conversation history
  * as simplified message blocks for the frontend.

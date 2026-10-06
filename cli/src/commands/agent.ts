@@ -40,6 +40,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
 // --------------------------------------------------------------------------
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const RESUME_FLAGS = ['prompt', 'cwd', 'name', 'agent-key', 'project', 'parent']
 const SEARCH_FLAGS = ['project', 'here', 'since', 'until', 'file', 'branch', 'session', 'limit', 'tools', 'self']
 const READ_FLAGS = ['grep', 'turns', 'tools', 'max']
 
@@ -402,7 +403,7 @@ async function agentSend(args: string[], flags: GlobalFlags): Promise<void> {
 
 async function agentResume(args: string[], flags: GlobalFlags): Promise<void> {
   const sessionId = args[0]
-  if (!sessionId) exitWithError('USAGE', 'Usage: con agent resume <claudeSessionId> [<prompt>]', flags)
+  if (!sessionId) exitWithError('USAGE', 'Usage: con agent resume <claudeSessionId> [<prompt>] [--name <n>] [--agent-key <k>] [--project <p>] [--parent <csid>] [--cwd <dir>]', flags)
   // The CLI's `--resume` only accepts a full UUID, so any other ref produces a
   // session that can never init — and, because it persists to the manifest, one
   // that re-fails on every boot thereafter (7 Oct 2026: six such rows, seeded by
@@ -416,11 +417,25 @@ async function agentResume(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   const opts = parseFlags(args.slice(1))
+  const badFlags = unknownFlags(opts, RESUME_FLAGS)
+  if (badFlags.length) exitWithError('USAGE', `Unknown flag(s) --${badFlags.join(', --')}. Usage: con agent resume <claudeSessionId> [<prompt>] [--name <n>] [--agent-key <k>] [--project <p>] [--parent <csid>] [--cwd <dir>]`, flags)
   const prompt = args[1] && !args[1].startsWith('--') ? args[1] : opts.prompt
 
+  // Identity is optional: the hub recovers whatever is omitted from this csid's
+  // manifest row, then from the transcript. Pass it explicitly when reviving a
+  // fork whose row is already gone, or the board can't link it to its card.
   const { sendAndReceive } = await import('../ws-client.js')
   const result = await sendAndReceive(
-    { type: 'resume_session', sessionId, prompt, cwd: opts.cwd },
+    {
+      type: 'resume_session',
+      sessionId,
+      prompt,
+      cwd: opts.cwd,
+      name: opts.name,
+      agentKey: opts['agent-key'],
+      project: opts.project,
+      parentClaudeSessionId: opts.parent,
+    },
     (msg: any) => msg.type === 'session_created' || msg.type === 'session_init',
   )
   output(result, flags)

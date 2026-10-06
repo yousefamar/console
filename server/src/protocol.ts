@@ -24,7 +24,7 @@ export type ClientMessage =
   | { type: 'reload_session'; sessionId: string; fromCsid?: string }
   | { type: 'reload_al' }
   | { type: 'list_sessions' }
-  | { type: 'resume_session'; sessionId: string; prompt: string; cwd?: string }
+  | { type: 'resume_session'; sessionId: string; prompt: string; cwd?: string; name?: string; agentKey?: string; project?: string; parentClaudeSessionId?: string }
   | { type: 'list_past_sessions'; cwd: string }
   | { type: 'get_session_history'; sessionId: string }
   | { type: 'rename_session'; sessionId: string; name: string }
