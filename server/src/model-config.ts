@@ -54,17 +54,22 @@ export interface FallbackResult {
   heldAfterBurst?: boolean
 }
 
-/** Burst-guard thresholds. A fleet-wide spawn fault (process pressure, upstream
- *  throttling, a malformed settings.json) kills EVERY model's spawn before init,
- *  and `session.ts` reads a pre-init exit as "this model is unavailable" — so
- *  one fault walks the chain to its end, one entry per distinct model.
+/** Burst-guard thresholds. `session.ts` reads a pre-init exit as "this model is
+ *  unavailable", so anything that kills a spawn for a NON-model reason walks the
+ *  chain — and ONE session is enough to walk all of it. The loop:
+ *  fail before init → reportFailure advances the chain → the hub restarts the
+ *  session on the new model → `doModelRespawn` clears `modelFailureSignaled` and
+ *  re-spawns with the same bad arguments → fails again. Capped only by
+ *  `MAX_MODEL_RESTARTS` (6), i.e. 7 models — exactly the Bedrock chain's length.
  *
- *  6 Oct 2026: a `backend set` respawned ~40 sessions at once; two minutes later
- *  all seven Bedrock entries failed `exited before init (code=1)` within 70 s
- *  (23:36:49 → 23:37:58) and the fleet landed on haiku. None of the models was
- *  actually broken — the chain head's profile answered a one-shot probe fine
- *  afterwards. Worse, the position is persisted, so the hub that booted at
- *  23:41 came back up still on haiku and only a human noticed.
+ *  6 Oct 2026, 23:36:49 → 23:37:58: all seven Bedrock entries failed `exited
+ *  before init (code=1)` in 70 s and the fleet landed on haiku. The cause was a
+ *  single unresumable session — a manifest row whose claudeSessionId was an
+ *  8-char display prefix, so `claude --resume` rejected it every time (see
+ *  manifest.ts `CLAUDE_SESSION_ID_RE`). No model was broken: the chain head
+ *  answered a one-shot probe fine afterwards. Worse, the position is persisted,
+ *  so the hub that booted at 23:41 came back up still on haiku, and the poison
+ *  row re-spawned on every boot, ready to do it again.
  *
  *  Three distinct models failing inside two minutes is not three dead models. */
 const BURST_WINDOW_MS = 120_000
