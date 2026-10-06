@@ -54,7 +54,21 @@ export function forgetGitStatus(cwd: string): void {
 }
 
 async function git(cwd: string, args: string[], timeout: number): Promise<string> {
-  const { stdout } = await execFileP('git', args, { cwd, timeout, encoding: 'utf-8' })
+  // GIT_OPTIONAL_LOCKS=0 is not an optimisation — it is load-bearing. `git
+  // status` (and `git diff`) opportunistically take `.git/index.lock` to write
+  // back a refreshed stat cache, and this helper is a POLLER: the SPA asks for
+  // every session's info every 10 s. On a seek-bound HDD at 94% those calls
+  // exceed the timeouts below, node kills git mid-operation, and the lock
+  // survives as a zero-byte orphan that fails every later commit in that repo
+  // until something removes it. That is what blocked every fork's commits for
+  // 6 h on 2026-10-06 (console, then demovid and reflection-tools) — found by
+  // Homelab's host watcher, verified here by strace: plain `status --porcelain`
+  // opens index.lock, with this env set it opens it zero times. Raising the
+  // timeouts does NOT fix it, only makes the race rarer.
+  const { stdout } = await execFileP('git', args, {
+    cwd, timeout, encoding: 'utf-8',
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' },
+  })
   return stdout.trim()
 }
 

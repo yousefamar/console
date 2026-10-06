@@ -3,11 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // git-status.ts promisifies execFile; feed it canned git output and count
 // the calls so the "one refresh per checkout, never blocking" contract is
 // what the test pins.
-const calls: Array<{ cwd: string; args: string[] }> = []
+const calls: Array<{ cwd: string; args: string[]; env?: NodeJS.ProcessEnv }> = []
 let gate: Promise<void> = Promise.resolve()
 vi.mock('node:child_process', () => ({
-  execFile: (_cmd: string, args: string[], opts: { cwd: string }, cb: (e: Error | null, r?: { stdout: string; stderr: string }) => void) => {
-    calls.push({ cwd: opts.cwd, args })
+  execFile: (_cmd: string, args: string[], opts: { cwd: string; env?: NodeJS.ProcessEnv }, cb: (e: Error | null, r?: { stdout: string; stderr: string }) => void) => {
+    calls.push({ cwd: opts.cwd, args, env: opts.env })
     void gate.then(() => {
       if (opts.cwd === '/nope') return cb(new Error('not a git repo'))
       const out: Record<string, string> = {
@@ -86,6 +86,21 @@ describe('gitStatusSync', () => {
     expect(calls).toHaveLength(4)
     expect(gitStatusSync('/repo').branch).toBe('main')
     expect(calls).toHaveLength(4)                          // fresh snapshot → no new refresh
+  })
+
+  // 2026-10-06: this poller's killed `git status` calls left zero-byte
+  // .git/index.lock orphans that failed every later commit in the repo for 6 h
+  // (console, demovid, reflection-tools). git takes that lock to write back a
+  // refreshed stat cache; GIT_OPTIONAL_LOCKS=0 tells it not to. EVERY call must
+  // carry it — `git diff` refreshes the index too, not just `status`.
+  it('never lets git take .git/index.lock — every call carries GIT_OPTIONAL_LOCKS=0', async () => {
+    gitStatusSync('/repo')
+    await settle()
+    expect(calls.length).toBeGreaterThanOrEqual(2)
+    expect(calls.map((c) => c.args[0])).toContain('status')
+    for (const c of calls) expect(c.env?.GIT_OPTIONAL_LOCKS).toBe('0')
+    // and the rest of the environment is still inherited, not replaced
+    expect(calls[0]!.env?.PATH).toBe(process.env.PATH)
   })
 
   it('describes the checkout INSIDE a vault project dir, not the vault', async () => {
