@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -21,17 +22,20 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
@@ -64,13 +68,17 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import io.amar.console.data.db.MoneyTxRow
 import io.amar.console.data.money.Account
 import io.amar.console.data.money.BalanceEntry
 import io.amar.console.data.money.LedgerEdit
+import io.amar.console.data.money.Budget
+import io.amar.console.data.money.MoneyBudgets
 import io.amar.console.data.money.MoneyCategory
 import io.amar.console.data.money.MoneyLedger
 import io.amar.console.data.money.MoneyFormat
@@ -96,9 +104,10 @@ private val INVEST_VIOLET = Color(0xFFA78BFA)
 
 /**
  * Money L1 — read-only mirror of the SPA Money tab's Cashflow / Net worth /
- * Transactions views: RunwayCard (5 tiles), 12-month net-worth chart, recent
- * transactions grouped by day. Tap a transaction for its detail sheet.
- * Budgets / scenarios / category editing stay SPA-only (BACKLOG Open).
+ * Transactions views: RunwayCard (5 tiles), per-category Budgets for the
+ * current month, 12-month net-worth chart, recent transactions grouped by day.
+ * Tap a transaction or a budget for its sheet. Scenarios / category + rule
+ * editing and the balance ledger stay SPA-only (BACKLOG Open).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,6 +122,10 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
     var openLedger by rememberSaveable { mutableStateOf<String?>(null) }
     // Non-null while the balance form is up: the account, and the entry being edited.
     var balanceTarget by rememberSaveable(stateSaver = BalanceTargetSaver) { mutableStateOf<BalanceTarget?>(null) }
+    // Budget sheets key on the CATEGORY, not the budget id: a create shows under
+    // a temp id until the hub mints the real one, and the category survives that swap.
+    var budgetSheet by remember { mutableStateOf<BudgetSheet?>(null) }
+    var confirmDeleteBudget by remember { mutableStateOf<Budget?>(null) }
 
     // Hydrate the cached blobs synchronously-ish, then refresh from the hub.
     LaunchedEffect(Unit) {
@@ -173,6 +186,22 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                     RunwayCard(p.runway, MoneyFormat.emergencyHint(state.emergencyFund))
                 }
             }
+            item(key = "budgets") {
+                val rows = state.budgetRows
+                val available = remember(state.categories, state.budgets) {
+                    MoneyBudgets.availableCategories(state.categories, state.budgets)
+                }
+                SectionTitle(
+                    "Budgets",
+                    trailing = state.budgetMonth?.let { MoneyFormat.fmtMonthLong(it) },
+                    action = if (available.isEmpty()) null else ({
+                        IconButton(onClick = { budgetSheet = BudgetSheet.Add }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Filled.Add, "Add budget", Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }),
+                )
+                BudgetsSection(rows) { row -> budgetSheet = BudgetSheet.Edit(row.budget.categoryId) }
+            }
             item(key = "networth") {
                 SectionTitle("Net worth", trailing = "12 months")
                 NetWorthSection(state.netWorthHistory, state.projection?.runway)
@@ -226,6 +255,221 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
             )
         }
     }
+
+    budgetSheet?.let { sheet ->
+        ModalBottomSheet(onDismissRequest = { budgetSheet = null }) {
+            when (sheet) {
+                BudgetSheet.Add -> BudgetAddSheet(
+                    categories = MoneyBudgets.availableCategories(state.categories, state.budgets),
+                    // The screen's scope, not the sheet's: the write must outlive the dismiss.
+                    onSave = { catId, pence ->
+                        scope.launch { runCatching { repo.upsertBudget(catId, pence) } }
+                        budgetSheet = null
+                    },
+                )
+                is BudgetSheet.Edit -> {
+                    val row = state.budgetRows.firstOrNull { it.budget.categoryId == sheet.categoryId }
+                    if (row == null) {
+                        Hint("That budget is gone.")
+                        LaunchedEffect(sheet) { budgetSheet = null }
+                    } else {
+                        BudgetEditSheet(
+                            row = row,
+                            onSave = { pence ->
+                                scope.launch { runCatching { repo.upsertBudget(row.budget.categoryId, pence, row.budget.id) } }
+                                budgetSheet = null
+                            },
+                            onDelete = { confirmDeleteBudget = row.budget; budgetSheet = null },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    confirmDeleteBudget?.let { b ->
+        val name = state.categoriesById[b.categoryId]?.name ?: b.categoryId
+        AlertDialog(
+            onDismissRequest = { confirmDeleteBudget = null },
+            title = { Text("Delete the $name budget?") },
+            text = { Text("The target goes away. Transactions and their categories are untouched.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { runCatching { repo.deleteBudget(b) } }
+                    confirmDeleteBudget = null
+                }) { Text("Delete", color = RED) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteBudget = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+// ---------------------------------------------------------------------- //
+// Budgets
+
+private sealed interface BudgetSheet {
+    data object Add : BudgetSheet
+    data class Edit(val categoryId: String) : BudgetSheet
+}
+
+@Composable
+private fun BudgetsSection(rows: List<MoneyBudgets.Row>, onRow: (MoneyBudgets.Row) -> Unit) {
+    if (rows.isEmpty()) {
+        Hint("No budgets yet — add one to track a category against a monthly target.")
+        return
+    }
+    val totals = remember(rows) { MoneyBudgets.totals(rows) }
+    Column(Modifier.padding(horizontal = 12.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Metric("Total target", MoneyFormat.fmtPence(totals.targetPence, abs = true), null, Modifier.weight(1f))
+            Metric("Spent", MoneyFormat.fmtPence(totals.spentPence, abs = true), null, Modifier.weight(1f))
+            Metric(
+                "Projected", MoneyFormat.fmtPence(totals.projectedPence, abs = true), "end of month", Modifier.weight(1f),
+                valueColor = if (totals.overspending) RED else MaterialTheme.colorScheme.onSurface,
+            )
+        }
+        for (row in rows) BudgetRow(row, onClick = { onRow(row) })
+    }
+}
+
+@Composable
+private fun BudgetRow(row: MoneyBudgets.Row, onClick: () -> Unit) {
+    val catColor = parseCatColor(row.category?.color)
+    val fill = when {
+        row.overspending -> RED
+        row.over -> AMBER
+        else -> catColor ?: GREEN
+    }
+    Column(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(5.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(catColor ?: MaterialTheme.colorScheme.onSurfaceVariant))
+            Text(row.label, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "${MoneyFormat.fmtPence(row.spentPence, abs = true)} / ${MoneyFormat.fmtPence(row.targetPence, abs = true)}",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        BudgetBar(row, fill)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                if (row.remainingPence >= 0) "${MoneyFormat.fmtPence(row.remainingPence, abs = true)} left"
+                else "${MoneyFormat.fmtPence(row.remainingPence, abs = true)} over",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (row.remainingPence < 0) RED else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                "proj. ${MoneyFormat.fmtPence(row.projectedPence, abs = true)}",
+                style = MaterialTheme.typography.labelSmall,
+                color = if (row.overspending) RED else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * SPA bar: a faded underlay to the projected fraction, the spent fill over it,
+ * and a red band for the projected overshoot past target. Fractions are
+ * clamped in [MoneyBudgets.Row]; a zero one is skipped (`fillMaxWidth(0f)`
+ * draws nothing anyway, but a 0-width Box still measures).
+ */
+@Composable
+private fun BudgetBar(row: MoneyBudgets.Row, fill: Color) {
+    val projectedFrac = row.projectedPct.coerceAtMost(1.0).toFloat()
+    val spentFrac = row.pct.coerceAtMost(1.0).toFloat()
+    val overshoot = (row.projectedPct - 1.0).coerceIn(0.0, 0.5).toFloat()
+    Box(
+        Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant),
+    ) {
+        if (projectedFrac > 0f) Box(
+            Modifier.fillMaxWidth(projectedFrac).fillMaxHeight()
+                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)),
+        )
+        if (spentFrac > 0f) Box(Modifier.fillMaxWidth(spentFrac).fillMaxHeight().background(fill))
+        if (overshoot > 0f) Box(
+            Modifier.align(Alignment.CenterEnd).fillMaxWidth(overshoot).fillMaxHeight()
+                .background(RED.copy(alpha = 0.35f)),
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun BudgetAddSheet(categories: List<MoneyCategory>, onSave: (String, Long) -> Unit) {
+    var picked by remember { mutableStateOf<String?>(null) }
+    var pounds by remember { mutableStateOf("") }
+    val pence = MoneyBudgets.poundsToPence(pounds)
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("New budget", style = MaterialTheme.typography.titleMedium)
+        if (categories.isEmpty()) {
+            Hint("Every expense category already has a budget.", padded = false)
+            return@Column
+        }
+        Text("CATEGORY", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (c in categories) FilterChip(
+                selected = c.id == picked,
+                onClick = { picked = c.id },
+                label = { Text("${c.emoji} ${c.name}".trim(), style = MaterialTheme.typography.labelSmall) },
+            )
+        }
+        PoundsField(pounds, onChange = { pounds = it })
+        Button(onClick = { picked?.let { c -> pence?.let { onSave(c, it) } } }, enabled = picked != null && pence != null) {
+            Text("Save budget")
+        }
+    }
+}
+
+@Composable
+private fun BudgetEditSheet(row: MoneyBudgets.Row, onSave: (Long) -> Unit, onDelete: () -> Unit) {
+    var pounds by remember(row.budget.id) { mutableStateOf(MoneyBudgets.penceToPounds(row.targetPence)) }
+    val pence = MoneyBudgets.poundsToPence(pounds)
+    Column(
+        Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(row.label.ifBlank { "Budget" }, style = MaterialTheme.typography.titleMedium)
+        Text(
+            "${MoneyFormat.fmtPence(row.spentPence, abs = true)} spent this month · projected ${MoneyFormat.fmtPence(row.projectedPence, abs = true)}",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (row.overspending) RED else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        PoundsField(pounds, onChange = { pounds = it })
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = { pence?.let(onSave) }, enabled = pence != null && pence != row.targetPence) { Text("Save") }
+            Spacer(Modifier.weight(1f))
+            TextButton(onClick = onDelete) {
+                Icon(Icons.Filled.Delete, null, Modifier.size(15.dp), tint = RED)
+                Spacer(Modifier.width(4.dp))
+                Text("Delete", color = RED, style = MaterialTheme.typography.labelMedium)
+            }
+        }
+        if (row.budget.isLocal) Hint("Not synced yet — it will reach the hub on the next connection.", padded = false)
+    }
+}
+
+@Composable
+private fun PoundsField(value: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text("Monthly target (£)") },
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+/** Category hex (`#a78bfa`) → Color; null when absent or unparseable. */
+private fun parseCatColor(hex: String?): Color? {
+    if (hex.isNullOrBlank()) return null
+    return runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrNull()
 }
 
 // ---------------------------------------------------------------------- //
@@ -797,14 +1041,17 @@ private fun DetailRow(label: String, value: String) {
 // Bits
 
 @Composable
-private fun SectionTitle(title: String, trailing: String? = null) {
+private fun SectionTitle(title: String, trailing: String? = null, action: (@Composable () -> Unit)? = null) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 14.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(title, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium)
-        if (trailing != null) Text(trailing, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (trailing != null) Text(trailing, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            action?.invoke()
+        }
     }
 }
 

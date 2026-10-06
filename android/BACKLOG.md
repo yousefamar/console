@@ -11,13 +11,13 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
 (`android/CLAUDE.md` → "nightly parity sweep") or by SPA forks as they ship.
 
 - Money: editing parity — the read-only pane shipped (^quick-gull), the
-  per-transaction override landed (^warm-wren) and the manual-account balance
-  ledger landed (^loud-frog); still SPA-only: Budgets (`/finance/budgets` +
-  `/finance/budget-status`), Scenarios (`/finance/scenarios`, comparison chart),
-  Categories + rules CRUD, account CRUD itself (create / rename / liquidity /
-  archive — `POST/PATCH/DELETE /finance/accounts`; the phone logs readings on
-  the accounts the desktop defined), monthly spend chart (`/finance/monthly`),
-  shared-tab panel. Plan: a Budgets section under Runway next; scenarios last.
+  per-transaction override landed (^warm-wren), the manual-account balance
+  ledger landed (^loud-frog) and Budgets landed (^busy-vole); still SPA-only:
+  Scenarios (`/finance/scenarios`, comparison chart), Categories + rules CRUD,
+  account CRUD itself (create / rename / liquidity / archive —
+  `POST/PATCH/DELETE /finance/accounts`; the phone logs readings on the
+  accounts the desktop defined), monthly spend chart (`/finance/monthly`),
+  shared-tab panel. Plan: categories + rules next; scenarios last.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
@@ -152,6 +152,60 @@ view-mode hub-sync (Room meta is fine on one device).
   wins, unit-tested). Added `ConsoleAccents.yellow` (dark `#FACC15`, light
   `#CA8A04`) because the SPA deliberately separates yellow "not live" from
   amber "unsaved". An unknown build time marks nothing stale, by design.
+- **Money: per-category Budgets** (card ^busy-vole; SPA `BudgetsView.tsx`
+  parity; a slice of the Money editing gap in Open entry 1, landing in the same
+  batch as ^loud-frog's balance ledger). The pane had no budget surface at all,
+  so a target set on the desktop was invisible on the phone and could not be
+  moved there. New **Budgets** section under Runway: three summary tiles
+  (total target / spent / projected
+  end-of-month, red when the month is on course to overshoot), then one row per
+  budget with the SPA's bar — faded underlay to the projected fraction, spent
+  fill in the category's own colour (amber once at/over target, red when the
+  projection overshoots), a red band for the overshoot past target, both
+  fractions clamped at 1.5× so a wild overspend cannot blow up the layout —
+  plus `£X left` / `£X over` and `proj. £Y`. Tap a row for a sheet that
+  retargets or deletes it; `+` in the section header opens the add sheet with
+  the category chip picker (expense, non-system, not already budgeted — the
+  SPA's own filter) and a `£` field. The delete confirm is an AlertDialog
+  hoisted to the screen, and every write uses the screen's scope, so it
+  outlives the sheet's dismiss.
+  Wire: budgets ride the `/finance/all` payload the reconcile already fetches
+  (no extra request — the SPA's `fetchAll` reads them from there too); the
+  month's actuals are one new `GET /finance/budget-status?month=YYYY-MM`
+  (current month only, like the SPA). Writes go through the outbox as
+  `money:budget` (POST / DELETE `/finance/budgets`) so they survive being
+  offline, and `refreshAfterBudget` pulls the hub's list + status back.
+  Three things that needed care. (1) The outbox `entityId` is the
+  **categoryId**, not the budget id: a create has no hub id until the POST
+  lands (it shows under a `~` temp id, the calendar's convention) and the hub's
+  own upsert matches on categoryId when no id is given, so the category is the
+  only stable identity across the round trip — which is also what the reconcile
+  skips (the ^warm-wren rule), so an edit still in the queue is no longer
+  flipped back by the hub's pre-edit copy, and a queued delete is not
+  resurrected. (2) Deleting a never-synced budget cancels the queued create
+  instead of sending anything — a `~`-id DELETE would 404 forever. (3) A temp
+  id is never sent as the hub's `id` (it would mint a budget nothing could
+  address); a real id is, so the hub retargets that exact row. A fourth fell
+  out of the tests: the post-write refresh runs *inside* the outbox handler,
+  where its own row is still `processing`, so it has to exclude the settling
+  category from the in-flight overlay — otherwise the optimistic `~` row wins
+  over the hub's answer and a new budget keeps its temp id until some later
+  reconcile. Terminal
+  failures heal: the record the edit replaced goes back, or a failed create's
+  row is dropped. `isSystem` added to `MoneyCategory` + its cache codec so the
+  picker hides `cat_uncat` / `cat_transfer`; budgets, the status rows and the
+  month they describe are cached in `meta` so the section opens offline.
+  Known edge, left alone: deleting a brand-new budget in the sub-second window
+  where its create is already mid-POST cancels the queue row but not the
+  request, so the budget reappears at the next reconcile (the hub did take it).
+  New pure `MoneyBudgets.kt` (request bodies, optimistic list, in-flight
+  overlay, row arithmetic, £ parsing, outbox payload + heal) with the models
+  and parsers in `MoneyModels.kt`/`MoneyJson`. +3 test files: `MoneyBudgetsTest`
+  (SPA arithmetic, clamps, zero target, picker filter, in-flight overlay,
+  heals, payload round-trip), budget parsers in `MoneyModelsTest`,
+  `MoneyRepositoryBudgetTest` (11 cases end to end over a scripted hub: temp id
+  → hub id, retarget sends the id, delete, 404-is-done, rejected edit/create
+  heal, reconcile-does-not-undo, restart through the meta cache).
 
 ## Shipped
 

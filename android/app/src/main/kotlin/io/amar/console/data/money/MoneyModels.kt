@@ -111,10 +111,44 @@ data class MoneyCategory(
     /** Hex like `#a78bfa`. */
     val color: String,
     val kind: String,
+    /** Hub-seeded (cat_transfer / cat_uncat) — never offered as a budget target. */
+    val isSystem: Boolean = false,
 )
 
 /** `/finance/categorise` row: the effective category for one transaction. */
 data class TxClassification(val categoryId: String, val ignored: Boolean, val isTransfer: Boolean)
+
+/**
+ * `finance-budgets.json` row — one per-category monthly target
+ * (`GET/POST /finance/budgets`). The hub's POST is an upsert keyed on `id`
+ * when given, else on `categoryId`, so a create needs neither.
+ */
+data class Budget(
+    val id: String,
+    val categoryId: String,
+    val monthlyTargetPence: Long,
+    val rollover: Boolean? = null,
+    val notes: String? = null,
+) {
+    /** A budget created here that the hub has not minted a real id for yet. */
+    val isLocal: Boolean get() = id.startsWith(MoneyBudgets.TEMP_PREFIX)
+}
+
+/**
+ * `GET /finance/budget-status?month=YYYY-MM` row (server `BudgetStatus`,
+ * `budgetStatusForMonth` in `server/src/finance/projection.ts`). `spentPence`
+ * is positive for outflow; `projectedEndOfMonthPence` extrapolates it over the
+ * whole month by elapsed days.
+ */
+data class BudgetStatus(
+    val budgetId: String,
+    val categoryId: String,
+    val monthlyTargetPence: Long,
+    val spentPence: Long,
+    val remainingPence: Long,
+    val pct: Double,
+    val projectedEndOfMonthPence: Long,
+)
 
 /** `/money/status`. */
 data class MoneyStatus(
@@ -200,6 +234,41 @@ object MoneyJson {
                 emoji = o["emoji"].str() ?: "",
                 color = o["color"].str() ?: "#94a3b8",
                 kind = o["kind"].str() ?: "expense",
+                isSystem = o["isSystem"].bool(),
+            )
+        }
+    }
+
+    /** `/finance/budgets` (also `/finance/all` → budgets) → [Budget] rows. */
+    fun parseBudgets(body: String): List<Budget> = parseBudgetArray(runCatching { json.parseToJsonElement(body) }.getOrNull())
+
+    fun parseBudgetArray(el: JsonElement?): List<Budget> {
+        val arr = el as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { b ->
+            val o = b as? JsonObject ?: return@mapNotNull null
+            Budget(
+                id = o["id"].str() ?: return@mapNotNull null,
+                categoryId = o["categoryId"].str() ?: return@mapNotNull null,
+                monthlyTargetPence = o["monthlyTargetPence"].longOr(),
+                rollover = (o["rollover"] as? JsonPrimitive)?.booleanOrNull,
+                notes = o["notes"].str(),
+            )
+        }
+    }
+
+    /** `/finance/budget-status?month=YYYY-MM` → [BudgetStatus] rows. */
+    fun parseBudgetStatus(body: String): List<BudgetStatus> {
+        val arr = runCatching { json.parseToJsonElement(body) as? JsonArray }.getOrNull() ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val o = el as? JsonObject ?: return@mapNotNull null
+            BudgetStatus(
+                budgetId = o["budgetId"].str() ?: return@mapNotNull null,
+                categoryId = o["categoryId"].str() ?: return@mapNotNull null,
+                monthlyTargetPence = o["monthlyTargetPence"].longOr(),
+                spentPence = o["spentPence"].longOr(),
+                remainingPence = o["remainingPence"].longOr(),
+                pct = o["pct"].doubleOrNullSafe() ?: 0.0,
+                projectedEndOfMonthPence = o["projectedEndOfMonthPence"].longOr(),
             )
         }
     }
@@ -380,6 +449,7 @@ object MoneyJson {
                 put("emoji", JsonPrimitive(it.emoji))
                 put("color", JsonPrimitive(it.color))
                 put("kind", JsonPrimitive(it.kind))
+                put("isSystem", JsonPrimitive(it.isSystem))
             }
         }),
     )
@@ -425,6 +495,34 @@ object MoneyJson {
         val o = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return emptyMap()
         return o.mapNotNull { (k, v) -> (v as? JsonPrimitive)?.longOrNull?.let { k to it } }.toMap()
     }
+
+    fun encodeBudgets(budgets: List<Budget>): String = json.encodeToString(
+        JsonArray.serializer(),
+        JsonArray(budgets.map {
+            kotlinx.serialization.json.buildJsonObject {
+                put("id", JsonPrimitive(it.id))
+                put("categoryId", JsonPrimitive(it.categoryId))
+                put("monthlyTargetPence", JsonPrimitive(it.monthlyTargetPence))
+                it.rollover?.let { r -> put("rollover", JsonPrimitive(r)) }
+                it.notes?.let { n -> put("notes", JsonPrimitive(n)) }
+            }
+        }),
+    )
+
+    fun encodeBudgetStatus(rows: List<BudgetStatus>): String = json.encodeToString(
+        JsonArray.serializer(),
+        JsonArray(rows.map {
+            kotlinx.serialization.json.buildJsonObject {
+                put("budgetId", JsonPrimitive(it.budgetId))
+                put("categoryId", JsonPrimitive(it.categoryId))
+                put("monthlyTargetPence", JsonPrimitive(it.monthlyTargetPence))
+                put("spentPence", JsonPrimitive(it.spentPence))
+                put("remainingPence", JsonPrimitive(it.remainingPence))
+                put("pct", JsonPrimitive(it.pct))
+                put("projectedEndOfMonthPence", JsonPrimitive(it.projectedEndOfMonthPence))
+            }
+        }),
+    )
 
     fun encodeEmergencyFund(ef: EmergencyFund): String = json.encodeToString(
         JsonObject.serializer(),

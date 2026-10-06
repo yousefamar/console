@@ -1,6 +1,7 @@
 package io.amar.console.data.money
 
 import io.amar.console.data.db.MoneyTxRow
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -154,11 +155,49 @@ class MoneyModelsTest {
         val cats = MoneyJson.parseCategories(body)
         assertEquals(listOf("cat_uncat"), cats.map { it.id })
         assertEquals("❓", cats[0].emoji)
+        assertTrue(cats[0].isSystem) // the add-budget picker hides these
         assertEquals(cats, MoneyJson.decodeCategories(MoneyJson.encodeCategories(cats)))
         val ef = MoneyJson.parseEmergencyFund(body)!!
         assertEquals(EmergencyFund("months", 6), ef)
         assertEquals(ef, MoneyJson.decodeEmergencyFund(MoneyJson.encodeEmergencyFund(ef)))
         assertEquals(EmergencyFund("fixed", null), MoneyJson.decodeEmergencyFund(MoneyJson.encodeEmergencyFund(EmergencyFund("fixed", null))))
+    }
+
+    @Test
+    fun `parseBudgets reads the finance-all payload and round-trips through the cache`() {
+        // Live shape: `/finance/all` carries budgets, so no extra request is made.
+        val all = """{"categories":[],"budgets":[
+            {"id":"bud_7a1c","categoryId":"cat_groceries","monthlyTargetPence":40000},
+            {"id":"bud_9f20","categoryId":"cat_eating_out","monthlyTargetPence":15000,"rollover":true,"notes":"treats"},
+            {"categoryId":"cat_broken","monthlyTargetPence":1}],
+            "settings":{}}"""
+        val budgets = MoneyJson.parseBudgetArray(MoneyJson.json.parseToJsonElement(all).jsonObject["budgets"])
+        assertEquals(listOf("bud_7a1c", "bud_9f20"), budgets.map { it.id }) // the id-less row is dropped
+        assertEquals(40000L, budgets[0].monthlyTargetPence)
+        assertNull(budgets[0].rollover)
+        assertEquals(true, budgets[1].rollover)
+        assertEquals("treats", budgets[1].notes)
+        assertEquals(budgets, MoneyJson.parseBudgets(MoneyJson.encodeBudgets(budgets)))
+        assertEquals(emptyList<Budget>(), MoneyJson.parseBudgets("not json"))
+    }
+
+    @Test
+    fun `parseBudgetStatus reads the computed month and round-trips`() {
+        val body = """[
+          {"budgetId":"bud_7a1c","categoryId":"cat_groceries","monthlyTargetPence":40000,"spentPence":21034,
+           "remainingPence":18966,"pct":0.52585,"projectedEndOfMonthPence":32550},
+          {"budgetId":"bud_9f20","categoryId":"cat_eating_out","monthlyTargetPence":15000,"spentPence":17250,
+           "remainingPence":-2250,"pct":1.15,"projectedEndOfMonthPence":26700}
+        ]"""
+        val rows = MoneyJson.parseBudgetStatus(body)
+        assertEquals(2, rows.size)
+        assertEquals(21034L, rows[0].spentPence)
+        assertEquals(18966L, rows[0].remainingPence)
+        assertEquals(0.52585, rows[0].pct, 1e-9)
+        assertEquals(32550L, rows[0].projectedEndOfMonthPence)
+        assertEquals(-2250L, rows[1].remainingPence)
+        assertEquals(rows, MoneyJson.parseBudgetStatus(MoneyJson.encodeBudgetStatus(rows)))
+        assertEquals(emptyList<BudgetStatus>(), MoneyJson.parseBudgetStatus("""{"not":"an array"}"""))
     }
 
     @Test

@@ -34,8 +34,11 @@ import kotlinx.coroutines.flow.StateFlow
  * pulled back over the row. Manual-account balance readings go the same way as
  * `money:balance` (`POST/PATCH/DELETE /finance/accounts/:id/balance`): only
  * Monzo auto-syncs, so every other account's balance IS its ledger and logging
- * one happens wherever he is. Budgets / scenarios / rules CRUD are still
- * SPA-only (BACKLOG Open follow-ups).
+ * one happens wherever he is. Per-category budgets ride `money:budget` the
+ * same way (POST / DELETE `/finance/budgets`, keyed by categoryId — see
+ * [MoneyBudgets]); their monthly actuals come from
+ * `/finance/budget-status?month=`. Scenarios / rules CRUD are still SPA-only
+ * (BACKLOG Open follow-ups).
  */
 class MoneyRepository(
     private val db: ConsoleDb,
@@ -46,9 +49,13 @@ class MoneyRepository(
         const val TX_LIMIT = 500
         const val TYPE_OVERRIDE = "money:override"
         const val TYPE_BALANCE = "money:balance"
+        const val TYPE_BUDGET = "money:budget"
         private const val META_OVERRIDES = "money:overrides"
         private const val META_ACCOUNTS = "money:accounts"
         private const val META_BALANCES = "money:balances"
+        private const val META_BUDGETS = "money:budgets"
+        private const val META_BUDGET_STATUS = "money:budgetStatus"
+        private const val META_BUDGET_MONTH = "money:budgetMonth"
         private const val META_RUNWAY = "money:runway"
         private const val META_NETWORTH = "money:networth"
         private const val META_CATEGORIES = "money:categories"
@@ -67,6 +74,12 @@ class MoneyRepository(
         val emergencyFund: EmergencyFund? = null,
         /** Per-transaction overrides by txId (`GET /finance/overrides`, optimistic on edit). */
         val overrides: Map<String, TxOverride> = emptyMap(),
+        /** Per-category monthly targets (`/finance/all` → budgets, optimistic on edit). */
+        val budgets: List<Budget> = emptyList(),
+        /** This month's actuals per budget (`/finance/budget-status?month=`). */
+        val budgetStatus: List<BudgetStatus> = emptyList(),
+        /** `YYYY-MM` the status rows describe. */
+        val budgetMonth: String? = null,
         val status: MoneyStatus? = null,
         /** Epoch ms of the last successful reconcile (persisted). */
         val lastReconcileAt: Long? = null,
@@ -77,6 +90,8 @@ class MoneyRepository(
         val hydrated: Boolean = false,
     ) {
         val categoriesById: Map<String, MoneyCategory> get() = categories.associateBy { it.id }
+
+        val budgetRows: List<MoneyBudgets.Row> get() = MoneyBudgets.rows(budgets, budgetStatus, categoriesById)
 
         /** Live accounts in display order, grouped the way the SPA's Net worth view does. */
         fun accountsByLiquidity(liquidity: String): List<Account> = accounts
@@ -111,10 +126,15 @@ class MoneyRepository(
         val ovs = meta.get(META_OVERRIDES)?.let { MoneyOverrides.parseOverrides(it) }
         val accs = meta.get(META_ACCOUNTS)?.let { MoneyJson.decodeAccounts(it) } ?: emptyList()
         val bals = meta.get(META_BALANCES)?.let { MoneyJson.decodeBalances(it) } ?: emptyMap()
+        val buds = meta.get(META_BUDGETS)?.let { MoneyJson.parseBudgets(it) }
+        val budStatus = meta.get(META_BUDGET_STATUS)?.let { MoneyJson.parseBudgetStatus(it) }
         _state.value = _state.value.copy(
             overrides = ovs ?: _state.value.overrides,
             accounts = if (accs.isNotEmpty()) accs else _state.value.accounts,
             balances = if (bals.isNotEmpty()) bals else _state.value.balances,
+            budgets = buds ?: _state.value.budgets,
+            budgetStatus = budStatus ?: _state.value.budgetStatus,
+            budgetMonth = meta.get(META_BUDGET_MONTH) ?: _state.value.budgetMonth,
             projection = projection ?: _state.value.projection,
             netWorthHistory = if (history.isNotEmpty()) history else _state.value.netWorthHistory,
             categories = if (cats.isNotEmpty()) cats else _state.value.categories,
@@ -146,6 +166,8 @@ class MoneyRepository(
             // Per-account balances; needs a live Monzo token, so a failure here
             // must not cost us the accounts list (the ledger fallback covers it).
             val balD = async { runCatching { hub.get("/finance/networth") } }
+            val month = MoneyBudgets.currentMonth()
+            val bsD = async { runCatching { hub.get("/finance/budget-status?month=$month") } }
 
             val txBody = txD.await().onFailure(::noteError).getOrNull()
             val classes = clsD.await().onFailure(::noteError).getOrNull()
@@ -187,6 +209,10 @@ class MoneyRepository(
                     emergencyFund = ef ?: _state.value.emergencyFund,
                 )
                 storeAccounts(withInFlightLedgers(MoneyJson.parseAccounts(body)))
+                // Budgets ride the same payload too (the SPA's fetchAll does the same).
+                val root = runCatching { MoneyJson.json.parseToJsonElement(body) }.getOrNull()
+                val budgetsEl = (root as? kotlinx.serialization.json.JsonObject)?.get("budgets")
+                if (budgetsEl != null) storeBudgets(withInFlightBudgets(MoneyJson.parseBudgetArray(budgetsEl)))
             }
             balD.await().getOrNull()?.let { body ->
                 val bals = MoneyJson.parseNetWorthBalances(body)
@@ -194,6 +220,12 @@ class MoneyRepository(
                     meta.put(MetaRow(META_BALANCES, MoneyJson.encodeBalances(bals)))
                     _state.value = _state.value.copy(balances = bals)
                 }
+            }
+            bsD.await().getOrNull()?.let { body ->
+                val rows = MoneyJson.parseBudgetStatus(body)
+                meta.put(MetaRow(META_BUDGET_STATUS, MoneyJson.encodeBudgetStatus(rows)))
+                meta.put(MetaRow(META_BUDGET_MONTH, month))
+                _state.value = _state.value.copy(budgetStatus = rows, budgetMonth = month)
             }
             ovD.await().getOrNull()?.let { body -> storeOverrides(withInFlight(MoneyOverrides.parseOverrides(body))) }
             statusD.await().getOrNull()?.let { body ->
@@ -264,6 +296,8 @@ class MoneyRepository(
         ob.register("$TYPE_OVERRIDE:onFailed") { row, _ -> healOverride(row) }
         ob.register(TYPE_BALANCE) { row, _ -> handleBalance(row) }
         ob.register("$TYPE_BALANCE:onFailed") { row, _ -> healBalance(row) }
+        ob.register(TYPE_BUDGET) { row, _ -> handleBudget(row) }
+        ob.register("$TYPE_BUDGET:onFailed") { row, _ -> healBudget(row) }
     }
 
     // ---------------------------------------------------------------- //
@@ -407,6 +441,108 @@ class MoneyRepository(
         val ovs = _state.value.overrides
         storeOverrides(if (a.beforeOverride == null) ovs - a.txId else ovs + (a.txId to a.beforeOverride))
         return Outbox.Result.Done
+    }
+
+    // ---------------------------------------------------------------- //
+    // Budgets
+
+    /** Categories of budgets whose write has not landed — a reconcile must not undo them. */
+    private suspend fun inFlightBudgets(): Set<String> =
+        if (outbox == null) emptySet() else db.outbox().inFlightEntityIds(TYPE_BUDGET).toSet()
+
+    /**
+     * [settled] is the category whose write just landed: the outbox row is
+     * still `processing` while its handler runs, so without this exclusion the
+     * post-write refresh keeps our own optimistic copy — and a create would sit
+     * under its `~` temp id until some later reconcile.
+     */
+    private suspend fun withInFlightBudgets(hubList: List<Budget>, settled: String? = null): List<Budget> =
+        MoneyBudgets.withInFlight(hubList, _state.value.budgets, inFlightBudgets() - setOfNotNull(settled))
+
+    private suspend fun storeBudgets(list: List<Budget>) {
+        db.meta().put(MetaRow(META_BUDGETS, MoneyJson.encodeBudgets(list)))
+        _state.value = _state.value.copy(budgets = list)
+    }
+
+    /**
+     * Create or retarget the budget for a category: the list changes now, the
+     * hub write rides the outbox, and [refreshAfterBudget] replaces the local
+     * row (temp id and all) with the hub's once it lands.
+     */
+    suspend fun upsertBudget(categoryId: String, monthlyTargetPence: Long, id: String? = null) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        val edit = MoneyBudgets.BudgetEdit.SetTarget(categoryId, monthlyTargetPence, id)
+        val before = _state.value.budgets.firstOrNull { b -> id?.let { b.id == it } ?: (b.categoryId == categoryId) }
+        val merged = MoneyBudgets.merged(before, edit)
+        storeBudgets(MoneyBudgets.optimisticUpsert(_state.value.budgets, merged))
+        ob.enqueue(
+            TYPE_BUDGET,
+            MoneyBudgets.encodeAction(
+                MoneyBudgets.Action(
+                    categoryId = categoryId,
+                    budgetId = merged.id,
+                    body = MoneyBudgets.requestBody(edit),
+                    before = before,
+                )
+            ),
+            entityId = categoryId,
+        )
+    }
+
+    /** Drop a budget (the target only — transactions and their categories are untouched). */
+    suspend fun deleteBudget(budget: Budget) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        storeBudgets(MoneyBudgets.optimisticDelete(_state.value.budgets, budget.id))
+        // A never-synced budget has no hub row to delete: dropping the queued
+        // create is the whole job (and a `~` id would 404 forever otherwise).
+        if (budget.isLocal) {
+            ob.cancel(budget.categoryId, TYPE_BUDGET)
+            return
+        }
+        ob.enqueue(
+            TYPE_BUDGET,
+            MoneyBudgets.encodeAction(
+                MoneyBudgets.Action(categoryId = budget.categoryId, budgetId = budget.id, body = null, before = budget)
+            ),
+            entityId = budget.categoryId,
+        )
+    }
+
+    private suspend fun handleBudget(row: OutboxRow): Outbox.Result {
+        val a = MoneyBudgets.decodeAction(row.payloadJson) ?: return Outbox.Result.Fail("bad payload")
+        return try {
+            if (a.body != null) hub.post("/finance/budgets", a.body)
+            else try {
+                hub.delete("/finance/budgets/${java.net.URLEncoder.encode(a.budgetId, "UTF-8")}")
+            } catch (e: HubClient.HttpException) {
+                if (e.code != 404) throw e // already gone = the delete we wanted
+            }
+            runCatching { refreshAfterBudget(a.categoryId) }
+            Outbox.Result.Done
+        } catch (e: HubClient.HttpException) {
+            if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+        } catch (e: Exception) {
+            Outbox.retryOrNotReady(e, "network")
+        }
+    }
+
+    /** Terminal failure: put back the record the edit replaced (or drop a failed create). */
+    private suspend fun healBudget(row: OutboxRow): Outbox.Result {
+        val a = MoneyBudgets.decodeAction(row.payloadJson) ?: return Outbox.Result.Done
+        storeBudgets(MoneyBudgets.healed(_state.value.budgets, a))
+        return Outbox.Result.Done
+    }
+
+    /** Pull the hub's budget list + this month's status back after a write. */
+    private suspend fun refreshAfterBudget(settled: String? = null) {
+        val month = MoneyBudgets.currentMonth()
+        runCatching { storeBudgets(withInFlightBudgets(MoneyJson.parseBudgets(hub.get("/finance/budgets")), settled)) }
+        runCatching {
+            val rows = MoneyJson.parseBudgetStatus(hub.get("/finance/budget-status?month=$month"))
+            db.meta().put(MetaRow(META_BUDGET_STATUS, MoneyJson.encodeBudgetStatus(rows)))
+            db.meta().put(MetaRow(META_BUDGET_MONTH, month))
+            _state.value = _state.value.copy(budgetStatus = rows, budgetMonth = month)
+        }
     }
 
     /** Pull the hub's re-derived classification (+ the override list and runway) after a write. */
