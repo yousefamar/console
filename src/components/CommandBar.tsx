@@ -10,6 +10,7 @@ import {
   Search, Bot, GitBranch, FileText, FolderKanban, Tag, Circle, Plus, Mail, MessageCircle, Rss, Bookmark,
   CalendarDays, LayoutDashboard, Inbox, MapPin, PoundSterling, Zap,
 } from 'lucide-react'
+import { BotCloud } from '@/components/icons/BotCloud'
 import { db } from '@/db'
 import { useUiStore, type ActivePane } from '@/store/ui'
 import { useSpacesStore, focusSessionInSpaces } from '@/store/spaces'
@@ -31,6 +32,7 @@ import { relativeTime, formatDate } from '@/utils/date'
 
 interface Entry extends Rankable {
   isFork?: boolean
+  remote?: boolean
   running?: boolean
   unread?: boolean
   pick: () => void
@@ -168,6 +170,7 @@ export function CommandBar() {
         kind: 'session',
         recency,
         isFork: !!s.parentClaudeSessionId || /\s\(fork\)$/.test(s.name || ''),
+        remote: s.placement === 'forge',
         running: s.status === 'running',
         unread: s.hasUnread,
         pick: () => { void focusSessionInSpaces(s.id) },
@@ -285,7 +288,7 @@ export function CommandBar() {
       case 'bookmark': return <Bookmark size={11} className={c} />
       case 'event': return <CalendarDays size={11} className={c} />
       case 'create': return <Plus size={11} className={c} />
-      case 'session': return e.isFork ? <GitBranch size={11} className="flex-shrink-0 text-violet-400/70" /> : <Bot size={11} className={c} />
+      case 'session': return e.remote ? <BotCloud size={11} className={c} /> : e.isFork ? <GitBranch size={11} className="flex-shrink-0 text-violet-400/70" /> : <Bot size={11} className={c} />
     }
   }
 

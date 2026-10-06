@@ -129,6 +129,9 @@ export interface SessionInfo {
   /** Idle subprocess reaped to reclaim memory — wakes transparently on the
    *  next message. Purely informational (moon glyph in the list). */
   hibernated?: boolean
+  /** Where the claude process runs. Absent = this machine; 'forge' = the AWS
+   *  box (bot-on-a-cloud glyph). */
+  placement?: 'local' | 'forge'
   /** Set when the session emitted `@amar` (wants Yousef's eyes). Sticky red
    *  marker in the sidebar; cleared on open / mark-read. */
   needsAttention?: { ts: number; snippet: string } | null

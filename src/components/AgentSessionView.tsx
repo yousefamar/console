@@ -15,6 +15,7 @@ import { shortCwd } from '@/utils/cwd'
 import { useIsMobile } from '@/hooks/useMediaQuery'
 import { useSwipeActions } from '@/hooks/useSwipeActions'
 import { Loader2, GitBranch, ChevronDown, Check, Pin, Folder } from 'lucide-react'
+import { BotCloud } from '@/components/icons/BotCloud'
 
 // ============================================================================
 // AgentSessionView — renders the message stream for the active session,
@@ -251,6 +252,12 @@ export function AgentSessionView() {
             <span className="text-[10px] text-text-tertiary flex-shrink min-w-0 truncate flex items-center gap-1" title={`cwd: ${activeSession.cwd}`}>
               <Folder size={10} className="flex-shrink-0" />
               <span className="truncate">{shortCwd(activeSession.cwd)}</span>
+            </span>
+          )}
+          {activeSession?.placement === 'forge' && (
+            <span className="text-[10px] text-text-tertiary flex-shrink-0 flex items-center gap-1" title="The claude process runs on forge (AWS); the cwd above is mirrored there">
+              <BotCloud size={10} className="flex-shrink-0" />
+              <span>forge</span>
             </span>
           )}
 
