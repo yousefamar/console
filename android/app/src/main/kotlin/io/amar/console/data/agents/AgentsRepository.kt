@@ -174,6 +174,16 @@ class AgentsRepository(
      *  (which has authoritative absolute indices) also delivers. */
     private val caughtUp = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
+    /** Sessions whose catch-up came back empty over a `truncated` window — the
+     *  hub holds none of the transcript it counts, so only disk can fill it
+     *  ([loadDiskHistory]). Cleared the moment the hub serves rows again. */
+    private val hubWindowEmpty = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** Sessions with a [loadDiskHistory] pull in flight — the transcript's
+     *  skeleton is shown against this while it has nothing else to draw. */
+    private val _historyLoading = MutableStateFlow<Set<String>>(emptySet())
+    val historyLoading: StateFlow<Set<String>> = _historyLoading
+
     /** Live-turn delta buffer per session. The hub streams `text_delta`
      *  chunks; the coalesced `text` goes only into its LOG (replay/REST), not
      *  the live wire — so without local coalescing a live reply never renders.
@@ -830,7 +840,15 @@ class AgentsRepository(
         var decided = false
         repeat(MAX_CATCHUP_PAGES) {
             val page = fetchMessages(sessionId, from) ?: return
-            if (page.messages.isEmpty()) return
+            if (page.messages.isEmpty()) {
+                // The hub gave nothing back for rows it says exist: its
+                // in-memory log is gone (a restart restored this session
+                // straight into hibernation, see [loadDiskHistory]). Only the
+                // JSONL on disk can fill the transcript now.
+                if (page.truncated) hubWindowEmpty.add(sessionId) else hubWindowEmpty.remove(sessionId)
+                return
+            }
+            hubWindowEmpty.remove(sessionId)
             if (!decided) {
                 decided = true
                 val gap = page.totalLength - since
@@ -1053,10 +1071,75 @@ class AgentsRepository(
     }
 
     fun reloadSessionHistory(sessionId: String) {
-        scope.launch { db.agents().clearMessages(sessionId) }
-        pendingText.remove(sessionId)
-        pendingRowIndex.remove(sessionId)
-        sendWs(buildJsonObject { put("type", "get_session_history"); put("sessionId", sessionId) })
+        scope.launch { loadDiskHistory(sessionId, force = true) }
+    }
+
+    /** Fill a session's transcript from the authoritative JSONL on disk (the
+     *  hub's `/agents/peek`), bounded to the same window Room keeps.
+     *
+     *  A hub restart restores every idle session straight into hibernation:
+     *  its in-memory log is EMPTY while `logOffset` jumps to the restored
+     *  high-water, so `GET …/messages` answers `{messages: [], truncated:
+     *  true}` and the catch-up has nothing to cache. Opening a dormant agent
+     *  therefore showed a blank transcript. The SPA never hits this because
+     *  selectSession pulls disk history whenever its transcript is empty —
+     *  this is that path, over REST and tail-bounded (a standing session's
+     *  JSONL runs to tens of MB, far too much to push at a phone).
+     *
+     *  Rows are numbered backwards from the hub's `messageLogLength` so the
+     *  slice lands at the TAIL of the hub's numbering: the next catch-up sees
+     *  no lag and live messages (which carry their own absIndex) append
+     *  contiguously. Numbering from 0 instead left the catch-up stacking the
+     *  hub's window on top, duplicating the newest rows under a phantom gap
+     *  seam.
+     *
+     *  Runs when nothing is cached, or when the catch-up proved the hub's
+     *  window is gone — in that case whatever IS cached is a stale slice
+     *  under a numbering nobody can extend, so it is replaced wholesale.
+     *  `force` is the explicit "Reload history" action. Nothing is dropped
+     *  unless a non-empty replacement arrived. */
+    suspend fun loadDiskHistory(sessionId: String, force: Boolean = false) {
+        val stale = sessionId in hubWindowEmpty
+        if (!force && !stale && db.agents().maxIndex(sessionId) != null) return
+        // The hub reads the whole JSONL to answer: 0.6 s warm but 2–6 s cold
+        // on a 54 MB transcript, which is long enough that an unmarked blank
+        // screen reads as the bug itself.
+        _historyLoading.value = _historyLoading.value + sessionId
+        try {
+            fillFromDisk(sessionId, force || stale)
+        } finally {
+            _historyLoading.value = _historyLoading.value - sessionId
+        }
+    }
+
+    private suspend fun fillFromDisk(sessionId: String, replace: Boolean) {
+        val resp = runCatching {
+            hub.get("/agents/peek?id=${java.net.URLEncoder.encode(sessionId, "UTF-8")}&n=$SESSION_CACHE_LIMIT")
+        }.getOrNull() ?: return
+        val obj = runCatching { json.parseToJsonElement(resp).jsonObject }.getOrNull() ?: return
+        val history = (obj["messages"] as? JsonArray)?.mapNotNull { it as? JsonObject } ?: return
+        if (history.isEmpty()) return
+        val logLen = db.agents().byId(sessionId)?.messageLogLength ?: 0L
+        val base = maxOf(logLen, history.size.toLong()) - history.size
+        val rows = history.mapIndexed { i, m ->
+            AgentMessageRow(
+                sessionId = sessionId,
+                absIndex = base + i,
+                kind = m["type"]?.jsonPrimitive?.content ?: "unknown",
+                payloadJson = m.toString(),
+            )
+        }
+        if (replace) {
+            db.agents().clearMessages(sessionId)
+            pendingText.remove(sessionId)
+            pendingRowIndex.remove(sessionId)
+            _exhaustedOlder.value = _exhaustedOlder.value - sessionId
+        }
+        db.agents().insertMessages(rows)
+        hubWindowEmpty.remove(sessionId)
+        db.agents().byId(sessionId)?.let {
+            db.agents().upsertSessions(listOf(it.copy(lastCachedIndex = maxOf(it.lastCachedIndex, base + rows.size - 1))))
+        }
     }
 
     fun forkSession(sessionId: String, cwd: String? = null) {

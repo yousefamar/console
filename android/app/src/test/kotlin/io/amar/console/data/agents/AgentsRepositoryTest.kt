@@ -49,6 +49,12 @@ class AgentsRepositoryTest {
     }
     private val logs = java.util.concurrent.ConcurrentHashMap<String, FakeLog>()
 
+    /** A session's on-disk JSONL as `GET /agents/peek` renders it: the whole
+     *  transcript, tail-sliced to `n`. Its count is its OWN numbering — the
+     *  hub's log counts event kinds the JSONL never holds. */
+    private val peeks = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+    private val peekRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
+
     private fun session(id: String, unread: Boolean = false, logLen: Long = 0) = AgentSessionRow(
         id = id, name = "S$id", status = "idle", hasUnread = unread, needsAttention = false,
         attentionSnippet = null, agentKey = null, modelLabel = null, hibernated = false,
@@ -68,7 +74,16 @@ class AgentsRepositoryTest {
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
-                val m = Regex("""^/hub/agents/sessions/([^/]+)/messages\?since=(\d+)&limit=(\d+)$""").find(request.path ?: "")
+                val path = request.path ?: ""
+                Regex("""^/hub/agents/peek\?id=([^&]+)&n=(\d+)$""").find(path)?.let { p ->
+                    val disk = peeks[p.groupValues[1]] ?: return MockResponse().setResponseCode(404)
+                    peekRequests.add(p.groupValues[1])
+                    val rows = disk.takeLast(p.groupValues[2].toInt())
+                        .map { """{"type":"text","content":"$it"}""" }
+                    return MockResponse().setHeader("Content-Type", "application/json")
+                        .setBody("""{"totalMessages":${disk.size},"messages":[${rows.joinToString(",")}]}""")
+                }
+                val m = Regex("""^/hub/agents/sessions/([^/]+)/messages\?since=(\d+)&limit=(\d+)$""").find(path)
                     ?: return MockResponse().setResponseCode(404)
                 val log = logs[m.groupValues[1]] ?: return MockResponse().setResponseCode(404)
                 return MockResponse().setHeader("Content-Type", "application/json")
@@ -282,6 +297,74 @@ class AgentsRepositoryTest {
         put("status", kotlinx.serialization.json.JsonPrimitive("idle"))
         put("messageLogLength", kotlinx.serialization.json.JsonPrimitive(logLen))
         put("lastReadIndex", kotlinx.serialization.json.JsonPrimitive(0))
+    }
+
+    // --- Dormant sessions (^lime-orca): a hub restart restores every idle
+    // session into hibernation with an EMPTY in-memory log, so there is
+    // nothing left to page and the transcript rendered blank on mobile ---
+
+    @Test
+    fun `a dormant session the hub can no longer page is filled from disk`() = runTest {
+        // Hub restart: logOffset jumped to the restored high-water (3270), so
+        // every `since` answers `{messages: [], truncated: true}`.
+        logs["s1"] = FakeLog(total = 3270, offset = 3270)
+        peeks["s1"] = (1..5960).map { "d$it" }
+
+        repo.applySessionsList(listOf(sessionInfo("s1", 3270)))
+        assertEquals(emptyList<Long>(), cachedIndices("s1")) // catch-up got nothing
+
+        repo.loadDiskHistory("s1")
+
+        // Tail-aligned to the hub's numbering: the newest 200 disk rows sit at
+        // [3070, 3270) so live messages append contiguously and no gap seam or
+        // duplicate tail appears when the session wakes.
+        assertEquals((3070L until 3270L).toList(), cachedIndices("s1"))
+        assertEquals(3269L, db.agents().byId("s1")!!.lastCachedIndex)
+        val newest = db.agents().observeRecent("s1", 1).first().single()
+        assertTrue(newest.payloadJson.contains("d5960"))
+    }
+
+    @Test
+    fun `the disk fill no-ops once anything is cached, and force re-pulls`() = runTest {
+        db.agents().upsertSessions(listOf(session("s1", logLen = 300)))
+        db.agents().insertMessages(listOf(AgentMessageRow(sessionId = "s1", absIndex = 299, kind = "text", payloadJson = "{}")))
+        peeks["s1"] = (1..10).map { "d$it" }
+
+        repo.loadDiskHistory("s1")
+        assertTrue(peekRequests.isEmpty())
+        assertEquals(listOf(299L), cachedIndices("s1"))
+
+        repo.loadDiskHistory("s1", force = true)
+
+        assertEquals(listOf("s1"), peekRequests)
+        assertEquals((290L until 300L).toList(), cachedIndices("s1")) // replaced, not merged
+    }
+
+    @Test
+    fun `a stale slice left behind by the restart is replaced, not merged`() = runTest {
+        // Phone holds a mid-transcript slice the hub can no longer extend.
+        db.agents().insertMessages((3000L until 3100L).map { AgentMessageRow(sessionId = "s1", absIndex = it, kind = "text", payloadJson = "{}") })
+        logs["s1"] = FakeLog(total = 3270, offset = 3270)
+        peeks["s1"] = (1..5960).map { "d$it" }
+
+        repo.applySessionsList(listOf(sessionInfo("s1", 3270)))
+        repo.loadDiskHistory("s1")
+
+        assertEquals((3070L until 3270L).toList(), cachedIndices("s1"))
+        // Re-opening the screen does not re-pull the transcript.
+        repo.loadDiskHistory("s1")
+        assertEquals(listOf("s1"), peekRequests)
+    }
+
+    @Test
+    fun `a session shorter than its disk transcript still numbers from zero`() = runTest {
+        // A fresh/short hub log must not push rows to a negative index.
+        db.agents().upsertSessions(listOf(session("s1", logLen = 2)))
+        peeks["s1"] = (1..6).map { "d$it" }
+
+        repo.loadDiskHistory("s1")
+
+        assertEquals((0L until 6L).toList(), cachedIndices("s1"))
     }
 
     @Test

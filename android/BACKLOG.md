@@ -41,6 +41,44 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **Opening a dormant agent showed a blank transcript** (^lime-orca, Yousef:
+  "when I open a dormant agent on mobile, none of the session chat loads").
+  Root cause is hub-side and invisible to the phone: a hub restart restores
+  every idle session straight into hibernation (`hibernateOnStart`), which
+  keeps `messageLogLength` honest by jumping `logOffset` to the restored
+  high-water while the in-memory log starts EMPTY. `GET
+  /agents/sessions/:id/messages` only ever serves that in-memory window, so
+  every `since` answers `{"messages":[],"truncated":true}` — the catch-up had
+  nothing to cache and the screen had nothing to draw. Verified live: Homelab
+  (dormant, `messageLogLength` 3270) returned zero rows, AL (alive) returned
+  its real tail. The SPA never hits this because `selectSession` pulls disk
+  history whenever its transcript is empty; the APK's equivalent was a literal
+  no-op (`if (repo.observeMessages(sessionId, 1).let { false }) Unit`).
+  - `AgentsRepository.loadDiskHistory()` (new): pulls the authoritative JSONL
+    through `GET /agents/peek?id=…&n=200` — REST and tail-bounded on purpose, a
+    standing session's JSONL runs to tens of MB (Homelab's is 54 MB / 5960
+    messages; the 200-row slice is 180 KB, and 200 is already both
+    `SESSION_CACHE_LIMIT` and PruneWorker's per-session cap).
+  - Rows are numbered BACKWARDS from the hub's `messageLogLength` so the slice
+    lands at the tail of the hub's numbering. Numbering them from 0 (what the
+    `session_history` WS handler does) makes the next catch-up stack the hub's
+    window on top — the newest rows render twice under a phantom gap seam.
+    That is also why "↻ Reload history" now goes through this same path.
+  - Trigger: the screen's `LaunchedEffect`, and only when nothing is cached or
+    when the catch-up proved the hub's window is gone (`hubWindowEmpty`, set
+    when a page comes back empty over a `truncated` window). A stale mid-
+    transcript slice under a numbering nobody can extend is replaced wholesale;
+    nothing is dropped unless a non-empty replacement arrived.
+  - One quiet skeleton while the pull is in flight: the hub reads the whole
+    JSONL to answer, measured at 0.6 s warm but 2–6 s cold on Homelab's, and
+    an unmarked blank screen for that long reads as the bug itself. Shown only
+    when there is nothing else to draw, and it is the only indicator.
+  - Not changed: the `session_history` WS handler (still reached by
+    `resume_session` pushes) and the hub itself. Serving rolled-off rows from
+    the REST endpoint would need the hub to reconcile two different numberings
+    — its log counts event kinds the JSONL never holds (3270 vs 5960 for the
+    same session) — so the client picking the right source is the cheap fix.
+
 - **Money: log a manual-account balance from the phone** (^loud-frog, BACKLOG
   Open "Money: editing parity" — the ledger half). Root cause of the gap: the
   Net worth section only ever rendered the hub's COMPUTED figures (the runway

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -249,10 +250,11 @@ fun AgentSessionScreen(
     val modelState by repo.modelState.collectAsState()
     val slashCommands by repo.slashCommands.collectAsState()
 
-    // Load history if empty.
-    LaunchedEffect(sessionId) {
-        if (repo.observeMessages(sessionId, 1).let { false }) Unit // no-op guard
-    }
+    // A dormant session restored by a hub restart has no hub-side log left to
+    // page, so the catch-up cached nothing — pull its transcript off disk.
+    // No-ops when anything is already cached.
+    val historyLoading by repo.historyLoading.collectAsState()
+    LaunchedEffect(sessionId) { repo.loadDiskHistory(sessionId) }
 
     val listState = rememberLazyListState()
     var hasOlder by remember(sessionId) { mutableStateOf(false) }
@@ -393,6 +395,10 @@ fun AgentSessionScreen(
                 .minByOrNull { it.msg.absIndex }?.msg?.absIndex else null
         }
         Box(Modifier.weight(1f).fillMaxWidth()) {
+            // Nothing cached and a disk pull in flight — the hub reads a whole
+            // JSONL to answer, seconds on a big one. The skeleton is the only
+            // indicator; the list below it is empty anyway.
+            if (paired.isEmpty() && sessionId in historyLoading) TranscriptSkeleton()
             LazyColumn(
                 Modifier.fillMaxSize(),
                 state = listState,
@@ -614,6 +620,20 @@ private fun GapSeam(missing: Long, exhausted: Boolean, onLoad: () -> Unit) {
             }
         }
         Box(Modifier.weight(1f).size(1.dp).background(muted.copy(alpha = 0.4f)))
+    }
+}
+
+/** Half-strength stand-in shaped like the transcript it is waiting for. */
+@Composable
+private fun TranscriptSkeleton() {
+    val bar = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.12f)
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        for (w in listOf(0.55f, 0.92f, 0.84f, 0.38f, 0.88f, 0.61f, 0.3f)) {
+            Box(Modifier.fillMaxWidth(w).height(10.dp).clip(RoundedCornerShape(3.dp)).background(bar))
+        }
     }
 }
 
