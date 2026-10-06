@@ -10,13 +10,14 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
 (`android/CLAUDE.md` → "nightly parity sweep") or by SPA forks as they ship.
 
-- Money: editing parity — the read-only pane shipped (^quick-gull) and the
-  per-transaction override landed (^warm-wren); still SPA-only: Budgets
-  (`/finance/budgets` + `/finance/budget-status`), Scenarios
-  (`/finance/scenarios`, comparison chart), Categories + rules CRUD,
-  manual-account balance ledger entries (`POST /finance/accounts/:id/balance`),
-  monthly spend chart (`/finance/monthly`), shared-tab panel. Plan: a Budgets
-  section under Runway next; scenarios and the ledger editor last.
+- Money: editing parity — the read-only pane shipped (^quick-gull), the
+  per-transaction override landed (^warm-wren) and the manual-account balance
+  ledger landed (^loud-frog); still SPA-only: Budgets (`/finance/budgets` +
+  `/finance/budget-status`), Scenarios (`/finance/scenarios`, comparison chart),
+  Categories + rules CRUD, account CRUD itself (create / rename / liquidity /
+  archive — `POST/PATCH/DELETE /finance/accounts`; the phone logs readings on
+  the accounts the desktop defined), monthly spend chart (`/finance/monthly`),
+  shared-tab panel. Plan: a Budgets section under Runway next; scenarios last.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
@@ -39,6 +40,58 @@ view (the phone's Board > Agents > Docs landing is deliberate) · Notes tabs /
 view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
+
+- **Money: log a manual-account balance from the phone** (^loud-frog, BACKLOG
+  Open "Money: editing parity" — the ledger half). Root cause of the gap: the
+  Net worth section only ever rendered the hub's COMPUTED figures (the runway
+  tiles + the 12-month history chart), so the accounts themselves were never on
+  screen. Only Monzo auto-syncs; every other account (Lloyds, Revolut, the ISAs
+  and GIAs) is a `manual` account whose balance IS a ledger of dated readings
+  Yousef is meant to log "whenever you check" — which happens on the phone, and
+  the phone was the one surface that could not do it.
+  - `data/money/MoneyModels.kt`: `Account` + `BalanceEntry` with parsers off
+    `/finance/all` → `accounts` (no extra request — that payload already
+    carried them), `/finance/networth` → `byAccount` for the per-account
+    balance, and encoders for the `meta` cache so the list opens offline.
+  - `data/money/MoneyLedger.kt` (new, pure): the request shapes, the optimistic
+    ledger and the pounds field. Two hub details it encodes rather than
+    rediscovers — a PATCH is a server-side merge, so an edit that CLEARED the
+    note must send `"note": ""` (omitting it keeps the old note), and the store
+    re-sorts a ledger by date on every write, so the optimistic copy sorts too
+    or a back-dated reading jumps on the next sync.
+  - `MoneyRepository`: accounts + balances in `State`, and
+    `applyBalanceEdit(accountId, LedgerEdit)` through the outbox as
+    `money:balance` (the `money:override` / ^warm-wren precedent) — optimistic
+    ledger write carrying `beforeLedger`, `:onFailed` heals it back, DELETE 404
+    = Done, transport-down = NotReady. The ledger IS the net-worth input, so a
+    landed write refetches the accounts, the history, `byAccount` and the
+    runway.
+  - The in-flight guard needed one more turn of the screw than ^warm-wren's: the
+    row whose handler is running is still `processing`, so laying every queued
+    ledger back over the hub's reply left the local entry (and its `local_…` id)
+    on screen until the next reconcile. `withInFlightLedgers(.., settled =)`
+    drops the overlay for the account that just landed, but only when no LATER
+    edit to it is still pending. Caught by the test, not by reading.
+  - `ui/money/MoneyScreen.kt`: an accounts list under the chart, grouped
+    liquid / investments / illiquid like the SPA (archived dropped, `sort` then
+    name). A manual row expands to its readings, newest first, with "Log
+    balance" → a bottom sheet (date defaults to today via the Calendar form's
+    native picker, balance in pounds, optional note); tap or long-press a
+    reading to edit it, with Delete in the same sheet. An unsynced reading shows
+    an amber `syncing…`. Monzo rows render the live balance and do not expand.
+    One open ledger at a time, `rememberSaveable` so a tx sheet or a trip to
+    another route does not collapse it; the sheet's writes run on the screen's
+    scope, never the sheet's (it leaves composition on dismiss).
+  - Tests: `MoneyLedgerTest` (16 — pounds parsing incl. `£1,500.50` and
+    overdrafts, request bodies, optimistic add/edit/delete + re-sort, heal,
+    payload round-trip), `MoneyAccountsTest` (7 — account/ledger parsing,
+    `byAccount`, cache round-trip, the grouping + balance-fallback helpers),
+    `MoneyRepositoryBalanceTest` (8 — the write path end to end over a scripted
+    hub, 404-delete, the 4xx heal, reconcile-while-queued, offline cache
+    restore). Full suite 830 tests green.
+  - Not built here: account CRUD (create / rename / archive) stays SPA-only —
+    filed under the Open entry. No emulator or KVM on this box, so the UI is
+    unscreenshotted; it wants a look on the phone after the release.
 
 - Board: the blocked-card filter is now PER COLUMN, matching the SPA (^cool-crow
   35982e53, Yousef 5 Oct: "I need that per-column, not global please"). The
