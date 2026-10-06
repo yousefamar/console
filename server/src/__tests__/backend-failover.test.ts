@@ -246,3 +246,78 @@ describe('per-model windows step down on the subscription (Yousef 3 Oct: Fable o
     } finally { rmSync(m.dir, { recursive: true, force: true }) }
   })
 })
+
+describe('out of credits is a MODEL problem, not a plan one (2026-10-06)', () => {
+  function creditHarness(opts: { active?: string; chain?: string[] } = {}) {
+    const dir = mkdtempSync(join(tmpdir(), 'failover-credits-'))
+    const path = join(dir, 'f.json')
+    const now = { t: T0 }
+    const switches: AuthBackend[] = []
+    const chain = opts.chain ?? ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5']
+    const st = { model: opts.active ?? chain[0]! }
+    const logs: string[] = []
+    const make = () => new BackendFailover(path, {
+      switchTo: (b) => { switches.push(b) },
+      activeBackend: () => 'first_party',
+      log: (m) => logs.push(m),
+      now: () => now.t,
+      activeModel: () => st.model,
+      stepDownFrom: (family) => {
+        if (!st.model.toLowerCase().includes(family)) return null
+        const to = chain.find((m) => !m.toLowerCase().includes(family))
+        if (!to) return null
+        const from = st.model; st.model = to
+        return { from, to }
+      },
+      restoreModel: (model, steppedTo) => { if (st.model === steppedTo) st.model = model },
+    })
+    return { dir, now, switches, st, logs, make }
+  }
+
+  it('steps the fleet off the metered model instead of spilling to Bedrock', () => {
+    const h = creditHarness()
+    try {
+      const f = h.make()
+      f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 3600, rateLimitType: 'seven_day_overage_included' }, 'Gray deer (fork)')
+      expect(h.switches).toEqual([])                       // the whole point: no spill
+      expect(h.st.model).toBe('claude-opus-5-5')           // stepped past Fable, still on Max
+      expect(f.getState().active).toBeNull()
+      expect(f.getState().modelHold).toMatchObject({ family: 'fable', to: 'claude-opus-5-5' })
+    } finally { rmSync(h.dir, { recursive: true, force: true }) }
+  })
+
+  it('a PINNED session hitting its own credit wall never moves the fleet', () => {
+    // hub model is flat-rate; some fork pinned to Fable tripped the limit
+    const h = creditHarness({ active: 'claude-opus-5-5' })
+    try {
+      const f = h.make()
+      f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 3600, rateLimitType: 'overage' }, 'Prim hare (fork)')
+      expect(h.switches).toEqual([])
+      expect(h.st.model).toBe('claude-opus-5-5')
+      expect(f.getState().active).toBeNull()
+      expect(h.logs.some((l) => l.includes('NOT spilling'))).toBe(true)
+    } finally { rmSync(h.dir, { recursive: true, force: true }) }
+  })
+
+  it('spills only when the subscription has nothing left to step to', () => {
+    const h = creditHarness({ chain: ['claude-fable-5-1'] })
+    try {
+      const f = h.make()
+      f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 3600, rateLimitType: 'seven_day_overage_included' }, 'x')
+      expect(h.switches).toEqual(['bedrock'])
+      expect(f.getState().active).not.toBeNull()
+    } finally { rmSync(h.dir, { recursive: true, force: true }) }
+  })
+
+  it('isOutOfCredits/modelFamilyToken: metered is an explicit list, not a guess', async () => {
+    const { isOutOfCredits, modelFamilyToken } = await import('../backend-failover.js')
+    expect(isOutOfCredits('overage')).toBe(true)
+    expect(isOutOfCredits('seven_day_overage_included')).toBe(true)
+    expect(isOutOfCredits('five_hour')).toBe(false)
+    expect(isOutOfCredits('seven_day')).toBe(false)
+    expect(modelFamilyToken('claude-fable-5-1')).toBe('fable')
+    expect(modelFamilyToken('us.anthropic.claude-fable-5')).toBe('fable')
+    expect(modelFamilyToken('claude-opus-5-5')).toBeNull()
+    expect(modelFamilyToken('claude-haiku-4-5-20251001')).toBeNull()
+  })
+})

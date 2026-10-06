@@ -914,6 +914,7 @@ const backendFailover = new BackendFailover(join(feedsConfigDir, 'backend-failov
     restartAllSessionsForModel(agentCtx)
     return { from, to }
   },
+  activeModel: () => agentCtx.modelConfig.getModel(),
   restoreModel: (model, steppedTo) => {
     if (agentCtx.modelConfig.getModel() !== steppedTo) return // a human picked something else meanwhile
     agentCtx.modelConfig.setModel(model)

@@ -100,6 +100,9 @@ export interface FailoverDeps {
   /** Put the hub model back to `model` — only if it is still `steppedTo`
    *  (a human may have picked something else meanwhile). */
   restoreModel?: (model: string, steppedTo: string, reason: string) => void
+  /** The model the fleet is currently spawning with, so an out-of-credits
+   *  rejection can tell "the hub model is metered" from "a pinned session is". */
+  activeModel?: () => string
 }
 
 /** `seven_day_<family>` is a per-model window; the plan-wide ones are
@@ -109,6 +112,27 @@ export function modelFamilyOf(rateLimitType: string | undefined): string | null 
   const m = /^seven_day_([a-z0-9]+)$/.exec(rateLimitType)
   if (!m || m[1] === 'overage_included') return null
   return m[1]!
+}
+
+/** Which credit-metered family a model id belongs to, or null when it is a
+ *  flat-rate model. Only Fable is metered on a Max plan today (2026-10);
+ *  keep this list explicit rather than guessing from the id, so a new model
+ *  defaults to "flat rate, do not step past it". */
+const METERED_FAMILIES = ['fable'] as const
+export function modelFamilyToken(model: string): string | null {
+  const m = model.toLowerCase()
+  return METERED_FAMILIES.find((f) => m.includes(f)) ?? null
+}
+
+/** An out-of-CREDITS rejection (`overage`, `seven_day_overage_included`) is a
+ *  MODEL problem wearing a plan-shaped label: a credit-metered model (Fable on
+ *  a Max plan) has spent its own allowance while every flat-rate model on the
+ *  same subscription still answers. Treating it as plan exhaustion spilled the
+ *  whole fleet to pay-per-token Bedrock for five days on 2026-10-06 while
+ *  probes showed opus-5-5 and haiku fine — so step the hub model past the
+ *  metered one and only spill if nothing on the subscription works. */
+export function isOutOfCredits(rateLimitType: string | undefined): boolean {
+  return rateLimitType === 'overage' || rateLimitType === 'seven_day_overage_included'
 }
 
 /** `resetsAt` arrives in epoch seconds from the CLI; be tolerant of ms too. */
@@ -181,6 +205,22 @@ export class BackendFailover {
       this.onModelLimit(family, info.rateLimitType!, resetsAt, returnAt, now, from)
       return
     }
+    // Out of credits for the ACTIVE model: step past it on this subscription.
+    // `stepDownFrom` returns null when the hub model is not the metered one —
+    // i.e. a session PINNED to it tripped this, and one pinned session must
+    // never move the whole fleet onto pay-per-token. Only a step that finds
+    // nothing left falls through to the spill below.
+    if (isOutOfCredits(info.rateLimitType) && this.deps.stepDownFrom) {
+      const active = this.deps.activeModel?.()
+      const metered = active ? modelFamilyToken(active) : null
+      if (metered) {
+        const stepped = this.onModelLimit(metered, info.rateLimitType!, resetsAt, returnAt, now, from)
+        if (stepped) return
+      } else {
+        this.deps.log(`[failover] ${info.rateLimitType} hit by ${from ?? 'a session'} but the hub model is not metered — a pinned session; NOT spilling the fleet`)
+        return
+      }
+    }
     const ep = this.state.active
     if (ep) {
       // Already spilled (e.g. the 5 h window tripped, now the weekly one) —
@@ -208,11 +248,11 @@ export class BackendFailover {
 
   /** A per-model window is exhausted: stay on the subscription, step the hub
    *  model down past that family, and step back up when it resets. */
-  private onModelLimit(family: string, rateLimitType: string, resetsAt: number | null, returnAt: number, now: number, from?: string): void {
+  private onModelLimit(family: string, rateLimitType: string, resetsAt: number | null, returnAt: number, now: number, from?: string): boolean {
     const held = this.state.modelHold
     if (held && held.family === family) {
       if (returnAt > held.returnAt) { held.returnAt = returnAt; held.resetsAt = resetsAt; this.armModel(returnAt); this.save() }
-      return
+      return true
     }
     const why = `${rateLimitType} limit hit by ${from ?? 'a session'}`
     const step = this.deps.stepDownFrom!(family, why)
@@ -222,13 +262,14 @@ export class BackendFailover {
     if (!step) {
       this.deps.log(`[failover] ${why} — the hub model is not ${family} (a pinned session?); nothing stepped down`)
       this.save()
-      return
+      return false
     }
     this.state.modelHold = hold
     this.armModel(returnAt)
     this.save()
     this.deps.log(`[failover] ${why} — stepped down ${step.from} → ${step.to} on the same subscription until ${new Date(returnAt).toISOString()}`)
     this.deps.emit?.('console.backend.model_stepdown', { family, from: step.from, to: step.to, rateLimitType, resetsAt, returnAt, trippedBy: from ?? null }, `stepdown:${now}`)
+    return true
   }
 
   private restoreModelHold(reason: string): void {

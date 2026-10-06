@@ -67,11 +67,19 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     // below is in the CLI's own model catalog (2.1.280); none is spawn-
     // verified against the Max account yet (its OAuth was expired when this
     // was written) — a 400 auto-advances the chain.
-    // Fable leads on the subscription only (Yousef, 3 Oct 2026: Fable is the
-    // default on Max, never off it — the Bedrock chain below keeps Opus first).
-    // Spawn-verified on Max 3 Oct. A Fable-only window steps down to Opus on
-    // Max (backend-failover.ts modelFamilyOf), never to Bedrock.
-    chain: ['claude-fable-5-1', 'claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    // 3–6 Oct 2026, the round trip that proves the paragraph above: Fable was
+    // put at the head on Yousef's "Fable is the default on Max" (cfbdc7b6) and
+    // the plan's Fable credits were spent within three days. The rejection
+    // arrives as `seven_day_overage_included` ("You're out of usage credits.
+    // Switch to another model…"), which the failover read as a PLAN-wide
+    // exhaustion and spilled the whole fleet to pay-per-token Bedrock for five
+    // days — while probes showed opus-5-5 and haiku answering on Max the whole
+    // time. Worse, `applyBackendSwitch` reseeds the chain FROM THIS PRESET, so
+    // hand-fixing the live chain then switching back to Max put Fable straight
+    // back and re-tripped in 3 s. Hence: the preset is the fix, and Fable stays
+    // out until credits are bought deliberately (`con agent model pin` per
+    // session if a card warrants it).
+    chain: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
   },
   bedrock: {
     id: 'bedrock',

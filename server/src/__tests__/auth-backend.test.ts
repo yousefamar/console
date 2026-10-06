@@ -125,9 +125,13 @@ describe('BACKEND_PRESETS chains', () => {
     }
   })
 
-  it('Fable is the default on Max only; Bedrock (the paid backup) defaults to Opus', () => {
-    expect(BACKEND_PRESETS.first_party.chain[0]).toBe('claude-fable-5-1')
-    expect(BACKEND_PRESETS.first_party.chain[1]).toContain('opus-5')
+  it('no credit-metered model leads either chain — Fable spent the plan credits in 3 days (2026-10-06)', () => {
+    // Fable is metered on a subscription: once its allowance is gone the
+    // rejection reads as plan exhaustion and the fleet spills to pay-per-token.
+    // `applyBackendSwitch` reseeds the live chain FROM this preset, so the
+    // preset is the only durable place to keep it out.
+    expect(BACKEND_PRESETS.first_party.chain[0]).toBe('claude-opus-5-5')
+    expect(BACKEND_PRESETS.first_party.chain.some((m) => m.includes('fable'))).toBe(false)
     expect(BACKEND_PRESETS.bedrock.chain[0]).toContain('opus-5')
     expect(BACKEND_PRESETS.bedrock.chain[0]).not.toContain('fable')
   })
