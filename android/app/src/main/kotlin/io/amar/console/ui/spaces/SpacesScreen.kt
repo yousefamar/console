@@ -778,10 +778,6 @@ fun SpaceDetailScreen(
                     Text(label, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp))
                 }
             }
-            if (tab == "board") {
-                Spacer(Modifier.weight(1f))
-                HideBlockedChip(spacesRepo)
-            }
         }
         when (tab) {
             "newboard" -> {
@@ -803,40 +799,38 @@ fun SpaceDetailScreen(
 // Board — horizontally paged columns, Done hidden (stays in file)
 // ------------------------------------------------------------------------- //
 
-/** SPA `HideBlockedToggle` (^gold-ant): one hub pref for every board, shown
- *  only while the open board has a blocked card outside Done — with none there
- *  is nothing to hide, and a pref left on stays effective silently. */
+/** SPA `ColumnBlockedToggle` (^cool-crow): ONE chip per column header, shown
+ *  only while THAT column has a blocked card — with none there is nothing to
+ *  hide, and a key left on stays effective silently until the next card there
+ *  blocks. The pref is a column-title → bool map, so a column name behaves the
+ *  same on every board (Yousef 5 Oct: "I need that per-column, not global"). */
 @Composable
-private fun HideBlockedChip(spacesRepo: SpacesRepository) {
-    val board by spacesRepo.board.collectAsState()
-    // Collect prefs so the chip re-renders on toggle; value read via HubPrefs.
-    val prefs by HubPrefs.prefs.collectAsState()
-    val hideBlocked = HubPrefs.bool(BoardFilters.HIDE_BLOCKED_PREF)
-    val count = board?.let { BoardFilters.blockedCount(it) } ?: 0
+private fun ColumnBlockedChip(spacesRepo: SpacesRepository, column: String, count: Int, hide: Boolean) {
     if (count == 0) return
     val scope = rememberCoroutineScope()
     val plural = if (count == 1) "" else "s"
     Surface(
-        onClick = { scope.launch { spacesRepo.setHideBlocked(!hideBlocked) } },
-        shape = RoundedCornerShape(6.dp),
-        color = if (hideBlocked) Color.Transparent else MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+        onClick = { scope.launch { spacesRepo.setHideBlocked(column, !hide) } },
+        shape = RoundedCornerShape(5.dp),
+        color = if (hide) Color.Transparent else MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
         modifier = Modifier.semantics {
-            contentDescription = if (hideBlocked) "Show $count blocked card$plural" else "Hide $count blocked card$plural"
+            contentDescription =
+                if (hide) "Show $count blocked card$plural in $column" else "Hide $count blocked card$plural in $column"
         },
     ) {
         Row(
-            Modifier.padding(horizontal = 6.dp, vertical = 5.dp),
+            Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-            val tint = if (hideBlocked) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
+            val tint = if (hide) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error
             Icon(
-                if (hideBlocked) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                contentDescription = null, tint = tint, modifier = Modifier.size(12.dp),
+                if (hide) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                contentDescription = null, tint = tint, modifier = Modifier.size(11.dp),
             )
             Text(
-                BoardFilters.chipLabel(count, hideBlocked),
-                style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1,
+                BoardFilters.chipLabel(count),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = tint, maxLines = 1,
             )
         }
     }
@@ -881,11 +875,18 @@ private fun BoardView(
     }
     fun cardVisible(c: SpacesRepository.CardView): Boolean =
         rootFilter == null || rootOf(c.agentKey, allSessions) == rootFilter
-    // spaces.hideBlocked (hub pref, ^gold-ant) — the chip lives in the tab row
-    // above; the filter applies here. Blocked cards stay reachable through the
-    // Inbox's blocked strip regardless.
+    // spaces.hideBlockedColumns (hub pref, ^cool-crow) — a column-title → bool
+    // map; each column header carries its own chip and this filters that
+    // column alone. Blocked cards stay reachable through the Inbox's blocked
+    // strip regardless.
     val prefs by HubPrefs.prefs.collectAsState()
-    val hideBlocked = HubPrefs.bool(BoardFilters.HIDE_BLOCKED_PREF)
+    val hiddenBlocked = BoardFilters.hiddenColumns(prefs)
+    // One-shot carry-over off the retired board-wide boolean (^gold-ant →
+    // ^cool-crow): a leftover `true` seeds every column this board shows, so
+    // the phone keeps hiding what it was hiding. No-op once the map exists.
+    LaunchedEffect(board.path, prefs) {
+        spacesRepo.migrateHideBlocked(visibleCols.map { it.title })
+    }
     val spacesList by spacesRepo.spaces.collectAsState()
     val queuedCount = spacesList.firstOrNull { it.slug == slug && it.kind == kind }?.queuedCount ?: 0
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -966,13 +967,14 @@ private fun BoardView(
                                     .padding(horizontal = 5.dp, vertical = 1.dp),
                             )
                         }
+                        ColumnBlockedChip(spacesRepo, col.title, BoardFilters.blockedCount(col), col.title in hiddenBlocked)
                         Spacer(Modifier.weight(1f))
                         Text("${col.cards.size}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         IconButton(onClick = { addToColumn = col.title }, modifier = Modifier.size(26.dp)) {
                             Icon(Icons.Filled.Add, "Add card", modifier = Modifier.size(16.dp))
                         }
                     }
-                    val shown = BoardFilters.visibleCards(col, hideBlocked).filter { cardVisible(it) }
+                    val shown = BoardFilters.visibleCards(col, hiddenBlocked).filter { cardVisible(it) }
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
                         // No swipe-to-Done here: the pager scrolls horizontally too, so a
                         // pan to reach the next column kept approving cards (^rare-tern).

@@ -17,19 +17,6 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
   manual-account balance ledger entries (`POST /finance/accounts/:id/balance`),
   monthly spend chart (`/finance/monthly`), shared-tab panel. Plan: a Budgets
   section under Runway next; scenarios and the ledger editor last.
-- Board: the blocked-card filter is PER COLUMN on the SPA now (^cool-crow
-  35982e53, Yousef 5 Oct: "I need that per-column, not global please"). The
-  chip moved into each column header and the pref became
-  `spaces.hideBlockedColumns`, a column-title → bool map (hub-synced, keyed by
-  title so the same column name behaves the same on every board). The phone
-  still reads the old boolean `spaces.hideBlocked` (`BoardFilters.HIDE_BLOCKED_PREF`,
-  `SpacesScreen.kt` ~l.814, `SpacesRepository.setHideBlocked`), so its toggle is
-  now phone-only and global — the desktop no longer writes that key. Plan:
-  `BoardFilters` takes the map (`visibleCards(column, hidden: Set<String>)`,
-  `blockedCount` unchanged), the chip renders in the column header like the SPA,
-  `setHideBlocked(column, bool)` patches one key of the map; migrate a leftover
-  `true` on the old boolean into every column title on first read, then stop
-  writing it. `BoardFiltersTest` covers the map + migration.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
@@ -52,6 +39,29 @@ view (the phone's Board > Agents > Docs landing is deliberate) · Notes tabs /
 view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
+
+- Board: the blocked-card filter is now PER COLUMN, matching the SPA (^cool-crow
+  35982e53, Yousef 5 Oct: "I need that per-column, not global please"). The
+  phone had kept the retired board-wide boolean `spaces.hideBlocked`, which the
+  desktop no longer writes — so its one chip in the tab row hid blocked cards in
+  EVERY column, and the choice never reached the desktop (phone-only, global).
+  Root cause is the pref's SHAPE, not the UI: `spaces.hideBlockedColumns` is a
+  column-title → bool map (keyed by title, so a column name behaves the same on
+  every board), and `BoardFilters` modelled a single boolean.
+  `BoardFilters` now takes the map (`hiddenColumns(prefs)`, `visibleCards(col,
+  hidden: Set<String>)`, a per-column `blockedCount(col)` beside the board-wide
+  one, `withColumn` for the read-modify-write the hub's shallow `/config` merge
+  forces, `chipLabel(count)` without the "hidden" suffix — the eye glyph and the
+  red tint carry that, as on the SPA) and reads the pref object the screen
+  already collects, so no new `HubPrefs` accessor was needed;
+  `SpacesRepository.setHideBlocked(column, hide)` patches one key.
+  `ColumnBlockedChip` replaces `HideBlockedChip` and renders in each column
+  header beside the `queued (N)` chip, only while that column has a blocked
+  card. Migration: a leftover `true` on the old boolean seeds every column the
+  open board shows, in one PUT that also sets the old key `false` — `/config`
+  cannot delete a key, so retiring it that way is what keeps the migration
+  one-shot. 12 `BoardFiltersTest` cases cover the map, the flip, the migration
+  and its no-ops, and `count == 0` hiding the chip.
 
 ## Shipped
 

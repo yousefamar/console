@@ -312,10 +312,20 @@ class SpacesRepository(
     suspend fun setBlocked(project: String, card: CardView, blocked: Boolean, note: String? = null): Boolean =
         setBlockedByQuery(project, cardAddress(card), blocked, note)
 
-    /** Hub-synced `spaces.hideBlocked` (one pref for every board, follows the
-     *  user across devices — the SPA's HideBlockedToggle, ^gold-ant). */
-    suspend fun setHideBlocked(hide: Boolean) =
-        HubPrefs.setPref(hub, BoardFilters.HIDE_BLOCKED_PREF, JsonPrimitive(hide))
+    /** Hub-synced `spaces.hideBlockedColumns` (column-title → bool, follows the
+     *  user across devices — the SPA's ColumnBlockedToggle, ^cool-crow). The hub
+     *  merges `/config` shallowly, so one column's flip is a read-modify-write
+     *  of the whole map. */
+    suspend fun setHideBlocked(column: String, hide: Boolean) =
+        HubPrefs.setPref(hub, BoardFilters.HIDE_BLOCKED_PREF, BoardFilters.withColumn(HubPrefs.prefs.value, column, hide))
+
+    /** Carry a leftover `true` on the retired boolean `spaces.hideBlocked` into
+     *  the per-column map once (every current column title), then retire the
+     *  old key. No-op once the map exists or the boolean is off. */
+    suspend fun migrateHideBlocked(columnTitles: List<String>) {
+        val patch = BoardFilters.legacyMigration(HubPrefs.prefs.value, columnTitles) ?: return
+        HubPrefs.setPrefs(hub, patch)
+    }
 
     /** Block/unblock by address (`^id` or unique text) — for cards known only
      *  from `blockedCards` (the Inbox's Unblock strip, ^mild-ibis). Unblocking
