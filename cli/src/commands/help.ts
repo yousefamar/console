@@ -629,7 +629,8 @@ Commands:
   list          List agent sessions
   create        Create a new session
   send          Send a message to a session
-  resume        Resume a past session
+  resume        Resume a past session [--name --agent-key --project --parent --cwd]
+  rename        Rename a session (re-links a bare fork to its card by name)
   kill          Kill a session
   interrupt     Interrupt a session
   approve       Approve tool use

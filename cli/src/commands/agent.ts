@@ -8,6 +8,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'create': return agentCreate(args, flags)
     case 'send': return agentSend(args, flags)
     case 'resume': return agentResume(args, flags)
+    case 'rename': return agentRename(args, flags)
     case 'kill': return agentKill(args, flags)
     case 'reload': return agentReload(args, flags)
     case 'interrupt': return agentInterrupt(args, flags)
@@ -439,6 +440,26 @@ async function agentResume(args: string[], flags: GlobalFlags): Promise<void> {
     (msg: any) => msg.type === 'session_created' || msg.type === 'session_init',
   )
   output(result, flags)
+}
+
+// A board card finds its fork by agentKey OR by name (sessionCarriesBlockId),
+// so renaming a session to `forkTitle(<block-id>)` is enough to re-link one that
+// lost its identity — no restart, unlike agentKey which is only set at spawn.
+async function agentRename(args: string[], flags: GlobalFlags): Promise<void> {
+  const target = args[0]
+  const name = args.slice(1).join(' ').trim()
+  if (!target || !name) exitWithError('USAGE', 'Usage: con agent rename <session-id|claudeSessionId|name|agentKey> <new name>', flags)
+
+  const { id: sessionId } = await resolveSessionRef(target!, flags)
+  const { sendAndReceive } = await import('../ws-client.js')
+  const reply = await sendAndReceive(
+    { type: 'rename_session', sessionId, name },
+    (msg: any) => (msg.type === 'session_renamed' && msg.sessionId === sessionId)
+      || (msg.type === 'hub_error' && typeof msg.message === 'string' && msg.message.includes(sessionId)),
+    5_000,
+  )
+  if (reply?.type === 'hub_error') exitWithError('NOT_FOUND', reply.message, flags)
+  output({ renamed: sessionId, name, ...(sessionId !== target ? { resolvedFrom: target } : {}) }, flags)
 }
 
 async function agentKill(args: string[], flags: GlobalFlags): Promise<void> {
