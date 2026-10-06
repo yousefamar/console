@@ -1,6 +1,7 @@
 // Debug routes — HTTP endpoints for Claude Code + WS message handler for browser debug agents
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import v8 from 'node:v8'
 import type { WebSocket } from 'ws'
 import { writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -117,10 +118,35 @@ export function handleDebugRoutes(
   debugClients: Set<WebSocket>,
   debugLog: DebugLog,
   readBody: (req: IncomingMessage) => Promise<string>,
+  memoryProbes?: () => Record<string, number | string>,
 ): boolean {
   const json = (data: unknown, status = 200) => {
     res.writeHead(status, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify(data))
+  }
+
+  // GET /debug/memory — what the hub process is holding, RIGHT NOW.
+  // Exists because "the hub is at 2.6 GB again, what is it?" was answered by
+  // inference three times (2026-09-29, 10-05, 10-06): messageLog, the chat
+  // archive's seen-sets and the room-state caches were each sized by hand from
+  // outside the process and each came back far too small. Read-only, no
+  // snapshot, no stall — safe on a live hub.
+  if (path === '/debug/memory' && req.method === 'GET') {
+    const mu = process.memoryUsage()
+    const mb = (n: number) => Math.round(n / 1e6)
+    json({
+      pid: process.pid,
+      uptimeSec: Math.round(process.uptime()),
+      rssMB: mb(mu.rss),
+      heapUsedMB: mb(mu.heapUsed),
+      heapTotalMB: mb(mu.heapTotal),
+      externalMB: mb(mu.external),
+      arrayBuffersMB: mb(mu.arrayBuffers),
+      heap: Object.fromEntries(Object.entries(v8.getHeapStatistics()).map(([k, n]) => [k, typeof n === 'number' ? mb(n) : n])),
+      spaces: v8.getHeapSpaceStatistics().map((s) => ({ name: s.space_name, usedMB: mb(s.space_used_size), sizeMB: mb(s.space_size) })),
+      probes: memoryProbes?.() ?? {},
+    })
+    return true
   }
 
   // GET /debug/log — last N events

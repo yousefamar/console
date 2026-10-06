@@ -129,6 +129,14 @@ export class MatrixSync {
   private readonly LONG_POLL_MS = 30_000
   /** roomId → cached state, built progressively from sync. */
   private readonly roomState = new Map<string, RoomStateCache>()
+
+  /** What this sync holds in memory — for `GET /debug/memory` (a 733-room
+   *  fleet makes these the plausible big ones; measure, do not infer). */
+  memoryStats(): Record<string, number> {
+    let members = 0
+    for (const r of this.roomState.values()) members += r.members.size
+    return { matrixRooms: this.roomState.size, matrixMembers: members, matrixDirect: this.directRooms.size, matrixMuted: this.mutedRooms.size }
+  }
   /** roomIds flagged as DMs in global account_data (`m.direct`). */
   private directRooms = new Set<string>()
   /** roomIds silenced by an active `room`-kind push rule (`mutedRoomsFromRules`). */

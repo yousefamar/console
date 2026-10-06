@@ -821,6 +821,31 @@ const alBridge = new AlBridge({
 const sessions = new Map<string, Session>()
 const clients = new Set<WebSocket>()
 
+/** Counts behind `GET /debug/memory`. Every "the hub is at 2.6 GB again"
+ *  investigation so far sized these from OUTSIDE the process and was wrong by
+ *  an order of magnitude; these are the real numbers, cheap to read. */
+function hubMemoryProbes(): Record<string, number | string> {
+  let residentMessages = 0
+  let residentBytes = 0
+  let live = 0
+  for (const s of sessions.values()) {
+    if (s.status === 'ended') continue
+    live++
+    const log = s.messageLog
+    residentMessages += log.length
+    for (const m of log) residentBytes += JSON.stringify(m).length
+  }
+  return {
+    sessionsLive: live,
+    sessionsTotal: sessions.size,
+    wsClients: clients.size,
+    residentMessages,
+    residentMessagesMB: Math.round(residentBytes / 1e6),
+    ...matrixSync.memoryStats(),
+    ...messageArchive.memoryStats(),
+  }
+}
+
 const agentCtx: AgentContext = {
   sessions, clients, cwd, log, truncate, modelConfig, vaultPath: notesVault,
   // @amar attention → push notification (pane:agents). Dedup/anti-noise gated
@@ -2381,7 +2406,7 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   })) return
   if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody, (bp) => boardWatcher.queuedCards().filter((q) => q.boardPath === bp).length)) return
   if (path.startsWith('/board/') && handleBoardRoutes(req, res, path, boardOps, readBody, (bp, id) => boardWatcher.redispatch(bp, id))) return
-  if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody)) return
+  if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody, hubMemoryProbes)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore, readBody)) return
   if (path.startsWith('/geocaching') && handleGeocachingRoutes(req, res, path, geocachingClient, readBody)) return

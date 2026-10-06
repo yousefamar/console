@@ -52,6 +52,13 @@ export class MessageArchive {
   /** roomId → Set of archived event ids (loaded lazily per room). */
   private readonly seen = new Map<string, Set<string>>()
 
+  /** Rooms whose event-id Set is loaded, and the total ids held. */
+  memoryStats(): Record<string, number> {
+    let ids = 0
+    for (const set of this.seen.values()) ids += set.size
+    return { archiveRoomsLoaded: this.seen.size, archiveEventIds: ids }
+  }
+
   constructor(
     private readonly baseDir: string,
     private readonly log: (msg: string) => void = () => {},
