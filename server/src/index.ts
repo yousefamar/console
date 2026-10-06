@@ -1284,7 +1284,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
         const forgeCfgForWindDown = w.placement === 'forge' ? forgeConfig() : null
         void probeSilentWindDown(w.cwd, t.blockId, forgeCfgForWindDown ? remoteGitRunner(forgeCfgForWindDown) : undefined).then(async (probe) => {
           if (probe.silent && forgeCfgForWindDown) {
-            const repo = repoForCwd(w.cwd)
+            const repo = await repoForCwd(w.cwd)
             const proj = projectForBoardPath(t.boardPath)
             if (repo) {
               const fold = await foldBackFromForge(forgeCfgForWindDown, repo, (m) => log(m))

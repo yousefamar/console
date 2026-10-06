@@ -5,6 +5,7 @@
 // A sleeping or broken cloud box must never be able to wedge the board.
 
 import { existsSync, realpathSync } from 'node:fs'
+import { resolveCheckout } from '../git-status.js'
 import { join } from 'node:path'
 import { forgeConfig, forgeAvailable, resolvePlacement, boardRemote, type ForgeConfig, type Placement } from './config.js'
 import { ensureForgeReady, stopIfIdle, instanceState } from './instance.js'
@@ -121,13 +122,21 @@ export interface PrepareResult {
   cfg?: ForgeConfig
 }
 
-/** The code repo behind a session cwd: `<cwd>/repo` (vault project dirs symlink
- *  their checkout) else null. Mirrors winddown.ts's repoRootFor, minus the git
- *  fallback — we only sync repos we can name. */
-export function repoForCwd(cwd: string): string | null {
-  const link = join(cwd, 'repo')
-  if (!existsSync(link)) return null
-  try { return realpathSync(link) } catch { return null }
+/** The code repo behind a session cwd.
+ *
+ *  Uses the hub's own resolveCheckout rather than looking for `<cwd>/repo`:
+ *  the link is NOT always called `repo` — Astera's project dir links its
+ *  checkout as `app` (→ ~/proj/code/astera-app), and a `repo`-only lookup
+ *  silently returned null for it, which would have put an Astera fork on forge
+ *  with no checkout at all. resolveCheckout tries `.git`, then `repo`, then any
+ *  symlink in the dir containing a `.git`.
+ *
+ *  Returns null when the cwd has no code repo (a docs-only project dir), which
+ *  is a legitimate case — such a fork needs no repo synced. */
+export async function repoForCwd(cwd: string): Promise<string | null> {
+  const dir = await resolveCheckout(cwd)
+  if (dir === cwd && !existsSync(join(cwd, '.git'))) return null
+  try { return realpathSync(dir) } catch { return null }
 }
 
 /** Everything that must be true before a remote `claude` is spawned for `cwd`.
@@ -156,7 +165,7 @@ export async function prepareRemoteSession(opts: {
   const mounts = await ensureSessionMounts(cfg, { cwd: opts.cwd, memoryDir: memoryDirFor(opts.cwd) }, log)
   if (!mounts.ok) return { ok: false, reason: mounts.reason, cfg }
 
-  const repo = repoForCwd(opts.cwd)
+  const repo = await repoForCwd(opts.cwd)
   if (repo) {
     const synced = await ensureRepoOnForge(cfg, repo, log)
     if (!synced.ok) return { ok: false, reason: synced.reason, cfg }
