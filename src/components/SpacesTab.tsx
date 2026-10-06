@@ -45,6 +45,7 @@ import { effectiveOwnerKey } from '@/spaces/owner'
 import { blockedAgentKeys } from '@/inbox/route'
 import { BotCrowned } from '@/components/icons/BotCrowned'
 import { BotCloud } from '@/components/icons/BotCloud'
+import { BranchCloud } from '@/components/icons/BranchCloud'
 
 /** "Set/Unset as project owner" — board frontmatter `default_owner:` (the
  *  agent unassigned In-Progress cards auto-assign to). Only for a keyed
@@ -278,7 +279,8 @@ interface SpaceAlert {
   sessionId?: string
   /** The project's owner (explicit or by convention) — wears the crown. */
   owner?: boolean
-  /** The claude process runs on forge — rides the cloud (wins over fork/owner). */
+  /** The claude process runs on forge — a fork's branch grows out of a cloud,
+   *  a top-level bot rides one. */
   remote?: boolean
 }
 
@@ -577,6 +579,8 @@ function SpaceListRail() {
           >
             {a.kind === 'file'
               ? <span className={clsx('w-1.5 h-1.5 rounded-full flex-shrink-0', a.level === 'draft' ? 'bg-blue-500' : a.level === 'stale' ? 'bg-yellow-400' : 'bg-amber-500')} />
+              : a.remote && a.fork
+                ? <BranchCloud size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />
               : a.remote
                 ? <BotCloud size={9} className={clsx('flex-shrink-0', a.level === 'attention' ? 'text-red-500' : a.level === 'working' ? 'text-amber-500' : a.level === 'context' ? 'text-text-tertiary opacity-60' : 'text-blue-500')} />
               : a.fork
@@ -890,11 +894,11 @@ function SpaceRail({ space }: { space: SpaceSummary }) {
                   title={`${isFork ? 'fork · ' : ''}${displayName}${sess.agentKey ? ` · @${sess.agentKey}` : ''}${isOwner ? ' · project owner — unassigned cards dragged into In Progress go here' : ''}${sess.placement === 'forge' ? ' · runs on forge (AWS)' : ''}${sess.cwd ? `\ncwd: ${shortCwd(sess.cwd)}` : ''}`}
                 >
                   {/* The owner's bot wears the crown (same state colour) instead of a
-                      separate amber crown beside the name. Forks never own. A
-                      session running on forge rides the cloud — where it runs
-                      matters more than its lineage, which the indent still shows. */}
+                      separate amber crown beside the name. Forks never own. On
+                      forge, a fork's branch grows out of a cloud and a top-level
+                      bot rides one — remoteness and lineage are separate axes. */}
                   {sess.placement === 'forge'
-                    ? <BotCloud size={10} className={glyphClass} />
+                    ? (isFork ? <BranchCloud size={10} className={glyphClass} /> : <BotCloud size={10} className={glyphClass} />)
                     : isFork
                     ? <GitBranch size={10} className={glyphClass} />
                     : isOwner
