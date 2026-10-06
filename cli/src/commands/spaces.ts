@@ -37,13 +37,13 @@ interface CardView {
  *  the hub body's field name and the one people reach for. */
 const BOARD_FLAGS: Record<string, readonly string[]> = {
   show: [], add: ['to', 'column', 'assign', 'detail', 'bottom'], move: [], assign: [], owner: [], model: [],
-  nofork: [], forkok: [], inherit: [], fresh: [], block: ['note'], unblock: ['note'], note: [], attach: ['caption'],
+  nofork: [], forkok: [], inherit: [], fresh: [], forge: [], local: [], here: [], block: ['note'], unblock: ['note'], note: [], attach: ['caption'],
   edit: ['text', 'detail'], remove: [], redispatch: [], history: [], restore: ['confirm'],
 }
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   if (verb !== 'board') {
-    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|effort|nofork|forkok|inherit|fresh|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
+    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|effort|nofork|forkok|inherit|fresh|forge|local|here|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
     return
   }
   const project = args[0]
@@ -120,6 +120,15 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       output(await hubFetch(`/board/${enc}/owner`, { method: 'POST', body: { agent: agent === 'none' ? null : agent } }), flags)
       return
     }
+    case 'forge':
+    case 'local':
+    case 'here': {
+      const card = pos[0]
+      if (!card) { exitWithError('USAGE', `Usage: con spaces board <project> ${action} "<card>"   (forge = run this card's fork on the remote box, local = keep it on this machine, here = clear the tag and follow the board)`, flags); return }
+      // `here` clears the tag; forge/local pin it.
+      output(await hubFetch(`/board/${enc}/${action === 'here' ? 'local' : action}`, { method: 'POST', body: { card, ...(action === 'here' ? { remote: null } : {}) } }), flags)
+      return
+    }
     case 'nofork':
     case 'forkok': {
       const card = pos[0]
@@ -194,6 +203,6 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       return
     }
     default:
-      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, owner, model, nofork, forkok, inherit, fresh, block, unblock, note, edit, remove, redispatch, history, restore — see \`con help spaces\`.`, flags)
+      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, owner, model, nofork, forkok, inherit, fresh, forge, local, here, block, unblock, note, edit, remove, redispatch, history, restore — see \`con help spaces\`.`, flags)
   }
 }

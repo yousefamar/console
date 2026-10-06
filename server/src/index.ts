@@ -47,6 +47,11 @@ import { vaultRelative } from './agents/vault-edit.js'
 import { cardImagePaths, boardDefaultOwner } from './kanban/board.js'
 import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, sessionCarriesBlockId, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
 import { probeSilentWindDown, summaryFromCardLines } from './kanban/winddown.js'
+import {
+  prepareRemoteSession, releaseRemoteSession, forgeAvailable, decidePlacement, prewarmCwd, boardRemote,
+  allocateDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
+  stopForgeIfIdle, isCwdPrepared, preparedCwdList,
+} from './forge/index.js'
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
 import { ForkCostLedger, aggregate as aggregateForkCost } from './agents/fork-cost.js'
@@ -56,6 +61,7 @@ import { handleRecallRoutes } from './routes/recall.js'
 import { BoardOps } from './kanban/board-ops.js'
 import { BoardFiles } from './kanban/board-files.js'
 import { handleBoardRoutes } from './routes/board.js'
+import { handleForgeRoutes } from './routes/forge.js'
 import { setBedrockProfileLogger, refreshFromAws as refreshBedrockProfiles, smallFastModel } from './bedrock-profiles.js'
 import { setLastReadIndex, getLastReadIndex, setReadStateLogger, flushReadState, unpinRead } from './read-state.js'
 import { HubCronScheduler } from './cron/scheduler.js'
@@ -1152,7 +1158,7 @@ function projectOfBoard(boardPath: string): string | null {
 }
 const boardWatcher = new BoardWatcher(noteStore, {
   log: (m) => log(m),
-  onDispatch: ({ boardPath, card, column, project, deployGate, load, inherit }) => {
+  onDispatch: ({ boardPath, card, column, project, deployGate, load, inherit, cardRemote, boardRemote: boardWants }) => {
     // Assigning a ticket to a LIVE session forks it: the fork inherits the
     // session's context, works just this ticket (in its own worktree, per
     // the envelope), and is merged after — the main session stays free for
@@ -1168,8 +1174,22 @@ const boardWatcher = new BoardWatcher(noteStore, {
     // the session directly (trivial cards; Yousef's opt-OUT call — fork
     // stays the default).
     if (!isFork && live.claudeSessionId && !card.nofork) {
-      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model, { inherit, effort: card.effort })
-      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey} (${inherit ? 'inherited transcript' : 'fresh context'}${card.model ? `, model ${card.model}` : ''}${card.effort ? `, effort ${card.effort}` : ''})`) }
+      // WHERE the fork runs. Resolution is card tag → board frontmatter →
+      // local, and the box must already be warm (forge/index.ts explains why
+      // the decision has to be synchronous here). A card that wanted forge but
+      // got local is logged with the reason and told so in its envelope —
+      // "where did this run?" is never a guess.
+      const place = decidePlacement({ cwd: live.cwd, cardRemote, boardRemote: boardWants })
+      if (place.placement !== 'forge' && (cardRemote === 'forge' || boardWants === 'forge')) {
+        log(`[boards] ^${card.blockId} ${place.reason}`)
+      }
+      worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model, {
+        inherit, effort: card.effort, placement: place.placement, devPort: place.placement === 'forge' ? allocateDevPort(card.blockId!) : undefined,
+      })
+      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey} (${inherit ? 'inherited transcript' : 'fresh context'}${card.model ? `, model ${card.model}` : ''}${card.effort ? `, effort ${card.effort}` : ''}${place.placement === 'forge' ? `, ON FORGE${worker.devPort ? ` dev port ${worker.devPort}` : ''}` : ''})`) }
+      // Keep the box warm for the NEXT card on this board, and refresh the repo
+      // copy for this one's siblings. Fire-and-forget by design.
+      if (cardRemote === 'forge' || boardWants === 'forge') void prewarmCwd(live.cwd, (m) => log(m))
     } else if (card.nofork) {
       log(`[boards] ^${card.blockId} #nofork — waking ${card.agentKey} directly`)
     }
@@ -1206,6 +1226,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey, claudeSessionId: worker.claudeSessionId ?? null, context: inherit ? 'inherited' : 'fresh' } : null,
       parentDigest: forked && !inherit ? parentDigestFor(live) : null,
       load,
+      forge: worker.placement === 'forge' ? { host: worker.remoteHost ?? forgeConfig()?.host ?? 'forge', devPort: worker.devPort } : null,
     }), images)
     eventBus.emit({ topic: 'board.card.dispatched', source: 'board', key: `${card.blockId}:${worker.agentKey ?? card.agentKey}`, data: { project, boardPath, cardId: card.blockId, text: card.text.slice(0, 200), agentKey: worker.agentKey ?? card.agentKey, sourceKey: card.agentKey, column, forked }, ref: `con board ${project ?? '<project>'}` })
     // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
@@ -1255,7 +1276,28 @@ const boardWatcher = new BoardWatcher(noteStore, {
       // `boards.silentWindDown: false` restores the always-wake behaviour.
       const trySilent = prefsStore.get<boolean>('boards.silentWindDown') !== false && !t.deployGate && w.status !== 'running'
       if (trySilent) {
-        void probeSilentWindDown(w.cwd, t.blockId).then(async (probe) => {
+        // A remote fork's worktree is on FORGE, so the probe has to run git
+        // there. winddown.ts is already parameterised over how it runs git, so
+        // its decision-making needs no change — only the runner differs. The
+        // merged work is then fast-forwarded onto the desktop; a divergence
+        // refuses loudly rather than being resolved behind Yousef's back.
+        const forgeCfgForWindDown = w.placement === 'forge' ? forgeConfig() : null
+        void probeSilentWindDown(w.cwd, t.blockId, forgeCfgForWindDown ? remoteGitRunner(forgeCfgForWindDown) : undefined).then(async (probe) => {
+          if (probe.silent && forgeCfgForWindDown) {
+            const repo = repoForCwd(w.cwd)
+            const proj = projectForBoardPath(t.boardPath)
+            if (repo) {
+              const fold = await foldBackFromForge(forgeCfgForWindDown, repo, (m) => log(m))
+              if (!fold.ok) {
+                // Loud, and on the CARD: the work exists but only on forge, and
+                // that is exactly the kind of thing a log line loses.
+                log(`[boards] ^${t.blockId} FOLD-BACK FAILED: ${fold.reason}`)
+                if (proj) {
+                  void boardOps.note(proj, `^${t.blockId}`, `- ⚠ forge fold-back failed — this card's commits are still only on forge: ${fold.reason}`, 'hub').catch(() => {})
+                }
+              }
+            }
+          }
           if (probe.silent) {
             const r = await mergeIntoParent(agentCtx, w.id, undefined, { absorb: 'queue', summary: summaryFromCardLines(t.text, t.lines) })
             if (r.ok) {
@@ -1527,6 +1569,15 @@ const refreshMailUnread = () => {
 }
 refreshMailUnread()
 setInterval(refreshMailUnread, 60_000)
+
+// forge: stop the box when nothing needs it. Without this the cost is ~$351 a
+// month instead of ~$108 — a stopped instance bills only its EBS. The count of
+// live remote sessions comes from the hub's own map; we never ask the box.
+setInterval(() => {
+  if (!forgeAvailable()) return
+  const live = [...sessions.values()].filter((s) => s.placement === 'forge' && s.status !== 'ended').length
+  void stopForgeIfIdle(live, (m) => log(m)).catch(() => {})
+}, 5 * 60_000)
 
 // Native teleprompter session (0x09, docs/g1-protocol.md §20): owns pagination +
 // touchbar paging; the HUD stays silent while it runs.
@@ -2406,6 +2457,14 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
   })) return
   if (path.startsWith('/blog') && handleBlogRoutes(req, res, path, noteStore, readBody, (bp) => boardWatcher.queuedCards().filter((q) => q.boardPath === bp).length)) return
   if (path.startsWith('/board/') && handleBoardRoutes(req, res, path, boardOps, readBody, (bp, id) => boardWatcher.redispatch(bp, id))) return
+  if (handleForgeRoutes(req, res, path, {
+    sessions: () => [...sessions.values()]
+      .filter((s) => s.placement === 'forge' && s.status !== 'ended')
+      .map((s) => ({ id: s.id, name: s.name, devPort: s.devPort, cwd: s.cwd })),
+    preparedCwds: () => preparedCwdList(),
+    log: (m) => log(m),
+    readBody,
+  })) return
   if (path.startsWith('/debug') && handleDebugRoutes(req, res, path, url, debugClients, debugLog, readBody, hubMemoryProbes)) return
   if (path.startsWith('/apk') && handleApkRoutes(req, res, path)) return
   if (path.startsWith('/owntracks/') && handleOwntracksRoutes(req, res, path, url, authStore, readBody)) return
@@ -2900,6 +2959,24 @@ httpServer.listen(port, host, () => {
       // nothing killed.
       const officialAlId = getRecordedAlSessionId()
       let alRestored = false
+
+      // Sessions that were running ON FORGE must resume there: their transcript
+      // and their worktree are on that box, so resuming locally would resume
+      // into an empty history. Warm the box ONCE, before the loop, so no
+      // restored session races a cold start — and if it cannot be reached, note
+      // it and let every entry fall back to local rather than hang the boot.
+      const forgeEntries = manifest.filter((e) => e.placement === 'forge' && !e.ended)
+      let forgeReadyOnBoot = false
+      if (forgeEntries.length > 0) {
+        const cwds = [...new Set(forgeEntries.map((e) => e.cwd).filter((c): c is string => !!c))]
+        log(`  ${forgeEntries.length} session(s) were on forge — warming it for ${cwds.length} cwd(s)`)
+        for (const cwd of cwds) {
+          const prep = await prepareRemoteSession({ sessionId: `restore:${cwd}`, cwd, log })
+          if (prep.ok) forgeReadyOnBoot = true
+          else log(`  forge not ready for ${cwd}: ${prep.reason} — those sessions restore LOCALLY`)
+        }
+      }
+
       for (const entry of manifest) {
         // User explicitly ended this session — stay dead. The saveManifest()
         // after the loop prunes it (it never enters the sessions map).
@@ -2936,6 +3013,11 @@ httpServer.listen(port, host, () => {
             cacheTtl: entry.agentKey === 'al' ? '1h' : entry.cacheTtl,
             spawnKind: entry.spawnKind,
             effort: entry.effort,
+            // Only honour the recorded placement if the box actually answered
+            // during the warm-up above; otherwise this restores local.
+            ...(entry.placement === 'forge' && forgeReadyOnBoot
+              ? { placement: 'forge' as const, devPort: entry.devPort }
+              : {}),
             formerIds: [entry.hubId, ...(entry.formerHubIds ?? [])].filter((id): id is string => !!id),
             // The restore spawn of a mid-turn session is "being worked" for the
             // cache-TTL decision (the nudge below continues its turn).
@@ -3004,6 +3086,28 @@ httpServer.listen(port, host, () => {
         setUserNotifier((text) => { injectToAl(`[Hub] ${text}`, broadcast) })
         const alSession = await ensureAlSession(agentCtx)
         log(`AL session ready: ${alSession.id} (claude=${alSession.claudeSessionId?.slice(0, 8) ?? '...'})`)
+
+        // forge: warm the box for every project whose board opted in, so the
+        // FIRST card Yousef moves lands remotely instead of falling back. The
+        // dispatch decision has to be synchronous (forge/index.ts explains
+        // why), so readiness is always prepared ahead of it. Costs nothing
+        // when no board opted in, and the idle-stop timer puts the box back to
+        // sleep if he does not actually dispatch anything.
+        if (forgeAvailable()) {
+          const warmed = new Set<string>()
+          for (const s of sessions.values()) {
+            if (!s.project || s.status === 'ended' || warmed.has(s.cwd)) continue
+            const boardPath = findProjectBoard(noteStore.vaultPath, s.project)
+            if (!boardPath) continue
+            try {
+              if (boardRemote(readFileSync(boardPath, 'utf-8')) !== 'forge') continue
+            } catch { continue }
+            warmed.add(s.cwd)
+            log(`[forge] ${s.project} opted in (remote: forge) — warming for ${s.cwd}`)
+            void prewarmCwd(s.cwd, (m) => log(m))
+          }
+          if (warmed.size === 0) log('[forge] configured, but no board has `remote: forge` — everything stays local')
+        }
         // WhatsApp voice calls: the hub only relays the wa-voice sidecar's
         // pairing QR into AL's session (same path as Baileys' QR) and gives
         // the transcript route a way to inject the fold-back envelope. The

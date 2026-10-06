@@ -249,6 +249,13 @@ export interface SessionInfo {
   /** `--effort` the current process runs on + why. Absent while hibernated. */
   effort?: string
   effortReason?: string
+  /** Where this session's `claude` actually runs — absent/'local' = this
+   *  machine, 'forge' = the remote compute box (server/src/forge/). Surfaced so
+   *  "where did this run?" is answerable from the UI, never inferred. */
+  placement?: 'local' | 'forge'
+  /** Its forwarded dev-server port: the remote server is reachable at
+   *  http://localhost:<devPort> on Yousef's machine. */
+  devPort?: number
   messageLogLength?: number
   /** Present when the session is flagged for Yousef's attention (`@amar`). */
   needsAttention?: AttentionState | null

@@ -284,8 +284,13 @@ export function buildBoardEnvelope(opts: {
   /** Absolute path of the vault's sibling assets dir — lets video clips on the
    *  card be named by a path the reader can locate. */
   assetsAbsPath?: string | null
+  /** This fork runs on the remote compute box (server/src/forge/). Everything
+   *  about HOW it works is unchanged — same paths, same `autowt`, same `con` —
+   *  so the envelope only has to say where it is and which dev port is already
+   *  forwarded back to Yousef's localhost. */
+  forge?: { host: string; devPort?: number | null } | null
 }): string {
-  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load, parentDigest, skills, assetsAbsPath } = opts
+  const { boardAbsPath, card, column, project, deployGate, forkIdentity, load, parentDigest, skills, assetsAbsPath, forge } = opts
   const inherited = forkIdentity?.context !== 'fresh'
   // Image detail lines are delivered as REAL image attachments on the wake —
   // echoing them as text renders a broken ![img] box in the transcript. Clips
@@ -365,6 +370,23 @@ export function buildBoardEnvelope(opts: {
       'needs a TTY you do not have. Trivial edits (docs, one-liners) can skip',
       'the worktree — your judgment.',
     ]),
+    ...(forge ? [
+      '',
+      `REMOTE: you are running on \`${forge.host}\`, a dedicated 8-core/30 GiB box — NOT`,
+      'Yousef\'s desktop. This is deliberate: dev servers, Playwright and big builds',
+      'were starving his machine. Nothing about how you work changes — the paths are',
+      'identical (`~/proj/code/<repo>`, `~/sync/brain/root/projects/<slug>`), `autowt`',
+      'makes your worktree here, `con` reaches the hub as usual, and the vault is',
+      'mounted live off his machine. Two things to know:',
+      forge.devPort
+        ? `- Run your dev server on PORT ${forge.devPort} (\`npm run dev -- --port ${forge.devPort}\`). It is already forwarded, so it appears to Yousef at http://localhost:${forge.devPort} — give him THAT url, and no other fork can collide with it.`
+        : '- No dev port was forwarded for you; ask before starting a long-running server.',
+      '- Heavy steps are cheap here and do NOT contend with his desktop, so the LOAD',
+      '  note below (if present) is about his box, not yours.',
+      '- Your commits land on this box. Merge into main as usual when you are done;',
+      '  the hub fast-forwards his checkout. If it reports a divergence, say so on',
+      '  the card rather than forcing anything.',
+    ] : []),
     ...(load && load.running > 1 ? [
       '',
       `LOAD: ${load.running} of a maximum ${load.cap} cards are being worked right now, and every`,

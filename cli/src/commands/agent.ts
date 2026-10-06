@@ -26,6 +26,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'search': return agentSearch(args, flags)
     case 'read': return agentRead(args, flags)
     case 'inbox': return agentInbox(args, flags)
+    case 'forge': return agentForge(args, flags)
     default:
       exitWithError('USAGE', `Unknown agent command: ${verb}. Run 'con help agent'.`, flags)
   }
@@ -859,4 +860,64 @@ async function agentInbox(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   exitWithError('USAGE', usage, flags)
+}
+
+// --------------------------------------------------------------------------
+// agent forge — the remote compute box that hosts offloaded forks.
+//
+// Lives under `agent` because placement is a property of agent SESSIONS: which
+// machine a fork's claude, worktree, dev server and tests run on. See
+// server/src/forge/ and research/remote-compute-offload.md.
+// --------------------------------------------------------------------------
+
+async function agentForge(args: string[], flags: GlobalFlags): Promise<void> {
+  const values = parseFlags(args)
+  const pos = args.filter((a) => !a.startsWith('--') && !Object.values(values).includes(a))
+  const sub = pos[0] ?? 'status'
+  switch (sub) {
+    case 'status': {
+      const res = await hubFetch('/forge/status') as {
+        configured: boolean; instanceId?: string; region?: string; state?: string; host?: string
+        master?: boolean; preparedCwds?: string[]; sessions?: Array<{ id: string; name?: string; devPort?: number }>
+        idleStopMinutes?: number
+      }
+      if (isJsonMode(flags)) { output(res, flags); return }
+      if (!res.configured) {
+        outputLine('forge: not configured — run scripts/forge/provision.sh (needs admin AWS creds)')
+        return
+      }
+      outputLine(`forge ${res.instanceId} (${res.region}) — ${res.state ?? 'unknown'}${res.master ? ', ssh master up' : ''}`)
+      outputLine(`  idle stop after ${res.idleStopMinutes}m with no remote session`)
+      if (res.preparedCwds?.length) outputLine(`  warm for: ${res.preparedCwds.join(', ')}`)
+      else outputLine('  warm for: nothing yet (the next card on an opted-in board would run LOCALLY)')
+      if (res.sessions?.length) {
+        outputLine(`  ${res.sessions.length} remote session(s):`)
+        for (const s of res.sessions) outputLine(`    ${s.name ?? s.id}${s.devPort ? ` → http://localhost:${s.devPort}` : ''}`)
+      } else outputLine('  no remote sessions')
+      return
+    }
+    case 'up': {
+      // Warming is per-cwd because the cwd is what gets mounted; default to the
+      // Console project dir, which is the common case.
+      const cwd = values.cwd
+      if (!isJsonMode(flags)) info('waking forge and preparing it (~40s from stopped)…')
+      output(await hubFetch('/forge/up', { method: 'POST', body: cwd ? { cwd } : {} }), flags)
+      return
+    }
+    case 'down':
+      output(await hubFetch('/forge/down', { method: 'POST', body: {} }), flags)
+      return
+    case 'run': {
+      const cmd = pos.slice(1).join(' ')
+      if (!cmd) { exitWithError('USAGE', 'Usage: con agent forge run "<command>"   (runs it on forge, streams output back)', flags); return }
+      const res = await hubFetch('/forge/run', { method: 'POST', body: { command: cmd, cwd: values.cwd } }) as { code: number; stdout: string; stderr: string }
+      if (isJsonMode(flags)) { output(res, flags); return }
+      if (res.stdout) process.stdout.write(res.stdout)
+      if (res.stderr) process.stderr.write(res.stderr)
+      if (res.code !== 0) process.exitCode = res.code
+      return
+    }
+    default:
+      exitWithError('USAGE', `Unknown forge command: ${sub}. Try: status, up, down, run.`, flags)
+  }
 }

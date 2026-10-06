@@ -15,6 +15,7 @@
 // dispatched", so nothing double-fires).
 
 import type { NoteStore } from '../notes.js'
+import { boardRemote } from '../forge/config.js'
 import { isKanbanBoard, boardDeployGate, boardDefaultOwner, boardMaxForks, boardForkContext, parseBoard, serializeBoard, refreshCardLine, findCardByBlockId, getCard, type BoardCard, type KanbanBoard } from './board.js'
 import { findDispatchable, inFlightCards, mintBlockId, DISPATCH_COLUMN_RE, DEFAULT_MAX_RUNNING_FORKS, type DispatchableCard, type InFlightCard, type ReviewCardRef } from './dispatch.js'
 import { BoardFiles } from './board-files.js'
@@ -34,6 +35,11 @@ export interface BoardDispatch {
   /** Card `#inherit` or board `fork_context: inherit` — the ticket-fork
    *  inherits the parent's transcript instead of fresh context + digest. */
   inherit: boolean
+  /** Card `#forge`/`#local` and the board's `remote:` frontmatter, unresolved —
+   *  the hub decides between them (and whether the box is actually warm) in
+   *  forge/index.ts decidePlacement. */
+  cardRemote: 'forge' | 'local' | null
+  boardRemote: 'forge' | 'local' | null
 }
 
 /** A card sitting in a dispatch column that the cap has held back: unstamped,
@@ -527,10 +533,11 @@ export class BoardWatcher {
       const cap = this.cap(stamped)
       const deployGate = boardDeployGate(stamped)
       const boardInherit = boardForkContext(stamped) === 'inherit'
+      const remoteDefault = boardRemote(stamped)
       let running = this.runningForks()
       for (const d of dispatchNow) {
         running++
-        const res = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project, deployGate, load: { running, cap }, inherit: d.card.inherit || boardInherit })
+        const res = this.opts.onDispatch({ boardPath: path, card: d.card, column: d.column, project, deployGate, load: { running, cap }, inherit: d.card.inherit || boardInherit, cardRemote: d.card.remote, boardRemote: remoteDefault })
         // A string result = the worker is a ticket-FORK with its own @key —
         // rewrite the card's assignee so everything downstream (stale nudges,
         // transition wakes, the assignee filter) targets the fork, not the

@@ -30,6 +30,7 @@ import { join } from 'node:path'
 import { getLastReadIndex, isReadPinned, setLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
 import { gitStatusSync } from './git-status.js'
+import { forgeConfig, remoteCommandArgv, forgeSshEnv, noteForgeUse, syncTranscript } from './forge/index.js'
 import { HUB_PID_ENV } from './agents/process-reaper.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
@@ -166,6 +167,19 @@ export interface SessionOptions {
   /** Hub ids this conversation had before this hub process (restore loop,
    *  from the manifest's `hubId` + `formerHubIds`). See Session.formerIds. */
   formerIds?: string[]
+  /** Where this session's `claude` process runs. 'forge' pipes it over SSH to
+   *  the remote compute box (server/src/forge/) so its dev servers, builds and
+   *  tests stop competing with the hub for this machine's 8 cores and one
+   *  disk. The CALLER must have run `prepareRemoteSession` first — by the time
+   *  spawn happens the box has to be awake, the cwd mounted and the repo
+   *  synced; on any failure the caller leaves this unset and the session is
+   *  simply local. Persisted, so a hub-restart resume lands on the same box.
+   *  Unset = local, which is also the fallback for everything. */
+  placement?: 'local' | 'forge'
+  /** The dev-server port assigned to a remote session and already forwarded
+   *  back to the same port on the desktop, so `http://localhost:<port>` is the
+   *  remote server. Rides the env as CONSOLE_DEV_PORT. */
+  devPort?: number
 }
 
 /** Pin the CLI's per-project directory (transcripts + auto-memory) to the
@@ -328,6 +342,8 @@ export class Session extends EventEmitter {
     this.modelOverride = options.modelOverride
     this.spawnKind = options.spawnKind ?? 'default'
     this.effortPin = options.effort ?? null
+    this.placement = options.placement ?? 'local'
+    this.devPort = options.devPort ?? null
     // Restore the absolute message-log high-water (see SessionOptions). The
     // in-memory log starts empty, so without this messageLogLength would report
     // 0 after a restart and every session's unread marker would be wiped. The
@@ -480,13 +496,12 @@ export class Session extends EventEmitter {
 
     const cwd = this.cwd
     const nice = agentNice()
-    const [bin, argv] = nice > 0 ? ['nice', ['-n', String(nice), 'claude', ...args]] : ['claude', args]
 
-    this.process = spawn(bin, argv, {
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
+    // Everything the HUB decides for this session, as opposed to everything the
+    // machine happens to have in its environment. Split out because a remote
+    // spawn ferries exactly this set across SSH (which forwards no env of its
+    // own) while a local spawn merges it over process.env.
+    const sessionEnv: Record<string, string> = {
         // The session's own agentKey rides the env so the `con` CLI (and any
         // script the agent runs) can self-identify to the hub — board mutations
         // carry an X-Console-Agent header, letting notifiers skip echoing an
@@ -502,8 +517,47 @@ export class Session extends EventEmitter {
         // Which hub generation spawned this process — the reaper kills claude
         // children whose marker names a dead hub (process-reaper.ts).
         [HUB_PID_ENV]: String(process.pid),
-      },
-    })
+        // Remote sessions get their own dev-server port, already forwarded back
+        // to the same port on the desktop. Told to the agent in the envelope too.
+        ...(this.devPort ? { CONSOLE_DEV_PORT: String(this.devPort) } : {}),
+    }
+
+    // A respawn (model restart, hibernation wake) must not reuse the old
+    // handle when deciding whether the remote branch took.
+    let proc: ChildProcess | null = null
+    if (this.placement === 'forge') {
+      // The hub's transport to an agent is stream-json over stdin/stdout, which
+      // is pipe-based and therefore transport-agnostic: `ssh -T` carries it
+      // verbatim and nothing downstream of the pipe (the SPA, the message log,
+      // cost accounting, interrupts) can tell the difference. That is what
+      // makes a remote fork a one-line change here rather than a rewrite.
+      //
+      // Preconditions (box awake, cwd mounted, repo synced, agent env mirrored)
+      // are the CALLER's job — see forge/index.ts prepareRemoteSession. If any
+      // of them failed, placement was left 'local' and we never reach here.
+      const cfg = forgeConfig()
+      if (!cfg) {
+        // Config vanished between prepare and spawn. Fall back rather than
+        // spawn into nothing — a local fork is always better than no fork.
+        this.placement = 'local'
+        this.emitHub({ type: 'status', sessionId: this.id, text: '[forge] config missing at spawn — running locally' })
+      } else {
+        const argv = remoteCommandArgv(cfg, { cwd, env: sessionEnv, command: 'claude', args })
+        proc = spawn('ssh', argv, { stdio: ['pipe', 'pipe', 'pipe'], env: forgeSshEnv() })
+        this.remoteHost = cfg.host
+        noteForgeUse()
+      }
+    }
+
+    if (!proc) {
+      const [bin, argv] = nice > 0 ? ['nice', ['-n', String(nice), 'claude', ...args]] : ['claude', args]
+      proc = spawn(bin, argv, {
+        cwd,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: { ...process.env, ...sessionEnv },
+      })
+    }
+    this.process = proc
     this.processAlive = true
 
     this.stdinReady = true
@@ -1000,6 +1054,12 @@ export class Session extends EventEmitter {
   effortPin: Effort | null = null
   effort: Effort | null = null
   effortReason: EffortReason | null = null
+  /** See SessionOptions.placement / devPort. */
+  placement: 'local' | 'forge' = 'local'
+  devPort: number | null = null
+  /** ssh host alias the current process actually runs on, when remote — shown
+   *  in the session status bar so "where did this run?" is never a guess. */
+  remoteHost: string | null = null
   /** A fresh instance has no activity to judge by; flips on the first sendMessage. */
   private everActive = false
   /** Message that arrived during the hibernating window — sent after exit→wake. */
@@ -1253,6 +1313,11 @@ export class Session extends EventEmitter {
       cacheTtl: this.processAlive && this.cacheTtl ? this.cacheTtl : undefined,
       cacheTtlReason: this.processAlive && this.cacheTtlReason ? this.cacheTtlReason : undefined,
       spawnKind: this.spawnKind === 'default' ? undefined : this.spawnKind,
+      // Where this session runs, so a hub restart resumes it on the same box —
+      // its transcript and worktree live there. The restore path re-runs the
+      // forge preconditions and downgrades to local if the box is unreachable.
+      placement: this.placement === 'local' ? undefined : this.placement,
+      devPort: this.devPort ?? undefined,
       effort: this.processAlive && this.effort ? this.effort : undefined,
       effortReason: this.processAlive && this.effortReason ? this.effortReason : undefined,
       messageLogLength: this.messageLogLength,
@@ -1512,6 +1577,16 @@ export class Session extends EventEmitter {
     }
     this.lastActivityAt = Date.now()
     this.turnCount++
+    // A remote session writes its transcript on forge. Pull it home at every
+    // turn end — the only precise signal for "the file is consistent right
+    // now" — or `con agent search` / `con agent read` and the recall index
+    // would be blind to every remote fork. Fire-and-forget: a failed sync
+    // costs searchability, never the turn.
+    if (this.placement === 'forge' && this.claudeSessionId) {
+      const cfg = forgeConfig()
+      if (cfg) void syncTranscript(cfg, this.cwd, this.claudeSessionId, (m) => this.emitHub({ type: 'status', sessionId: this.id, text: m }))
+      noteForgeUse()
+    }
     // total_cost_usd is cumulative for THIS process, not per-turn — add the
     // cost of the processes before it (costBase) for a session total.
     this.totalCost = this.costBase + msg.total_cost_usd

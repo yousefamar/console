@@ -101,6 +101,11 @@ export function handleBoardRoutes(
         return ops.setEffort(project, String(b.card ?? ''), effort, actor)
       })
       return true
+    case 'forge':
+    case 'local':
+      // `remote: null` clears the tag and defers to the board's frontmatter.
+      run((b) => ops.setRemote(project, String(b.card ?? ''), b.remote === null ? null : (verb as 'forge' | 'local'), actor))
+      return true
     case 'nofork':
       run((b) => ops.setNofork(project, String(b.card ?? ''), b.nofork !== false, actor))
       return true

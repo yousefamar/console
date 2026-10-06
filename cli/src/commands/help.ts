@@ -587,6 +587,9 @@ Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project> owner <agentKey|none>          Board default owner (unassigned → In Progress auto-assigns to it)
   board <project> model "<card>" <alias|id|none>   Pin the ticket-fork's model (haiku/sonnet/opus/fable — or just type #sonnet on the card)
   board <project> effort "<card>" <low|medium|high|xhigh|max|none>   Pin the ticket-fork's --effort (forks run high by policy, generals xhigh; or type #effort/xhigh on the card)
+  board <project> forge "<card>"        Run this card's fork on the remote compute box
+  board <project> local "<card>"        Keep this card's fork on this machine
+  board <project> here "<card>"         Clear the tag — follow the board's remote: frontmatter
   board <project> nofork "<card>"       Dispatch wakes the assignee directly (no ticket-fork)
   board <project> forkok "<card>"       Undo nofork
   board <project> inherit "<card>"      Ticket-fork inherits the parent's whole transcript (default: fresh context + digest)

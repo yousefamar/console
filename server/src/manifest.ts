@@ -55,6 +55,14 @@ export interface ManifestEntry {
    *  must keep running at its kind's effort, not the generals' default. */
   spawnKind?: SpawnKind
   effort?: Effort
+  /** Where the session's `claude` runs (server/src/forge/). A remote session's
+   *  transcript and worktree live ON FORGE, so a restart has to resume it
+   *  there or it would resume into an empty history. The restore path re-checks
+   *  the box and downgrades to local if it is gone. */
+  placement?: 'local' | 'forge'
+  /** Its forwarded dev-server port, so the forward is re-established with the
+   *  same number the card already advertises. */
+  devPort?: number
   /** A prompt queued for turn-end that hadn't flushed yet. Surviving a restart
    *  mid-turn is the reason the queue lives hub-side at all. */
   queuedMessage?: string
@@ -104,6 +112,8 @@ export function saveManifest(sessions: Map<string, Session>) {
       ...(session.cacheTtlPin ? { cacheTtl: session.cacheTtlPin } : {}),
       ...(session.spawnKind !== 'default' ? { spawnKind: session.spawnKind } : {}),
       ...(session.effortPin ? { effort: session.effortPin } : {}),
+      ...(session.placement === 'forge' ? { placement: session.placement } : {}),
+      ...(session.devPort ? { devPort: session.devPort } : {}),
       ...(session.queuedMessage ? { queuedMessage: session.queuedMessage } : {}),
     })
   }
