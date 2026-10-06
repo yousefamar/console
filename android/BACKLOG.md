@@ -41,6 +41,11 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+_(nothing — v109 was cut 2026-10-06)_
+
+## Shipped
+
+### v109 (2026-10-06)
 - **Opening a dormant agent showed a blank transcript** (^lime-orca, Yousef:
   "when I open a dormant agent on mobile, none of the session chat loads").
   Root cause is hub-side and invisible to the phone: a hub restart restores
@@ -244,8 +249,6 @@ view-mode hub-sync (Room meta is fine on one device).
   `MoneyRepositoryBudgetTest` (11 cases end to end over a scripted hub: temp id
   → hub id, retarget sends the id, delete, 404-is-done, rejected edit/create
   heal, reconcile-does-not-undo, restart through the meta cache).
-
-## Shipped
 
 ### v108 (2026-10-05)
 - **Calendar event form: Google Places autocomplete on Location** (^busy-pony,
