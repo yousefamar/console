@@ -92,14 +92,76 @@ describe('ModelConfig fallback', () => {
     expect(c.getModel()).toBe(DEFAULT_MODEL_CHAIN[1])
   })
 
-  it('reports exhausted at the end of the chain', () => {
+  it('reports exhausted when a lone model fails with nothing to fall back to', () => {
+    const c = fresh()
+    c.setChain(['a'])
+    const r = c.reportFailure('a')
+    expect(r.changed).toBe(false)
+    expect(r.exhausted).toBe(true)
+    expect(r.heldAfterBurst).toBeUndefined()
+    expect(c.getModel()).toBe('a')
+  })
+})
+
+// 6 Oct 2026: a fleet-wide pre-init spawn fault walked all seven Bedrock
+// entries in 70 s and parked ~40 sessions on haiku, persisted across a restart.
+describe('ModelConfig burst guard', () => {
+  it('stops the walk once 3 distinct models fail in the window, reverting to the origin', () => {
+    const c = fresh()
+    c.setChain(['a', 'b', 'c', 'd', 'haiku'])
+    expect(c.reportFailure('a').model).toBe('b')
+    expect(c.reportFailure('b').model).toBe('c')
+    const r = c.reportFailure('c')
+    expect(r.heldAfterBurst).toBe(true)
+    expect(r.model).toBe('a')
+    expect(r.exhausted).toBe(false)
+    expect(c.getModel()).toBe('a') // never reached 'haiku'
+  })
+
+  it('refuses to advance at all during the cooldown', () => {
+    const c = fresh()
+    c.setChain(['a', 'b', 'c', 'd'])
+    c.reportFailure('a'); c.reportFailure('b'); c.reportFailure('c') // trips, back to 'a'
+    const r = c.reportFailure('a')
+    expect(r.heldAfterBurst).toBe(true)
+    expect(r.changed).toBe(false)
+    expect(c.getModel()).toBe('a')
+  })
+
+  it('undoes a walk that reaches the end of a short chain', () => {
     const c = fresh()
     c.setChain(['a', 'b'])
     expect(c.reportFailure('a').model).toBe('b')
     const r = c.reportFailure('b')
-    expect(r.changed).toBe(false)
-    expect(r.exhausted).toBe(true)
+    expect(r.heldAfterBurst).toBe(true)
+    expect(r.model).toBe('a')
+    expect(c.getModel()).toBe('a')
+  })
+
+  it('persists the revert, so a restart does not come back up on the tail', () => {
+    const c = fresh()
+    c.setChain(['a', 'b', 'c', 'd'])
+    c.reportFailure('a'); c.reportFailure('b'); c.reportFailure('c')
+    expect(fresh().getModel()).toBe('a')
+  })
+
+  it('a single dead model still falls back normally', () => {
+    const c = fresh()
+    c.setChain(['a', 'b', 'c', 'd'])
+    const r = c.reportFailure('a')
+    expect(r.changed).toBe(true)
+    expect(r.heldAfterBurst).toBeUndefined()
     expect(c.getModel()).toBe('b')
+  })
+
+  it('stale reports do not count toward the burst', () => {
+    const c = fresh()
+    c.setChain(['a', 'b', 'c', 'd'])
+    c.reportFailure('a') // → b
+    c.reportFailure('a'); c.reportFailure('a') // stale, ignored before the window logic
+    const r = c.reportFailure('b')
+    expect(r.changed).toBe(true)
+    expect(c.getModel()).toBe('c')
   })
 })
 

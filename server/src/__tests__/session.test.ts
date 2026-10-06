@@ -15,7 +15,9 @@ import type { HubMessage } from '../protocol.js'
 // --------------------------------------------------------------------------
 
 class MockProcess extends EventEmitter {
-  stdin = { write: vi.fn(), end: vi.fn() }
+  // `on` is real: spawn() attaches an EPIPE handler to stdin, without which a
+  // child dying mid-write takes the whole hub down (6 Oct 2026, 17 crash-loops).
+  stdin = { write: vi.fn(), end: vi.fn(), on: vi.fn() }
   stdout = new Readable({ read() {} }) // proper readable stream for createInterface
   stderr = new Readable({ read() {} })
   pid = 12345

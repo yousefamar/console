@@ -48,7 +48,28 @@ export interface FallbackResult {
   model: string
   /** True when the active model failed and there's nothing left in the chain. */
   exhausted: boolean
+  /** The burst guard tripped (or is still holding): the failures look like one
+   *  fleet-wide spawn fault rather than dead models, so the chain did NOT
+   *  advance. `model` is what the fleet was reverted to / held on. */
+  heldAfterBurst?: boolean
 }
+
+/** Burst-guard thresholds. A fleet-wide spawn fault (process pressure, upstream
+ *  throttling, a malformed settings.json) kills EVERY model's spawn before init,
+ *  and `session.ts` reads a pre-init exit as "this model is unavailable" — so
+ *  one fault walks the chain to its end, one entry per distinct model.
+ *
+ *  6 Oct 2026: a `backend set` respawned ~40 sessions at once; two minutes later
+ *  all seven Bedrock entries failed `exited before init (code=1)` within 70 s
+ *  (23:36:49 → 23:37:58) and the fleet landed on haiku. None of the models was
+ *  actually broken — the chain head's profile answered a one-shot probe fine
+ *  afterwards. Worse, the position is persisted, so the hub that booted at
+ *  23:41 came back up still on haiku and only a human noticed.
+ *
+ *  Three distinct models failing inside two minutes is not three dead models. */
+const BURST_WINDOW_MS = 120_000
+const BURST_THRESHOLD = 3
+const BURST_COOLDOWN_MS = 300_000
 
 interface PersistedState {
   model: string
@@ -76,6 +97,10 @@ export function looksLikeModelError(text: string): boolean {
 
 export class ModelConfig {
   private state: PersistedState
+  /** Distinct models that failed inside the current burst window. In-memory on
+   *  purpose: a burst is a transient fault, so a restart starts clean. */
+  private recentFailures: Array<{ model: string; at: number }> = []
+  private burstHoldUntil = 0
 
   constructor(
     private file: string,
@@ -172,12 +197,53 @@ export class ModelConfig {
     if (this.envModel()) return { changed: false, model: this.getModel(), exhausted: false }
     const active = this.state.model
     if (failed !== active) return { changed: false, model: active, exhausted: false }
+    const now = Date.now()
+    // Still inside a tripped burst's cooldown: refuse to move at all. Spawns
+    // keep failing loudly on one model instead of quietly descending the chain.
+    if (now < this.burstHoldUntil) {
+      return { changed: false, model: active, exhausted: false, heldAfterBurst: true }
+    }
+
+    this.recentFailures = this.recentFailures.filter((f) => now - f.at < BURST_WINDOW_MS)
+    if (!this.recentFailures.some((f) => f.model === failed)) this.recentFailures.push({ model: failed, at: now })
+
     const idx = this.state.chain.indexOf(active)
     const next = idx >= 0 ? this.state.chain[idx + 1] : undefined
-    if (!next) return { changed: false, model: active, exhausted: true }
+
+    if (this.recentFailures.length >= BURST_THRESHOLD) return this.holdAfterBurst(now, false)
+    if (!next) {
+      // End of the chain. If more than one model failed inside the window then
+      // a walk really happened and every entry is "down" — a fleet-wide fault
+      // by definition, so undo it rather than leaving the fleet on the tail
+      // (which on Bedrock is haiku). A LONE failure with nothing left is
+      // genuine exhaustion: a one-entry chain, or a human-set single model.
+      if (this.recentFailures.length > 1) return this.holdAfterBurst(now, true)
+      return { changed: false, model: active, exhausted: true }
+    }
+
     this.state.model = next
     this.persist()
     return { changed: true, model: next, exhausted: false }
+  }
+
+  /** Undo a bogus chain walk: go back to the model the burst started on and
+   *  refuse further fallback for the cooldown. */
+  private holdAfterBurst(now: number, reachedEnd: boolean): FallbackResult {
+    const origin = this.recentFailures[0]?.model
+    const revertTo = origin && this.state.chain.includes(origin) ? origin : this.state.chain[0]!
+    const count = this.recentFailures.length
+    this.burstHoldUntil = now + BURST_COOLDOWN_MS
+    this.recentFailures = []
+    const changed = this.state.model !== revertTo
+    this.state.model = revertTo
+    this.persist()
+    this.log(
+      `[model] ${count} model(s) failed within ${Math.round(BURST_WINDOW_MS / 1000)}s`
+      + `${reachedEnd ? ' and the chain reached its end' : ''} — treating this as a FLEET-WIDE spawn fault,`
+      + ` not ${count} unavailable models. Reverting to '${revertTo}' and refusing further fallback for`
+      + ` ${Math.round(BURST_COOLDOWN_MS / 60_000)} min. The real cause is in the [spawn-stderr] lines above.`,
+    )
+    return { changed, model: revertTo, exhausted: false, heldAfterBurst: true }
   }
 
   private load(): void {

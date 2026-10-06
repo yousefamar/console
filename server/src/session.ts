@@ -80,6 +80,7 @@ export function agentNice(env: NodeJS.ProcessEnv = process.env): number {
 /** How many times a single session may auto-restart chasing a working model
  *  before giving up — guards against a restart loop if every model fails. */
 const MAX_MODEL_RESTARTS = 6
+const PRE_INIT_STDERR_LOG_CAP = 5
 /** Delivered to a session whose in-flight turn was cut by a model/backend respawn. */
 export const MODEL_RESTART_NUDGE = 'The hub switched model/backend mid-turn, which interrupted you. Continue from where you left off.'
 
@@ -442,6 +443,7 @@ export class Session extends EventEmitter {
     this.spawnedModel = model
     this.spawnedAt = Date.now()
     this.gotSystemInit = false
+    this.preInitStderrLogged = 0
     // A respawn orphans any outstanding control_request — the new process
     // knows nothing of it, so a stale marker would misroute normal messages
     // into denyTool (whose response would go unanswered anyway).
@@ -562,6 +564,19 @@ export class Session extends EventEmitter {
 
     this.stdinReady = true
 
+    // A child that died keeps a writable stdin handle until its `exit` event
+    // lands, so any write in that gap raises EPIPE on the socket. Without a
+    // listener Node treats it as an unhandled 'error' and kills the HUB — on
+    // 2026-10-06 the CLI self-upgraded to 2.1.292 mid-flight, every spawn
+    // exited 1, and the stdin writes that followed crash-looped the hub 17
+    // times (pm2 restart → resume 40 sessions → write → crash). The child's
+    // death is already handled by the `exit` handler below; this just stops it
+    // being fatal here.
+    this.process.stdin?.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EPIPE') return // the child is gone; `exit` handles it
+      this.emitHub({ type: 'error', sessionId: this.id, message: `Session stdin error: ${err.message}` })
+    })
+
     // Read stdout as NDJSON (one JSON object per line)
     if (this.process.stdout) {
       const rl = createInterface({ input: this.process.stdout })
@@ -586,6 +601,17 @@ export class Session extends EventEmitter {
       rl.on('line', (line) => {
         const trimmed = line.trim()
         if (trimmed) {
+          // Pre-init stderr is the ONLY record of why a spawn died before it
+          // could report anything — and a pre-init exit is read below as "the
+          // model is unavailable", which walks the hub's fallback chain. On
+          // 6 Oct 2026 a burst of pre-init exits burned all seven Bedrock
+          // entries in 70 s and parked ~40 sessions on haiku, with no trace of
+          // the actual cause anywhere: this handler only ever forwarded stderr
+          // to the SPA as a transient `status` event.
+          if (!this.gotSystemInit && this.preInitStderrLogged < PRE_INIT_STDERR_LOG_CAP) {
+            this.preInitStderrLogged++
+            console.log(`[spawn-stderr] ${this.id} (${this.spawnedModel}): ${trimmed.slice(0, 300)}`)
+          }
           // The --resume target's JSONL is gone from disk (CLI retention
           // prune). The process is about to exit(1) pre-init — flag it so the
           // exit handler respawns fresh instead of misreading it as a model
@@ -724,7 +750,13 @@ export class Session extends EventEmitter {
       return
     }
     const json = JSON.stringify(msg)
-    this.process.stdin.write(json + '\n')
+    try {
+      this.process.stdin.write(json + '\n')
+    } catch (err) {
+      // Writing to an already-destroyed stdin throws synchronously rather than
+      // emitting — same dead-child race as the 'error' handler in spawn().
+      this.emitHub({ type: 'error', sessionId: this.id, message: `Session stdin write failed: ${(err as Error).message}` })
+    }
   }
 
   // ------------------------------------------------------------------ //
@@ -1017,6 +1049,9 @@ export class Session extends EventEmitter {
   private spawnedAt = 0
   /** True once the subprocess emitted its `system` init — i.e. it started fine. */
   private gotSystemInit = false
+  /** Pre-init stderr lines logged for the current spawn (capped so a crash loop
+   *  across the whole fleet can't flood the hub log). */
+  private preInitStderrLogged = 0
   /** The csid this fork was spawned with (`--session-id`); init must echo it. */
   private forkPin: string | null = null
   /** De-dupe: emit at most one `model_failure` per spawn. */

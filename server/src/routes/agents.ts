@@ -585,7 +585,17 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
       return
     }
     const res = ctx.modelConfig.reportFailure(failedModel)
-    if (res.changed) {
+    if (res.heldAfterBurst) {
+      // The burst guard decided this is one fleet-wide spawn fault, not a dead
+      // model, so the chain must not descend. Say so loudly and leave the fleet
+      // where it is — a silent no-op here is what let the haiku park go unseen.
+      ctx.log(`[model] '${failedModel}' failed (${reason}); fallback HELD by the burst guard — staying on '${res.model}'`)
+      broadcast(ctx.clients, { type: 'error', sessionId: session.id, message: `Spawns are failing across the fleet, not just on '${failedModel}' — fallback is held on '${res.model}' so the fleet can't be walked down to the cheapest model. Check the hub log's [spawn-stderr] lines for the cause.` })
+      if (res.changed) {
+        broadcastModelState(ctx, { autoFellBack: true, failedModel })
+        restartAllSessionsForModel(ctx)
+      }
+    } else if (res.changed) {
       ctx.log(`[model] '${failedModel}' failed (${reason}) → falling back to '${res.model}'`)
       broadcastModelState(ctx, { autoFellBack: true, failedModel })
       restartAllSessionsForModel(ctx)

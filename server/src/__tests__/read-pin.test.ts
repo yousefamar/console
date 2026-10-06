@@ -8,7 +8,7 @@ import { Readable } from 'node:stream'
 import type { HubMessage } from '../protocol.js'
 
 class MockProcess extends EventEmitter {
-  stdin = { write: vi.fn(), end: vi.fn() }
+  stdin = { write: vi.fn(), end: vi.fn(), on: vi.fn() }
   stdout = new Readable({ read() {} })
   stderr = new Readable({ read() {} })
   pid = 12345
