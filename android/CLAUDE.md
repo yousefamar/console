@@ -147,6 +147,22 @@ while the app is foregrounded (plus short background borrows), so a remote
   and then comes back. Skip those ids: `OutboxDao.inFlightEntityIds(type)` is
   the query (`money:override` is the precedent, ^warm-wren). And a DELETE-shaped
   action treats **404 as `Done`** — the thing it was told to remove is gone.
+  Two corollaries, each found independently by ^loud-frog and ^busy-vole on the
+  same night (so assume the next domain hits them too):
+  - **The in-flight skip must exclude the row that just landed.** A handler
+    normally refetches after its write, and it runs INSIDE the outbox, where
+    its own row is still `processing` — so a naive "lay every queued edit back
+    over the hub's reply" counts itself and keeps the optimistic row (local/temp
+    id and all) on screen until some later reconcile. Pass the settling entity
+    (`withInFlightLedgers(.., settled =)`) and drop its overlay, unless a LATER
+    edit to it is still pending.
+  - **The outbox `entityId` must be an identity that exists BEFORE the write
+    lands.** A create has no hub id yet, so keying on the created row's id
+    cannot match it on the way back: budgets key on the CATEGORY id (the hub's
+    own upsert matches on that when no id is given), ledger entries on the
+    ACCOUNT. Never send a `~`/`local_…` temp id as the hub's `id`, and deleting
+    a never-synced row cancels its queued create rather than issuing a temp-id
+    DELETE that 404s forever.
 
 **Coroutine cancellation (three separate incidents)**
 - Never let a debounce cancel the job the WORK runs inside. `trigger()`
