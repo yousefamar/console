@@ -607,3 +607,49 @@ Every JSONL transcript under `~/.claude/projects/` (hub AND terminal sessions, a
 
 ## Matrix recovery workflow (hub-side)
 The browser "recovery key" flow is gone; recovery is hub-side (`server/src/matrix/backup-restore.ts` + `secret-storage.ts`): `POST /matrix/keys/restore-from-recovery-key`, `POST /matrix/keys/restore-cross-signing` (required after ANY hub re-login — bridges reject Olm from uncross-signed devices), `POST /matrix/keys/import-local-backup`, `POST /matrix/decrypt-event`. **"🔒 Encrypted message" placeholders in one room = a withheld Megolm session**; the fix needs NO user-supplied key (the hub's own seed in `matrix-crypto-snapshot.json` re-encodes to a valid `EsU…` key). The step-by-step runbook, the SSSS/keyId gotchas and the withheld-session recovery are the **`matrix-recovery` skill** (`/matrix-recovery`, user-invocable) — invoke it when messages won't decrypt or bridges drop sends.
+
+## forge — running forks on a remote box (`server/src/forge/`)
+
+Agent forks can run their `claude`, worktree, dev server and builds on an EC2
+box instead of this machine. Built 6 Oct 2026 because the desktop was starving:
+9 forks on 8 cores / 23 GiB with every worktree on a 7200 rpm disk at 95% full
+(44% iowait, 35% CPU *idle* — it was disk and RAM, not CPU). Moving work to the
+local SSD was tried first and did not help.
+
+- **Mechanism**: the hub spawns `ssh -T forge … claude`. Its transport to an
+  agent is stream-json on stdin/stdout, so ssh carries it verbatim and nothing
+  downstream (SPA, message log, cost ledger, interrupts) can tell. The ONE
+  spawn point is `session.ts` — one more arm on the `nice` ternary.
+- **The agent still makes its own worktree.** The hub never ran `autowt` and
+  still doesn't: forge mirrors this machine's paths exactly (an `amar` user,
+  `~/proj/code/<repo>`, `~/sync/brain/...`), so the vault's repo symlink
+  resolves and no agent-facing instruction changes. Never "translate" paths —
+  mirroring them is what makes this invisible.
+- **Routing is opt-in and local-first**: board frontmatter `remote: forge` opts
+  a project in, a `#local` card tag opts one card out, `#forge` opts one in.
+  **Local is also the FALLBACK** — unreachable box, non-fast-forwardable repo,
+  refused tunnel all run locally with the reason logged. The board must never
+  stall on a sleeping cloud box.
+- **Readiness is prepared AHEAD of dispatch** (`prewarmCwd`), because the board
+  watcher stamps the card before the *synchronous* dispatch callback runs, so a
+  deferred dispatch would never be retried. Consequence: a card dispatched
+  while the box is cold runs locally that once.
+- **Transport is SSH-over-SSM** (`scripts/forge/ssm-proxy.sh`): the security
+  group has ZERO inbound rules. No public port, no Tailscale key, no human step.
+  Needs `session-manager-plugin` (in `~/.local/bin`, installed without root).
+- **Merge-back is fast-forward ONLY.** A remote fork merges on forge; the hub
+  fast-forwards this checkout. On divergence it REFUSES and notes the card —
+  never auto-merge, never silently strand commits on a cloud box.
+- **Don't forget these two**, both easy to miss: a remote session's transcript
+  lives on forge and is rsynced back at each turn end or `con agent search`
+  goes blind to it; and the repo link is not always named `repo` (Astera uses
+  `app`) — use `resolveCheckout()`, never a hardcoded name.
+- forge holds **no copy of the vault** — it sshfs-mounts the project dir off
+  this machine. `settings.json` is rewritten there to drop `AWS_PROFILE` so it
+  uses its instance role; cost attribution survives because the owner tag rides
+  the inference-profile ARN, not the caller.
+- Ops: `con agent forge status|up|down|run`, `scripts/forge/provision.sh`
+  (idempotent, needs admin AWS creds). Costs ~$108/mo at ~6 h/day on-demand
+  with the 20-min idle auto-stop; a stopped instance bills only EBS.
+- Design, measurements and as-built notes:
+  `~/sync/brain/root/projects/console/research/remote-compute-offload.md`.
