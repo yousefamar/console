@@ -40,6 +40,7 @@ import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, usageLim
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
 import { resolveEffort, effortHooks, type Effort, type EffortReason, type SpawnKind } from './agents/effort.js'
+import { resolveCompactWindow, compactWindowHooks } from './agents/compact-window.js'
 
 let sessionCounter = 0
 
@@ -436,6 +437,11 @@ export class Session extends EventEmitter {
     this.effort = effort
     this.effortReason = effortChoice.reason
     effortHooks().onSpawn?.(effort, effortChoice.kind, effortChoice.reason, this.name ?? this.id)
+    // Autocompact window per spawn KIND (agents/compact-window.ts): throwaway
+    // forks cap at 400k, generals keep the CLI default.
+    const compactChoice = resolveCompactWindow(this.spawnKind, compactWindowHooks().policy())
+    this.compactWindow = compactChoice.window
+    compactWindowHooks().onSpawn?.(compactChoice.window, this.spawnKind, compactChoice.reason, this.name ?? this.id)
     // Per-session pin wins; else resolved from ModelConfig (runtime-configurable
     // + fallback chain). Record what we spawned with so a model-unavailable
     // failure reports the right id.
@@ -515,6 +521,7 @@ export class Session extends EventEmitter {
         ...(this.claudeSessionId ? { CONSOLE_CLAUDE_SESSION_ID: this.claudeSessionId } : {}),
         ...projectDirEnv(cwd),
         CLAUDE_CODE_PROMPT_CACHE_TTL: ttlChoice.ttl,
+        ...(compactChoice.window ? { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(compactChoice.window) } : {}),
         ...(contextProxyEnv?.(this.name, this.id, String(this.spawnedAt)) ?? {}),
         // Which hub generation spawned this process — the reaper kills claude
         // children whose marker names a dead hub (process-reaper.ts).
@@ -1089,6 +1096,8 @@ export class Session extends EventEmitter {
   effortPin: Effort | null = null
   effort: Effort | null = null
   effortReason: EffortReason | null = null
+  /** CLAUDE_CODE_AUTO_COMPACT_WINDOW the current process got; null = CLI default. */
+  compactWindow: number | null = null
   /** See SessionOptions.placement / devPort. */
   placement: 'local' | 'forge' = 'local'
   devPort: number | null = null
@@ -1355,6 +1364,7 @@ export class Session extends EventEmitter {
       devPort: this.devPort ?? undefined,
       effort: this.processAlive && this.effort ? this.effort : undefined,
       effortReason: this.processAlive && this.effortReason ? this.effortReason : undefined,
+      compactWindow: this.processAlive && this.compactWindow ? this.compactWindow : undefined,
       messageLogLength: this.messageLogLength,
       lastReadIndex: this.readPinned ? this.messageLogLength : getLastReadIndex(this.claudeSessionId),
       readPinned: this.readPinned || undefined,

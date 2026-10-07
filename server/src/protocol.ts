@@ -249,6 +249,8 @@ export interface SessionInfo {
   /** `--effort` the current process runs on + why. Absent while hibernated. */
   effort?: string
   effortReason?: string
+  /** CLAUDE_CODE_AUTO_COMPACT_WINDOW of the current process (agents/compact-window.ts); absent = CLI default or hibernated. */
+  compactWindow?: number
   /** Where this session's `claude` actually runs — absent/'local' = this
    *  machine, 'forge' = the remote compute box (server/src/forge/). Surfaced so
    *  "where did this run?" is answerable from the UI, never inferred. */

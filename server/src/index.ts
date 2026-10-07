@@ -27,6 +27,7 @@ import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
 import { reapStaleProcesses, StaleProcessSweeper, waitForExit } from './agents/process-reaper.js'
 import { CacheTtlLedger, setCacheTtlHooks, DEFAULT_RECENT_MINUTES } from './agents/cache-ttl.js'
 import { setEffortHooks } from './agents/effort.js'
+import { setCompactWindowHooks } from './agents/compact-window.js'
 import { ContextProxy, ProxyConfigStore } from './agents/context-proxy.js'
 import { loadSessionHistory } from './history.js'
 import { discoverProjectDirs, listDirectories } from './projects.js'
@@ -303,6 +304,10 @@ setCacheTtlHooks({
 setEffortHooks({
   policy: () => prefsStore.getAll()['cache.effort'],
   onSpawn: (effort, kind, reason, label) => log(`[effort] ${label}: --effort ${effort} (${kind}, ${reason})`),
+})
+setCompactWindowHooks({
+  policy: () => prefsStore.getAll()['cache.autoCompactWindow'],
+  onSpawn: (window, kind, reason, label) => { if (window) log(`[compact] ${label}: autocompact window ${window / 1000}k (${kind}, ${reason})`) },
 })
 // Context proxy (^plum-fawn): opted-in sessions route Bedrock calls through a
 // loopback proxy that logs prompt composition and steers the API's
