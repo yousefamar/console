@@ -134,12 +134,12 @@ object MoneyBudgets {
 
     /**
      * Categories the add form may offer: expense, not hub-system, not already
-     * budgeted (SPA `expense.filter(c => !budgets.some(b => b.categoryId === c.id))`).
-     * Archived ones never reach the phone — `parseCategoryArray` drops them.
+     * budgeted (SPA `expense.filter(c => !budgets.some(b => b.categoryId === c.id))`),
+     * not archived.
      */
     fun availableCategories(categories: List<MoneyCategory>, budgets: List<Budget>): List<MoneyCategory> {
         val taken = budgets.map { it.categoryId }.toSet()
-        return categories.filter { it.kind == "expense" && !it.isSystem && it.id !in taken }
+        return categories.filter { it.kind == "expense" && !it.isSystem && !it.archived && it.id !in taken }
     }
 
     /** `"12.50"` / `"12"` / `"£12.50"` → pence; null when it isn't a positive amount. */

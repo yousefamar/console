@@ -147,13 +147,17 @@ class MoneyModelsTest {
     }
 
     @Test
-    fun `parseCategories drops archived and reads the emergency fund setting`() {
+    fun `parseCategories keeps archived rows flagged and reads the emergency fund setting`() {
         val body = """{"categories":[
             {"id":"cat_uncat","name":"Uncategorised","emoji":"❓","color":"#94a3b8","kind":"expense","isSystem":true},
+            {"id":"cat_rent","name":"Rent","emoji":"🏠","color":"#000","kind":"expense","variable":false},
             {"id":"cat_old","name":"Old","emoji":"x","color":"#000","kind":"expense","archived":true}],
             "settings":{"emergencyFund":{"mode":"months","months":6},"projectionHorizonMonths":60}}"""
         val cats = MoneyJson.parseCategories(body)
-        assertEquals(listOf("cat_uncat"), cats.map { it.id })
+        // Archived stays in the list (an old transaction still names it); pickers filter on the flag.
+        assertEquals(listOf("cat_uncat", "cat_rent", "cat_old"), cats.map { it.id })
+        assertEquals(listOf(false, false, true), cats.map { it.archived })
+        assertEquals(listOf(true, false, true), cats.map { it.variable })
         assertEquals("❓", cats[0].emoji)
         assertTrue(cats[0].isSystem) // the add-budget picker hides these
         assertEquals(cats, MoneyJson.decodeCategories(MoneyJson.encodeCategories(cats)))

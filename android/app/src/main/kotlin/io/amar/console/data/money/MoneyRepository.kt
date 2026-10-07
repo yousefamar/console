@@ -37,8 +37,10 @@ import kotlinx.coroutines.flow.StateFlow
  * one happens wherever he is. Per-category budgets ride `money:budget` the
  * same way (POST / DELETE `/finance/budgets`, keyed by categoryId — see
  * [MoneyBudgets]); their monthly actuals come from
- * `/finance/budget-status?month=`. Scenarios / rules CRUD are still SPA-only
- * (BACKLOG Open follow-ups).
+ * `/finance/budget-status?month=`. Categories and the auto-categorisation
+ * rules ride `money:category` / `money:rule` (POST = upsert with a
+ * phone-minted id, DELETE — see [MoneyCategories]). Scenarios and account CRUD
+ * are still SPA-only (BACKLOG Open follow-ups).
  */
 class MoneyRepository(
     private val db: ConsoleDb,
@@ -50,7 +52,10 @@ class MoneyRepository(
         const val TYPE_OVERRIDE = "money:override"
         const val TYPE_BALANCE = "money:balance"
         const val TYPE_BUDGET = "money:budget"
+        const val TYPE_CATEGORY = "money:category"
+        const val TYPE_RULE = "money:rule"
         private const val META_OVERRIDES = "money:overrides"
+        private const val META_RULES = "money:rules"
         private const val META_ACCOUNTS = "money:accounts"
         private const val META_BALANCES = "money:balances"
         private const val META_BUDGETS = "money:budgets"
@@ -66,7 +71,10 @@ class MoneyRepository(
     data class State(
         val projection: ProjectionResult? = null,
         val netWorthHistory: List<NetWorthPoint> = emptyList(),
+        /** `/finance/all` → categories, archived INCLUDED (lookups need them; pickers use [liveCategories]). */
         val categories: List<MoneyCategory> = emptyList(),
+        /** `/finance/all` → rules, in priority order (optimistic on edit). */
+        val rules: List<MoneyRule> = emptyList(),
         /** `/finance/all` → accounts (Monzo + manual, archived included). */
         val accounts: List<Account> = emptyList(),
         /** `/finance/networth` → balance per account id (empty when that route failed). */
@@ -90,6 +98,9 @@ class MoneyRepository(
         val hydrated: Boolean = false,
     ) {
         val categoriesById: Map<String, MoneyCategory> get() = categories.associateBy { it.id }
+
+        /** What a picker offers: everything not archived. */
+        val liveCategories: List<MoneyCategory> get() = categories.filterNot { it.archived }
 
         val budgetRows: List<MoneyBudgets.Row> get() = MoneyBudgets.rows(budgets, budgetStatus, categoriesById)
 
@@ -128,7 +139,9 @@ class MoneyRepository(
         val bals = meta.get(META_BALANCES)?.let { MoneyJson.decodeBalances(it) } ?: emptyMap()
         val buds = meta.get(META_BUDGETS)?.let { MoneyJson.parseBudgets(it) }
         val budStatus = meta.get(META_BUDGET_STATUS)?.let { MoneyJson.parseBudgetStatus(it) }
+        val rules = meta.get(META_RULES)?.let { MoneyJson.decodeRules(it) }
         _state.value = _state.value.copy(
+            rules = rules ?: _state.value.rules,
             overrides = ovs ?: _state.value.overrides,
             accounts = if (accs.isNotEmpty()) accs else _state.value.accounts,
             balances = if (bals.isNotEmpty()) bals else _state.value.balances,
@@ -200,19 +213,17 @@ class MoneyRepository(
                 }
             }
             allD.await().onFailure(::noteError).getOrNull()?.let { body ->
-                val cats = MoneyJson.parseCategories(body)
+                val cats = withInFlightCategories(MoneyJson.parseCategories(body))
                 val ef = MoneyJson.parseEmergencyFund(body)
-                if (cats.isNotEmpty()) meta.put(MetaRow(META_CATEGORIES, MoneyJson.encodeCategories(cats)))
+                if (cats.isNotEmpty()) storeCategories(cats)
                 if (ef != null) meta.put(MetaRow(META_EMERGENCY, MoneyJson.encodeEmergencyFund(ef)))
-                _state.value = _state.value.copy(
-                    categories = if (cats.isNotEmpty()) cats else _state.value.categories,
-                    emergencyFund = ef ?: _state.value.emergencyFund,
-                )
+                _state.value = _state.value.copy(emergencyFund = ef ?: _state.value.emergencyFund)
                 storeAccounts(withInFlightLedgers(MoneyJson.parseAccounts(body)))
-                // Budgets ride the same payload too (the SPA's fetchAll does the same).
+                // Budgets + rules ride the same payload too (the SPA's fetchAll does the same).
                 val root = runCatching { MoneyJson.json.parseToJsonElement(body) }.getOrNull()
-                val budgetsEl = (root as? kotlinx.serialization.json.JsonObject)?.get("budgets")
-                if (budgetsEl != null) storeBudgets(withInFlightBudgets(MoneyJson.parseBudgetArray(budgetsEl)))
+                val obj = root as? kotlinx.serialization.json.JsonObject
+                obj?.get("budgets")?.let { storeBudgets(withInFlightBudgets(MoneyJson.parseBudgetArray(it))) }
+                obj?.get("rules")?.let { storeRules(withInFlightRules(MoneyJson.parseRuleArray(it))) }
             }
             balD.await().getOrNull()?.let { body ->
                 val bals = MoneyJson.parseNetWorthBalances(body)
@@ -298,6 +309,187 @@ class MoneyRepository(
         ob.register("$TYPE_BALANCE:onFailed") { row, _ -> healBalance(row) }
         ob.register(TYPE_BUDGET) { row, _ -> handleBudget(row) }
         ob.register("$TYPE_BUDGET:onFailed") { row, _ -> healBudget(row) }
+        ob.register(TYPE_CATEGORY) { row, _ -> handleCategory(row) }
+        ob.register("$TYPE_CATEGORY:onFailed") { row, _ -> healCategory(row) }
+        ob.register(TYPE_RULE) { row, _ -> handleRule(row) }
+        ob.register("$TYPE_RULE:onFailed") { row, _ -> healRule(row) }
+    }
+
+    // ---------------------------------------------------------------- //
+    // Categories + rules (the taxonomy the budgets and classifications hang off)
+
+    private suspend fun inFlightCategories(): Set<String> =
+        if (outbox == null) emptySet() else db.outbox().inFlightEntityIds(TYPE_CATEGORY).toSet()
+
+    private suspend fun inFlightRules(): Set<String> =
+        if (outbox == null) emptySet() else db.outbox().inFlightEntityIds(TYPE_RULE).toSet()
+
+    /** [settled] = the id whose write just landed (its row is still `processing`) — see [MoneyCategories.withInFlightCategories]. */
+    private suspend fun withInFlightCategories(hubList: List<MoneyCategory>, settled: String? = null): List<MoneyCategory> =
+        MoneyCategories.withInFlightCategories(hubList, _state.value.categories, inFlightCategories() - setOfNotNull(settled))
+
+    private suspend fun withInFlightRules(hubList: List<MoneyRule>, settled: String? = null, settledCategory: String? = null): List<MoneyRule> {
+        val cats = inFlightCategories() - setOfNotNull(settledCategory)
+        return MoneyCategories.withInFlightRules(
+            hubList, _state.value.rules,
+            inFlightRules() - setOfNotNull(settled),
+            MoneyCategories.deletingCategoryIds(cats, _state.value.categories),
+        )
+    }
+
+    private suspend fun storeCategories(list: List<MoneyCategory>) {
+        db.meta().put(MetaRow(META_CATEGORIES, MoneyJson.encodeCategories(list)))
+        _state.value = _state.value.copy(categories = list)
+    }
+
+    /** Always held in priority order — the hub sorts on write, and every local path keeps that invariant. */
+    private suspend fun storeRules(list: List<MoneyRule>) {
+        val sorted = MoneyCategories.sorted(list)
+        db.meta().put(MetaRow(META_RULES, MoneyJson.encodeRules(sorted)))
+        _state.value = _state.value.copy(rules = sorted)
+    }
+
+    /**
+     * Create or edit a category. A create arrives with a phone-minted id
+     * ([MoneyCategories.mintCategoryId]) so the record's identity is final from
+     * the optimistic write on; the hub's POST upserts by that id.
+     */
+    suspend fun upsertCategory(category: MoneyCategory) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        val before = _state.value.categories.firstOrNull { it.id == category.id }
+        storeCategories(MoneyCategories.upsertInto(_state.value.categories, category))
+        ob.enqueue(
+            TYPE_CATEGORY,
+            MoneyCategories.encodeCategoryAction(
+                MoneyCategories.CategoryAction(category.id, MoneyCategories.categoryBody(category), before)
+            ),
+            entityId = category.id,
+        )
+    }
+
+    /**
+     * Delete a category and, like the hub will, the rules and budgets pointing
+     * at it. Any queued write for the same id is dropped first (a create the hub
+     * never saw, an edit that is now moot); the DELETE still goes — a 404 for an
+     * id the hub never had counts as done. System categories are refused here,
+     * matching the hub's 400.
+     */
+    suspend fun deleteCategory(category: MoneyCategory) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        require(MoneyCategories.canDelete(category)) { "System categories can't be deleted" }
+        val s = _state.value
+        val cascade = MoneyCategories.cascadeOf(category.id, s.rules, s.budgets)
+        storeCategories(s.categories.filterNot { it.id == category.id })
+        storeRules(_state.value.rules.filterNot { it.categoryId == category.id })
+        storeBudgets(_state.value.budgets.filterNot { it.categoryId == category.id })
+        ob.cancel(category.id, TYPE_CATEGORY)
+        ob.enqueue(
+            TYPE_CATEGORY,
+            MoneyCategories.encodeCategoryAction(
+                MoneyCategories.CategoryAction(category.id, null, category, cascade.rules, cascade.budgets)
+            ),
+            entityId = category.id,
+        )
+    }
+
+    suspend fun upsertRule(rule: MoneyRule) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        val before = _state.value.rules.firstOrNull { it.id == rule.id }
+        storeRules(MoneyCategories.upsertInto(_state.value.rules, rule))
+        ob.enqueue(
+            TYPE_RULE,
+            MoneyCategories.encodeRuleAction(
+                MoneyCategories.RuleAction(rule.id, MoneyCategories.ruleBody(rule, isEdit = before != null), before)
+            ),
+            entityId = rule.id,
+        )
+    }
+
+    suspend fun deleteRule(rule: MoneyRule) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        storeRules(_state.value.rules.filterNot { it.id == rule.id })
+        ob.cancel(rule.id, TYPE_RULE)
+        ob.enqueue(
+            TYPE_RULE,
+            MoneyCategories.encodeRuleAction(MoneyCategories.RuleAction(rule.id, null, rule)),
+            entityId = rule.id,
+        )
+    }
+
+    private suspend fun handleCategory(row: OutboxRow): Outbox.Result {
+        val a = MoneyCategories.decodeCategoryAction(row.payloadJson) ?: return Outbox.Result.Fail("bad payload")
+        return try {
+            if (a.body != null) hub.post("/finance/categories", a.body)
+            else try {
+                hub.delete("/finance/categories/${java.net.URLEncoder.encode(a.categoryId, "UTF-8")}")
+            } catch (e: HubClient.HttpException) {
+                if (e.code != 404) throw e // already gone = the delete we wanted
+            }
+            runCatching { refreshAfterTaxonomy(settledCategory = a.categoryId) }
+            Outbox.Result.Done
+        } catch (e: HubClient.HttpException) {
+            if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+        } catch (e: Exception) {
+            Outbox.retryOrNotReady(e, "network")
+        }
+    }
+
+    /** Terminal failure: put back the category (and, for a refused delete, what the cascade dropped). */
+    private suspend fun healCategory(row: OutboxRow): Outbox.Result {
+        val a = MoneyCategories.decodeCategoryAction(row.payloadJson) ?: return Outbox.Result.Done
+        storeCategories(MoneyCategories.healedCategories(_state.value.categories, a))
+        storeRules(MoneyCategories.healedRulesAfterCategory(_state.value.rules, a))
+        storeBudgets(MoneyCategories.healedBudgetsAfterCategory(_state.value.budgets, a))
+        return Outbox.Result.Done
+    }
+
+    private suspend fun handleRule(row: OutboxRow): Outbox.Result {
+        val a = MoneyCategories.decodeRuleAction(row.payloadJson) ?: return Outbox.Result.Fail("bad payload")
+        return try {
+            if (a.body != null) hub.post("/finance/rules", a.body)
+            else try {
+                hub.delete("/finance/rules/${java.net.URLEncoder.encode(a.ruleId, "UTF-8")}")
+            } catch (e: HubClient.HttpException) {
+                if (e.code != 404) throw e // already gone = the delete we wanted
+            }
+            runCatching { refreshAfterTaxonomy(settledRule = a.ruleId) }
+            Outbox.Result.Done
+        } catch (e: HubClient.HttpException) {
+            if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+        } catch (e: Exception) {
+            Outbox.retryOrNotReady(e, "network")
+        }
+    }
+
+    private suspend fun healRule(row: OutboxRow): Outbox.Result {
+        val a = MoneyCategories.decodeRuleAction(row.payloadJson) ?: return Outbox.Result.Done
+        storeRules(MoneyCategories.healedRules(_state.value.rules, a))
+        return Outbox.Result.Done
+    }
+
+    /**
+     * After a category or rule write: the taxonomy, the budgets a category
+     * delete cascaded through, and every transaction's classification (a rule
+     * change re-categorises history) come back from the hub.
+     */
+    private suspend fun refreshAfterTaxonomy(settledCategory: String? = null, settledRule: String? = null) {
+        runCatching {
+            val body = hub.get("/finance/all")
+            storeCategories(withInFlightCategories(MoneyJson.parseCategories(body), settled = settledCategory))
+            storeRules(withInFlightRules(MoneyJson.parseRules(body), settled = settledRule, settledCategory = settledCategory))
+            val root = runCatching { MoneyJson.json.parseToJsonElement(body) }.getOrNull() as? kotlinx.serialization.json.JsonObject
+            root?.get("budgets")?.let { storeBudgets(withInFlightBudgets(MoneyJson.parseBudgetArray(it))) }
+        }
+        runCatching {
+            val classes = MoneyJson.parseClassifications(hub.get("/finance/categorise?limit=$TX_LIMIT"))
+            val inFlight = inFlightOverrides()
+            val rows = db.money().recent(TX_LIMIT).mapNotNull { r ->
+                val c = classes[r.id] ?: return@mapNotNull null
+                if (r.id in inFlight) null
+                else r.copy(categoryId = c.categoryId, ignored = c.ignored, isTransfer = c.isTransfer).takeIf { it != r }
+            }
+            if (rows.isNotEmpty()) db.money().upsertAll(rows)
+        }
     }
 
     // ---------------------------------------------------------------- //
@@ -456,8 +648,12 @@ class MoneyRepository(
      * post-write refresh keeps our own optimistic copy — and a create would sit
      * under its `~` temp id until some later reconcile.
      */
-    private suspend fun withInFlightBudgets(hubList: List<Budget>, settled: String? = null): List<Budget> =
-        MoneyBudgets.withInFlight(hubList, _state.value.budgets, inFlightBudgets() - setOfNotNull(settled))
+    private suspend fun withInFlightBudgets(hubList: List<Budget>, settled: String? = null): List<Budget> {
+        val merged = MoneyBudgets.withInFlight(hubList, _state.value.budgets, inFlightBudgets() - setOfNotNull(settled))
+        // A category whose delete is queued takes its budget with it on the hub; don't revive it meanwhile.
+        val deleting = MoneyCategories.deletingCategoryIds(inFlightCategories(), _state.value.categories)
+        return if (deleting.isEmpty()) merged else merged.filterNot { it.categoryId in deleting }
+    }
 
     private suspend fun storeBudgets(list: List<Budget>) {
         db.meta().put(MetaRow(META_BUDGETS, MoneyJson.encodeBudgets(list)))

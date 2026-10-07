@@ -79,7 +79,9 @@ import io.amar.console.data.money.BalanceEntry
 import io.amar.console.data.money.LedgerEdit
 import io.amar.console.data.money.Budget
 import io.amar.console.data.money.MoneyBudgets
+import io.amar.console.data.money.MoneyCategories
 import io.amar.console.data.money.MoneyCategory
+import io.amar.console.data.money.MoneyRule
 import io.amar.console.data.money.MoneyLedger
 import io.amar.console.data.money.MoneyFormat
 import io.amar.console.data.money.MoneyRepository
@@ -106,8 +108,9 @@ private val INVEST_VIOLET = Color(0xFFA78BFA)
  * Money L1 — read-only mirror of the SPA Money tab's Cashflow / Net worth /
  * Transactions views: RunwayCard (5 tiles), per-category Budgets for the
  * current month, 12-month net-worth chart, recent transactions grouped by day.
- * Tap a transaction or a budget for its sheet. Scenarios / category + rule
- * editing and the balance ledger stay SPA-only (BACKLOG Open).
+ * Tap a transaction or a budget for its sheet; the manual-account ledger lives
+ * under Net worth; Categories + Rules fold below Budgets (see MoneyTaxonomy.kt).
+ * Scenarios and account CRUD stay SPA-only (BACKLOG Open).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -126,6 +129,14 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
     // a temp id until the hub mints the real one, and the category survives that swap.
     var budgetSheet by remember { mutableStateOf<BudgetSheet?>(null) }
     var confirmDeleteBudget by remember { mutableStateOf<Budget?>(null) }
+    // Taxonomy sections fold (edited rarely; the daily surfaces stay above the fold). Saveable:
+    // opening an editor or a tx sheet must not re-collapse them.
+    var categoriesOpen by rememberSaveable { mutableStateOf(false) }
+    var rulesOpen by rememberSaveable { mutableStateOf(false) }
+    var showArchived by rememberSaveable { mutableStateOf(false) }
+    var taxonomySheet by remember { mutableStateOf<TaxonomySheet?>(null) }
+    var confirmDeleteCategory by remember { mutableStateOf<MoneyCategory?>(null) }
+    var confirmDeleteRule by remember { mutableStateOf<MoneyRule?>(null) }
 
     // Hydrate the cached blobs synchronously-ish, then refresh from the hub.
     LaunchedEffect(Unit) {
@@ -202,6 +213,28 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                 )
                 BudgetsSection(rows) { row -> budgetSheet = BudgetSheet.Edit(row.budget.categoryId) }
             }
+            item(key = "categories") {
+                val live = state.liveCategories.size
+                FoldableTitle(
+                    "Categories", trailing = "$live",
+                    expanded = categoriesOpen, onToggle = { categoriesOpen = !categoriesOpen },
+                    onAdd = { taxonomySheet = TaxonomySheet.NewCategory },
+                )
+                if (categoriesOpen) CategoriesSection(
+                    categories = state.categories,
+                    showArchived = showArchived,
+                    onToggleArchived = { showArchived = it },
+                    onEdit = { c -> taxonomySheet = TaxonomySheet.EditCategory(c.id) },
+                )
+            }
+            item(key = "rules") {
+                FoldableTitle(
+                    "Rules", trailing = "${state.rules.size}",
+                    expanded = rulesOpen, onToggle = { rulesOpen = !rulesOpen },
+                    onAdd = { taxonomySheet = TaxonomySheet.NewRule },
+                )
+                if (rulesOpen) RulesSection(state.rules, cats) { r -> taxonomySheet = TaxonomySheet.EditRule(r.id) }
+            }
             item(key = "networth") {
                 SectionTitle("Net worth", trailing = "12 months")
                 NetWorthSection(state.netWorthHistory, state.projection?.runway)
@@ -248,7 +281,7 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
             TransactionDetail(
                 tx,
                 cats = state.categoriesById,
-                categories = state.categories,
+                categories = state.liveCategories,
                 override = state.overrides[tx.id],
                 // The screen's scope, not the sheet's: the write must outlive a dismiss.
                 onEdit = { edit -> scope.launch { runCatching { repo.applyOverride(tx.id, edit) } } },
@@ -285,6 +318,91 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                 }
             }
         }
+    }
+
+    taxonomySheet?.let { sheet ->
+        ModalBottomSheet(onDismissRequest = { taxonomySheet = null }) {
+            // The screen's scope, not the sheet's: every write must outlive the dismiss.
+            when (sheet) {
+                TaxonomySheet.NewCategory -> CategoryEditorSheet(
+                    category = null,
+                    onSave = { c -> scope.launch { runCatching { repo.upsertCategory(c) } }; taxonomySheet = null },
+                    onDelete = null,
+                    onCancel = { taxonomySheet = null },
+                )
+                is TaxonomySheet.EditCategory -> {
+                    val c = state.categoryFor(sheet)
+                    if (c == null) {
+                        Hint("That category is gone.")
+                        LaunchedEffect(sheet) { taxonomySheet = null }
+                    } else CategoryEditorSheet(
+                        category = c,
+                        onSave = { edited -> scope.launch { runCatching { repo.upsertCategory(edited) } }; taxonomySheet = null },
+                        onDelete = if (MoneyCategories.canDelete(c)) ({ confirmDeleteCategory = c; taxonomySheet = null }) else null,
+                        onCancel = { taxonomySheet = null },
+                    )
+                }
+                TaxonomySheet.NewRule -> RuleEditorSheet(
+                    rule = null,
+                    categories = state.liveCategories,
+                    onSave = { r -> scope.launch { runCatching { repo.upsertRule(r) } }; taxonomySheet = null },
+                    onDelete = null,
+                    onCancel = { taxonomySheet = null },
+                )
+                is TaxonomySheet.EditRule -> {
+                    val r = state.ruleFor(sheet)
+                    if (r == null) {
+                        Hint("That rule is gone.")
+                        LaunchedEffect(sheet) { taxonomySheet = null }
+                    } else RuleEditorSheet(
+                        rule = r,
+                        categories = state.liveCategories,
+                        onSave = { edited -> scope.launch { runCatching { repo.upsertRule(edited) } }; taxonomySheet = null },
+                        onDelete = { confirmDeleteRule = r; taxonomySheet = null },
+                        onCancel = { taxonomySheet = null },
+                    )
+                }
+            }
+        }
+    }
+
+    confirmDeleteCategory?.let { c ->
+        val dependants = remember(c.id, state.rules, state.budgets) { MoneyCategories.cascadeOf(c.id, state.rules, state.budgets) }
+        AlertDialog(
+            onDismissRequest = { confirmDeleteCategory = null },
+            title = { Text("Delete ${c.label}?") },
+            text = {
+                Text(
+                    buildString {
+                        append("Transactions in it become uncategorised.")
+                        if (dependants.rules.isNotEmpty()) append(" ${dependants.rules.size} rule(s) pointing here go too.")
+                        if (dependants.budgets.isNotEmpty()) append(" Its budget goes too.")
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { runCatching { repo.deleteCategory(c) } }
+                    confirmDeleteCategory = null
+                }) { Text("Delete", color = RED) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteCategory = null }) { Text("Cancel") } },
+        )
+    }
+
+    confirmDeleteRule?.let { r ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteRule = null },
+            title = { Text("Delete rule?") },
+            text = { Text(MoneyCategories.ruleTitle(r)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { runCatching { repo.deleteRule(r) } }
+                    confirmDeleteRule = null
+                }) { Text("Delete", color = RED) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteRule = null }) { Text("Cancel") } },
+        )
     }
 
     confirmDeleteBudget?.let { b ->
@@ -467,7 +585,7 @@ private fun PoundsField(value: String, onChange: (String) -> Unit) {
 }
 
 /** Category hex (`#a78bfa`) → Color; null when absent or unparseable. */
-private fun parseCatColor(hex: String?): Color? {
+internal fun parseCatColor(hex: String?): Color? {
     if (hex.isNullOrBlank()) return null
     return runCatching { Color(android.graphics.Color.parseColor(hex)) }.getOrNull()
 }
@@ -1041,7 +1159,7 @@ private fun DetailRow(label: String, value: String) {
 // Bits
 
 @Composable
-private fun SectionTitle(title: String, trailing: String? = null, action: (@Composable () -> Unit)? = null) {
+internal fun SectionTitle(title: String, trailing: String? = null, action: (@Composable () -> Unit)? = null) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp).padding(top = 14.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -1056,7 +1174,7 @@ private fun SectionTitle(title: String, trailing: String? = null, action: (@Comp
 }
 
 @Composable
-private fun Hint(text: String, padded: Boolean = true) {
+internal fun Hint(text: String, padded: Boolean = true) {
     Text(
         text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = if (padded) Modifier.padding(horizontal = 12.dp, vertical = 8.dp) else Modifier,

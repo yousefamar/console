@@ -50,6 +50,9 @@ interface MoneyDao {
     @Query("SELECT * FROM money_transactions ORDER BY createdAt DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<MoneyTxRow>>
 
+    @Query("SELECT * FROM money_transactions ORDER BY createdAt DESC LIMIT :limit")
+    suspend fun recent(limit: Int): List<MoneyTxRow>
+
     @Query("SELECT * FROM money_transactions WHERE id = :id")
     suspend fun byId(id: String): MoneyTxRow?
 

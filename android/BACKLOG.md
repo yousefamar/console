@@ -12,12 +12,13 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
 
 - Money: editing parity — the read-only pane shipped (^quick-gull), the
   per-transaction override landed (^warm-wren), the manual-account balance
-  ledger landed (^loud-frog) and Budgets landed (^busy-vole); still SPA-only:
-  Scenarios (`/finance/scenarios`, comparison chart), Categories + rules CRUD,
-  account CRUD itself (create / rename / liquidity / archive —
-  `POST/PATCH/DELETE /finance/accounts`; the phone logs readings on the
-  accounts the desktop defined), monthly spend chart (`/finance/monthly`),
-  shared-tab panel. Plan: categories + rules next; scenarios last.
+  ledger landed (^loud-frog), Budgets landed (^busy-vole) and Categories +
+  rules CRUD landed (^busy-goat); still SPA-only: Scenarios
+  (`/finance/scenarios`, comparison chart), account CRUD itself (create /
+  rename / liquidity / archive — `POST/PATCH/DELETE /finance/accounts`; the
+  phone logs readings on the accounts the desktop defined), monthly spend
+  chart (`/finance/monthly`), shared-tab panel. Plan: account CRUD next;
+  scenarios last.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
@@ -75,6 +76,56 @@ view-mode hub-sync (Room meta is fine on one device).
   CommandBar `Kind.SESSION` glyph (`Entry.remote`), `AgentStatusBar` chip
   `forge` / `forge:<devPort>` beside the cwd chip, and a "runs on forge
   (AWS)" line under the long-press sheet title.
+- **Money: categories + rules CRUD** (^busy-goat; the next slice of Open
+  "Money: editing parity" — SPA `CategoriesView.tsx`). Root cause of the gap:
+  the phone parsed categories only as a lookup table for transaction rows and
+  the budget picker (`parseCategoryArray` even DROPPED archived ones), and
+  never read `rules` off `/finance/all` at all, so the taxonomy the whole
+  classification hangs off could only be shaped on the desktop.
+  - `data/money/MoneyModels.kt`: `MoneyCategory` gains `variable` + `archived`
+    (archived now kept — an old transaction still names it; pickers filter via
+    `State.liveCategories`); new `MoneyRule` + `RuleMatch` with parse/encode
+    off the hub's own shape; `categoryJson`/`ruleJson` double as the POST body.
+  - `data/money/MoneyCategories.kt` (new, pure): `describeMatch` / `ruleTitle`
+    (SPA twins), priority ordering, `grouped` (income → expense → transfer,
+    archived behind a switch), the system-category delete guard (the hub 400s
+    on `cat_transfer` / `cat_uncat`), `cascadeOf` (the rules + budgets the
+    hub's `deleteCategory` removes), in-flight overlays, outbox payloads +
+    heals. Two hub facts it encodes: (1) `upsertCategory`/`upsertRule` honour a
+    client-supplied `id` (`input.id ?? mint()`), so the phone mints
+    `cat_<8hex>` / `rule_<8hex>` itself — the record's identity is final from
+    the optimistic write, no temp-id swap, and a delete of a never-synced row
+    addresses the id the hub would have stored (404 = done); (2) the hub's
+    upsert is `Object.assign(existing, input)`, so an EDIT sends cleared
+    optionals (label, ignore, asTransfer, sharedFraction, counterparty) as
+    `null` — omitting them keeps the old value, the bug the SPA has (its
+    `undefined`s drop out of the JSON). `match` is replaced wholesale.
+  - `MoneyRepository`: `rules` in `State` + `money:rules` meta cache; outbox
+    types `money:category` / `money:rule` on the `money:budget` precedent —
+    optimistic write carrying `before` (+ the cascaded rules/budgets for a
+    delete), `:onFailed` heals, transport-down = NotReady, DELETE 404 = Done,
+    `inFlightEntityIds` skip in reconcile with the settled-entity exclusion. A
+    category delete also drops rules whose category is being deleted from the
+    reconcile overlay (`deletingCategoryIds`) so they don't flicker back for
+    one pass. A landed write re-pulls `/finance/all` AND `/finance/categorise`
+    — a rule change re-categorises history — skipping rows with a queued
+    override. `MoneyDao.recent()` added for that sweep.
+  - `ui/money/MoneyTaxonomy.kt` (new): foldable Categories (chips: dot +
+    emoji + name, SYS / archived tags, "Show archived (N)" switch) and Rules
+    (priority · title · → category, ignored/transfer/share extras) sections
+    below Budgets, collapsed by default (`rememberSaveable`); editor sheets —
+    category: name / emoji / colour (hex field + 18 swatches; no native colour
+    picker in Compose) / kind chips / Variable / Archived (edit only) /
+    delete; rule: label + priority, the five match fields (amount sign as
+    Either / In / Out chips), category chip picker, ignore + transfer, share +
+    counterparty. Delete behind an AlertDialog that names the cascade. The
+    transaction sheet's category picker and the budget picker now hide
+    archived categories.
+  - Tests: `MoneyCategoriesTest` (pure helpers + payload round-trips + heals),
+    `MoneyRepositoryCategoryRuleTest` (Robolectric, scripted hub by PATH:
+    optimistic write → request → refresh → heal, reconcile guards, the
+    cascade, the 404s, the classification re-pull sparing a queued override).
+    `MoneyModelsTest` updated for archived-kept.
 
 ## Shipped
 

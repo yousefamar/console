@@ -110,10 +110,49 @@ data class MoneyCategory(
     val emoji: String,
     /** Hex like `#a78bfa`. */
     val color: String,
+    /** `income` | `expense` | `transfer`. */
     val kind: String,
-    /** Hub-seeded (cat_transfer / cat_uncat) — never offered as a budget target. */
+    /** Hub-seeded (cat_transfer / cat_uncat) — never offered as a budget target, never deletable. */
     val isSystem: Boolean = false,
+    /** Variable spend (trailing-3-month average in projections); false = comes entirely from streams. */
+    val variable: Boolean = true,
+    /** Kept in the list for lookups (an archived category's transactions still name it); pickers hide it. */
+    val archived: Boolean = false,
+) {
+    val label: String get() = "$emoji $name".trim()
+}
+
+/**
+ * `finance-rules.json` row (server `CategoryRule`): priority-ordered, the
+ * match conditions AND together, first match wins. Optional fields are null
+ * when the hub never set them.
+ */
+data class MoneyRule(
+    val id: String,
+    /** Lower = runs first. */
+    val priority: Int,
+    val label: String? = null,
+    val match: RuleMatch = RuleMatch(),
+    val categoryId: String,
+    val ignore: Boolean = false,
+    val asTransfer: Boolean = false,
+    /** 0..1 share of the amount that is Yousef's; null = all of it. */
+    val sharedFraction: Double? = null,
+    val sharedWithCounterparty: String? = null,
 )
+
+data class RuleMatch(
+    val merchantContains: String? = null,
+    val descriptionContains: String? = null,
+    val counterpartyContains: String? = null,
+    /** `in` | `out` | null (either). */
+    val amountSign: String? = null,
+    val monzoCategoryEquals: String? = null,
+) {
+    val isEmpty: Boolean
+        get() = merchantContains == null && descriptionContains == null && counterpartyContains == null &&
+            amountSign == null && monzoCategoryEquals == null
+}
 
 /** `/finance/categorise` row: the effective category for one transaction. */
 data class TxClassification(val categoryId: String, val ignored: Boolean, val isTransfer: Boolean)
@@ -217,7 +256,7 @@ object MoneyJson {
         }
     }
 
-    /** `/finance/all` → categories (archived dropped) + emergency-fund setting. */
+    /** `/finance/all` → categories (archived included — see [MoneyCategory.archived]). */
     fun parseCategories(allBody: String): List<MoneyCategory> {
         val root = runCatching { json.parseToJsonElement(allBody).jsonObject }.getOrNull() ?: return emptyList()
         return parseCategoryArray(root["categories"])
@@ -225,18 +264,85 @@ object MoneyJson {
 
     fun parseCategoryArray(el: JsonElement?): List<MoneyCategory> {
         val arr = el as? JsonArray ?: return emptyList()
-        return arr.mapNotNull { c ->
-            val o = c as? JsonObject ?: return@mapNotNull null
-            if (o["archived"].bool()) return@mapNotNull null
-            MoneyCategory(
-                id = o["id"].str() ?: return@mapNotNull null,
-                name = o["name"].str() ?: return@mapNotNull null,
-                emoji = o["emoji"].str() ?: "",
-                color = o["color"].str() ?: "#94a3b8",
-                kind = o["kind"].str() ?: "expense",
-                isSystem = o["isSystem"].bool(),
-            )
+        return arr.mapNotNull { c -> (c as? JsonObject)?.let(::parseCategory) }
+    }
+
+    fun parseCategory(o: JsonObject): MoneyCategory? {
+        val id = o["id"].str() ?: return null
+        val name = o["name"].str() ?: return null
+        return MoneyCategory(
+            id = id,
+            name = name,
+            emoji = o["emoji"].str() ?: "",
+            color = o["color"].str() ?: "#94a3b8",
+            kind = o["kind"].str() ?: "expense",
+            isSystem = o["isSystem"].bool(),
+            variable = o["variable"].bool(default = true),
+            archived = o["archived"].bool(),
+        )
+    }
+
+    /** `/finance/all` → `rules` (the hub serves them sorted by priority). */
+    fun parseRules(allBody: String): List<MoneyRule> {
+        val root = runCatching { json.parseToJsonElement(allBody).jsonObject }.getOrNull() ?: return emptyList()
+        return parseRuleArray(root["rules"])
+    }
+
+    /** `/finance/rules` (a bare array) or the `rules` field of `/finance/all`. */
+    fun parseRuleArray(el: JsonElement?): List<MoneyRule> {
+        val arr = el as? JsonArray ?: return emptyList()
+        return arr.mapNotNull { r -> (r as? JsonObject)?.let(::parseRule) }
+    }
+
+    fun parseRule(o: JsonObject): MoneyRule? {
+        val m = o["match"] as? JsonObject
+        return MoneyRule(
+            id = o["id"].str() ?: return null,
+            priority = o["priority"].longOr(50).toInt(),
+            label = o["label"].str()?.takeIf { it.isNotBlank() },
+            match = RuleMatch(
+                merchantContains = m?.get("merchantContains").str()?.takeIf { it.isNotBlank() },
+                descriptionContains = m?.get("descriptionContains").str()?.takeIf { it.isNotBlank() },
+                counterpartyContains = m?.get("counterpartyContains").str()?.takeIf { it.isNotBlank() },
+                amountSign = m?.get("amountSign").str()?.takeIf { it == "in" || it == "out" },
+                monzoCategoryEquals = m?.get("monzoCategoryEquals").str()?.takeIf { it.isNotBlank() },
+            ),
+            categoryId = o["categoryId"].str() ?: return null,
+            ignore = o["ignore"].bool(),
+            asTransfer = o["asTransfer"].bool(),
+            sharedFraction = o["sharedFraction"].doubleOrNullSafe(),
+            sharedWithCounterparty = o["sharedWithCounterparty"].str()?.takeIf { it.isNotBlank() },
+        )
+    }
+
+    fun decodeRules(body: String): List<MoneyRule> =
+        parseRuleArray(runCatching { json.parseToJsonElement(body) }.getOrNull())
+
+    fun encodeRules(rules: List<MoneyRule>): String = json.encodeToString(
+        JsonArray.serializer(),
+        JsonArray(rules.map(::ruleJson)),
+    )
+
+    /** The hub's own wire shape — also the POST body of an upsert (see [MoneyCategories.ruleBody]). */
+    fun ruleJson(r: MoneyRule, nullsForCleared: Boolean = false): JsonObject = kotlinx.serialization.json.buildJsonObject {
+        fun opt(key: String, v: JsonElement?) {
+            if (v != null) put(key, v) else if (nullsForCleared) put(key, JsonNull)
         }
+        put("id", JsonPrimitive(r.id))
+        put("priority", JsonPrimitive(r.priority))
+        opt("label", r.label?.let { JsonPrimitive(it) })
+        put("match", kotlinx.serialization.json.buildJsonObject {
+            r.match.merchantContains?.let { put("merchantContains", JsonPrimitive(it)) }
+            r.match.descriptionContains?.let { put("descriptionContains", JsonPrimitive(it)) }
+            r.match.counterpartyContains?.let { put("counterpartyContains", JsonPrimitive(it)) }
+            r.match.amountSign?.let { put("amountSign", JsonPrimitive(it)) }
+            r.match.monzoCategoryEquals?.let { put("monzoCategoryEquals", JsonPrimitive(it)) }
+        })
+        put("categoryId", JsonPrimitive(r.categoryId))
+        opt("ignore", if (r.ignore) JsonPrimitive(true) else null)
+        opt("asTransfer", if (r.asTransfer) JsonPrimitive(true) else null)
+        opt("sharedFraction", r.sharedFraction?.let { JsonPrimitive(it) })
+        opt("sharedWithCounterparty", r.sharedWithCounterparty?.let { JsonPrimitive(it) })
     }
 
     /** `/finance/budgets` (also `/finance/all` → budgets) → [Budget] rows. */
@@ -442,17 +548,20 @@ object MoneyJson {
 
     fun encodeCategories(cats: List<MoneyCategory>): String = json.encodeToString(
         JsonArray.serializer(),
-        JsonArray(cats.map {
-            kotlinx.serialization.json.buildJsonObject {
-                put("id", JsonPrimitive(it.id))
-                put("name", JsonPrimitive(it.name))
-                put("emoji", JsonPrimitive(it.emoji))
-                put("color", JsonPrimitive(it.color))
-                put("kind", JsonPrimitive(it.kind))
-                put("isSystem", JsonPrimitive(it.isSystem))
-            }
-        }),
+        JsonArray(cats.map(::categoryJson)),
     )
+
+    /** The hub's own wire shape — also the POST body of an upsert (see [MoneyCategories.categoryBody]). */
+    fun categoryJson(c: MoneyCategory): JsonObject = kotlinx.serialization.json.buildJsonObject {
+        put("id", JsonPrimitive(c.id))
+        put("name", JsonPrimitive(c.name))
+        put("emoji", JsonPrimitive(c.emoji))
+        put("color", JsonPrimitive(c.color))
+        put("kind", JsonPrimitive(c.kind))
+        put("variable", JsonPrimitive(c.variable))
+        put("archived", JsonPrimitive(c.archived))
+        if (c.isSystem) put("isSystem", JsonPrimitive(true))
+    }
 
     fun decodeCategories(body: String): List<MoneyCategory> =
         parseCategoryArray(runCatching { json.parseToJsonElement(body) }.getOrNull())
