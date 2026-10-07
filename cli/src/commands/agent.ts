@@ -622,14 +622,19 @@ interface LoginRow { name: string; dir: string; addedAt: number; exhaustedUntil?
  *  hub does it on its own, this is the manual lever. `add` only provisions the
  *  config dir; the OAuth login itself is interactive and must be run by hand. */
 async function agentLogin(args: string[], flags: GlobalFlags): Promise<void> {
-  const sub = args[0] ?? 'list'
-  const name = args[1]
-  const opts = parseFlags(args.slice(1))
-  const bad = unknownFlags(opts, ['dir', 'force'])
+  // `--force` takes no value, and parseFlags would otherwise swallow the name
+  // after it (`login use --force second`). Strip it before parsing the rest.
+  const force = args.includes('--force')
+  const argv = args.filter((a) => a !== '--force')
+  const opts = parseFlags(argv)
+  const bad = unknownFlags(opts, ['dir'])
   if (bad.length) {
     exitWithError('USAGE', `Unknown flag(s) for con agent login: ${bad.map((f) => `--${f}`).join(', ')}. Usage: con agent login [list | add <name> [--dir <path>] | use <name> [--force] | check <name> | remove <name>]`, flags)
     return
   }
+  const pos = positionals(argv, opts)
+  const sub = pos[0] ?? 'list'
+  const name = pos[1]
   if (sub === 'list' || sub === 'get') {
     const state = await hubFetch<{ active: string; multi: boolean; logins: LoginRow[] }>('/agents/logins')
     if (isJsonMode(flags)) { output(state, flags); return }
@@ -657,7 +662,7 @@ async function agentLogin(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   if (sub === 'use' || sub === 'set') {
-    const r = await hubFetch<{ active: string; dir?: string; unchanged?: boolean }>('/agents/logins', { method: 'POST', body: { action: 'use', name, force: opts.force === 'true' } })
+    const r = await hubFetch<{ active: string; dir?: string; unchanged?: boolean }>('/agents/logins', { method: 'POST', body: { action: 'use', name, force } })
     output(isJsonMode(flags) ? r : r.unchanged ? `already on '${r.active}'` : `fleet is now on Max login '${r.active}' (${r.dir}) — live sessions respawned`, flags)
     return
   }
