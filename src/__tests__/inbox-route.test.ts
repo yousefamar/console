@@ -153,6 +153,19 @@ describe('row shape', () => {
     expect(i?.body).toBe('HN')
   })
 
+  it('mail carries its Gmail labels, named — the Inbox pane showed none (^zany-fox)', () => {
+    const t = thread({ labelIds: ['INBOX', 'UNREAD', 'CATEGORY_UPDATES', 'Label_38', 'Label_32'] })
+    const map = { Label_38: 'Action', Label_32: 'Astera/Platform' }
+    expect(threadToItem(t, DEFAULT_RULES, map).labels).toEqual(['Action', 'Astera/Platform'])
+  })
+
+  it('mail: an unnameable label id is dropped, never shown raw (a stale map named none of them)', () => {
+    const t = thread({ labelIds: ['INBOX', 'Label_38', 'Label_32'] })
+    expect(threadToItem(t, DEFAULT_RULES, { Label_38: 'Action' }).labels).toEqual(['Action'])
+    expect(threadToItem(t, DEFAULT_RULES, {}).labels).toBeUndefined()
+    expect(threadToItem(t, DEFAULT_RULES).labels).toBeUndefined()
+  })
+
   it('mail carries read state: an opened-but-unarchived thread is unread=false (^fond-koi)', () => {
     expect(threadToItem(thread({ isUnread: true }), DEFAULT_RULES).unread).toBe(true)
     expect(threadToItem(thread({ isUnread: false }), DEFAULT_RULES).unread).toBe(false)

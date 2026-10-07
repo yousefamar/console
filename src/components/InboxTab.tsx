@@ -9,10 +9,11 @@
 // mark-read); the lists rebuild from source state, so an item handled here
 // OR in its legacy pane drops out identically.
 //
-// Row anatomy (real-estate over labels): channel ICON only (bridge brand for
-// chat, mail/rss glyphs otherwise) + header (person/group/feed) + time, then
-// the body (message/subject/item title) below. A DM's body has no sender
-// prefix — the header already names them (roomToItem strips it).
+// Row anatomy (real-estate over channel names): channel ICON only (bridge
+// brand for chat, mail/rss glyphs otherwise) + header (person/group/feed) +
+// a mail thread's Gmail labels + time, then the body (message/subject/item
+// title) below. A DM's body has no sender prefix — the header already names
+// them (roomToItem strips it).
 
 import { memo, useRef, useState } from 'react'
 import { AlarmClockOff, ArrowLeftToLine, ArrowRightToLine, Ban, Bot, Check, ChevronRight, ClipboardCheck, Clock, FolderKanban, Mail, MessageCircle, PanelLeftClose, Rss, SlidersHorizontal } from 'lucide-react'
@@ -36,6 +37,7 @@ import { RoomIdContextMenu } from './RoomContextMenu'
 import { relativeTime } from '@/utils/date'
 import { blockedCardsFor, feedKindsPresent, reviewHandbacksFor, routeForFeed, type BlockedCard, type ReviewHandback } from '@/inbox/route'
 import { InboxCardModal } from '@/components/InboxCardModal'
+import { MailLabels } from './MailLabels'
 import { FEED_KIND_LABEL, type FeedKind } from '@/feeds/feed-kind'
 import type { FeedRoute, InboxItem, InboxSource } from '@/inbox/types'
 import { snoozeLabel, unsnoozeItem } from '@/inbox/snooze'
@@ -530,6 +532,7 @@ const ItemRow = memo(function ItemRow({ item, selected, onClick }: {
               )}
               <span className={`truncate text-sm ${item.unread === true ? 'font-semibold text-text-primary' : item.unread === false ? 'text-text-secondary' : 'text-text-primary'}`} title={item.agentName}>{item.header}</span>
             </span>
+            {item.labels && <MailLabels names={item.labels} />}
             {item.overdue && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unanswered past SLA">overdue</span>}
             {item.draft && <span className="text-[9px] uppercase tracking-wide text-amber-500 flex-shrink-0" title="Unsent draft">draft</span>}
             {item.source === 'agent' && <HandbackGlyph agentKey={item.agentKey} />}

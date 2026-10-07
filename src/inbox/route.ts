@@ -1,6 +1,7 @@
 // Pure routing + prioritisation for the unified Inbox pane.
 
 import type { DbThread } from '@/gmail/types'
+import { userLabelNames } from '@/gmail/labels'
 import type { DbChatRoom } from '@/matrix/types'
 import type { FeedItem, FeedSubscription } from '@/store/feeds'
 import { isHiddenFolder } from '@/feeds/hidden-folders'
@@ -60,7 +61,8 @@ export function isOverdue(r: DbChatRoom, rules: InboxRules, now: number): boolea
 // redundant sender prefix — the header already names them.
 // ---------------------------------------------------------------------------
 
-export function threadToItem(t: DbThread, rules: InboxRules): InboxItem {
+export function threadToItem(t: DbThread, rules: InboxRules, labelMap?: Record<string, string>): InboxItem {
+  const labels = userLabelNames(t.labelIds, labelMap)
   return {
     key: itemKey('mail', t.id),
     source: 'mail',
@@ -71,6 +73,7 @@ export function threadToItem(t: DbThread, rules: InboxRules): InboxItem {
     route: routeForThread(t, rules),
     routeKey: t.fromEmail?.toLowerCase() ?? '',
     unread: t.isUnread,
+    ...(labels.length > 0 ? { labels } : {}),
   }
 }
 

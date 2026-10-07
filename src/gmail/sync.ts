@@ -3,6 +3,7 @@ import * as queue from '@/db/sync-queue'
 import { onEnqueue } from '@/db/sync-queue'
 import * as api from './api'
 import type { DbThread, DbMessage, GmailThread } from './types'
+import { unknownUserLabels } from './labels'
 import { getHeader, getBodyHtml, getBodyText, parseFrom, getAllHeaders, getAttachments, getCalendarPart, parseCalendarData } from '@/utils/email'
 
 export type SyncStatus = 'idle' | 'syncing' | 'error' | 'offline'
@@ -96,6 +97,31 @@ async function gmailMessageToDbMessage(msg: GmailThread['messages'][number]): Pr
   }
 }
 
+/** Re-read the user's Gmail labels into `labelMap` (id → name).
+ *
+ *  Called on boot, by every full sync, and by an incremental sync that stored
+ *  a thread carrying an id the map can't name. Before that last trigger the
+ *  map was written ONLY by a full sync — which runs on a hard reset or an
+ *  expired historyId and nothing else — so a label created afterwards never
+ *  got a name and rendered as its raw id for as long as the profile lived
+ *  (^zany-fox: 7 of Yousef's labels, every one he actually files with). */
+export async function syncLabels(): Promise<void> {
+  const labels = await api.getLabels()
+  const labelMap: Record<string, string> = {}
+  for (const l of labels) labelMap[l.id] = l.name
+  await setMeta('labelMap', JSON.stringify(labelMap))
+}
+
+async function getLabelMap(): Promise<Record<string, string>> {
+  const raw = await getMeta('labelMap')
+  if (!raw) return {}
+  try {
+    return JSON.parse(raw) as Record<string, string>
+  } catch {
+    return {}
+  }
+}
+
 // Full sync: fetch all inbox threads
 export async function fullSync(): Promise<void> {
   // Don't start a doomed network call when we already know the hub is down.
@@ -113,17 +139,12 @@ export async function fullSync(): Promise<void> {
     await setMeta('email', profile.emailAddress)
 
     // Fetch send-as aliases + user labels in parallel
-    const [aliasResult, labelResult] = await Promise.allSettled([
+    const [aliasResult] = await Promise.allSettled([
       api.getSendAsAliases(),
-      api.getLabels(),
+      syncLabels(),
     ])
     if (aliasResult.status === 'fulfilled') {
       await setMeta('sendAsAliases', JSON.stringify(aliasResult.value))
-    }
-    if (labelResult.status === 'fulfilled') {
-      const labelMap: Record<string, string> = {}
-      for (const l of labelResult.value) labelMap[l.id] = l.name
-      await setMeta('labelMap', JSON.stringify(labelMap))
     }
 
     // Helper: fetch thread data and save to DB
@@ -294,6 +315,8 @@ export async function incrementalSync(): Promise<void> {
     )
 
     // Re-fetch affected threads
+    const labelMap = await getLabelMap()
+    let sawUnknownLabel = false
     for (const threadId of affectedThreadIds) {
       try {
         const thread = await api.getThread(threadId)
@@ -301,6 +324,7 @@ export async function incrementalSync(): Promise<void> {
 
         if (isInInbox) {
           const dbThread = gmailMessageToDbThread(thread)
+          if (unknownUserLabels(dbThread.labelIds, labelMap).length > 0) sawUnknownLabel = true
           // Convert messages outside transaction (gmailMessageToDbMessage may fetch attachments)
           const dbMessages: DbMessage[] = []
           for (const msg of thread.messages) {
@@ -351,6 +375,11 @@ export async function incrementalSync(): Promise<void> {
     if (deletedMessageIds.size > 0) {
       await db.messages.bulkDelete([...deletedMessageIds])
     }
+
+    // A thread arrived wearing a label we can't name — the user made or
+    // renamed one since the map was written. Re-read it so the row stops
+    // hiding the label (never block the sync on it).
+    if (sawUnknownLabel) await syncLabels().catch(() => {})
 
     await setMeta('historyId', newHistoryId)
     await setMeta('lastSync', String(Date.now()))
@@ -515,7 +544,9 @@ export function startSyncLoop(intervalMs = 300_000 /* 5 min fallback */): void {
     }
   }
 
-  // Initial sync on boot.
+  // Initial sync on boot. Labels ride along: a rename only ever shows up
+  // here (an unknown id self-heals mid-session, a renamed one still resolves).
+  syncLabels().catch(() => {})
   doSync()
 
   // Hub-driven incremental syncs — debounced so a burst of deltas results in

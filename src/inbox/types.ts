@@ -40,6 +40,10 @@ export interface InboxItem {
   unread?: boolean
   /** Chat only: DM vs group — drives inbox ordering. */
   isDirect?: boolean
+  /** Mail only: the thread's Gmail labels, already resolved to display names
+   *  (unnameable ids dropped). The Mail pane shows these; so must this one —
+   *  the label is how Yousef tells Action from Noise at a glance (^zany-fox). */
+  labels?: string[]
   /** Agent only: session flagged @amar / pending question — tops the inbox. */
   attention?: boolean
   /** Agent only: the turn has ended (not mid-stream) — a finished agent

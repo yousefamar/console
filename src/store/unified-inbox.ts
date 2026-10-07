@@ -145,6 +145,18 @@ let rulesDirty = false
 let saveSeq = 0
 let rulesRequested = false
 
+/** Gmail label id → name, as the mail sync last stored it. Missing or corrupt
+ *  is normal before the first sync — the rows just show no label. */
+async function readLabelMap(): Promise<Record<string, string> | undefined> {
+  const raw = (await db.meta.get('labelMap'))?.value
+  if (!raw) return undefined
+  try {
+    return JSON.parse(raw) as Record<string, string>
+  } catch {
+    return undefined
+  }
+}
+
 async function pushRules(rules: InboxRules): Promise<boolean> {
   try {
     const res = await hubFetch('/inbox/rules', {
@@ -251,9 +263,12 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const now = Date.now()
 
     // Mail: the store's threads array IS the live inbox (archive removes).
+    // Gmail label names come from the same Dexie `labelMap` the Mail pane
+    // reads, so both panes name a thread's labels identically.
+    const labelMap = await readLabelMap()
     const threads = useInboxStore.getState().threads
       .filter((t) => threadIsLive(t, now))
-      .map((t) => threadToItem(t, effective))
+      .map((t) => threadToItem(t, effective, labelMap))
 
     // Chat: unread/manual-unread rooms, straight from Dexie (the chat store's
     // rooms array drops read rooms lazily; Dexie is the durable mirror).
@@ -299,7 +314,7 @@ export const useUnifiedInboxStore = create<UnifiedInboxState>((set, get) => ({
     const stamp = (i: InboxItem | null, until: number | undefined): InboxItem | null =>
       i && until ? { ...i, snoozedUntil: until } : null
     const snoozedThreads = (await db.threads.filter((t) => !!t.snoozedUntil && t.snoozedUntil > now).toArray())
-      .map((t) => stamp(threadToItem(t, effective), t.snoozedUntil))
+      .map((t) => stamp(threadToItem(t, effective, labelMap), t.snoozedUntil))
     const snoozedRooms = allRooms
       .filter((r) => !!r.snoozedUntil && r.snoozedUntil > now)
       .map((r) => stamp(roomToItem(r, effective, now), r.snoozedUntil))

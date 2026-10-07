@@ -3,6 +3,8 @@ import clsx from 'clsx'
 import { relativeTime } from '@/utils/date'
 import { decodeEntities } from '@/utils/html'
 import type { DbThread } from '@/gmail/types'
+import { userLabelNames } from '@/gmail/labels'
+import { MailLabels } from './MailLabels'
 import { Clock, Paperclip } from 'lucide-react'
 
 interface ThreadListItemProps {
@@ -15,9 +17,7 @@ interface ThreadListItemProps {
 
 export const ThreadListItem = memo(function ThreadListItem({ thread, isSelected, onSelect, snoozed, labelMap }: ThreadListItemProps) {
   const handleClick = useCallback(() => onSelect(thread.id), [onSelect, thread.id])
-  const userLabels = thread.labelIds
-    .filter((id) => id.startsWith('Label_'))
-    .map((id) => labelMap?.[id] ?? id)
+  const userLabels = userLabelNames(thread.labelIds, labelMap)
 
   return (
     <button
@@ -35,9 +35,7 @@ export const ThreadListItem = memo(function ThreadListItem({ thread, isSelected,
           {thread.from}
         </span>
         <span className="flex items-center gap-1 flex-shrink-0 text-xs text-text-tertiary">
-          {userLabels.map((l) => (
-            <span key={l} className="text-[9px] opacity-60">{l}</span>
-          ))}
+          <MailLabels names={userLabels} />
           {thread.hasAttachments && <Paperclip size={10} />}
           {snoozed && <Clock size={10} />}
           {snoozed ? relativeTime(thread.snoozedUntil!) : relativeTime(thread.date)}
