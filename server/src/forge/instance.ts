@@ -54,6 +54,26 @@ export async function instanceState(cfg: ForgeConfig): Promise<InstanceState> {
   return known.includes(s) ? (s as InstanceState) : 'unknown'
 }
 
+/** Whether the box's SSM agent has checked in — `Online`, or `none` when SSM
+ *  holds no record of it at all.
+ *
+ *  Worth asking about separately, because "running but not registered" is a BOX
+ *  fault that looks exactly like a card fault from the board: the transport is
+ *  SSH-over-SSM, so an unregistered instance refuses ssh with a bare
+ *  "Connection closed by UNKNOWN port 65535" and every prepare times out. It
+ *  happened for 20 minutes on 8 Oct 2026 after the first boot following the
+ *  m7i.4xlarge resize, and recovered on the next start. Naming it in the
+ *  failure reason is the difference between re-firing the card and debugging
+ *  the wrong thing. */
+export async function ssmPingStatus(cfg: ForgeConfig): Promise<string> {
+  const r = await aws(cfg, ['ssm', 'describe-instance-information',
+    '--filters', `Key=InstanceIds,Values=${cfg.instanceId}`,
+    '--query', 'InstanceInformationList[0].PingStatus', '--output', 'text'], 30_000)
+  if (!r.ok) return 'unknown'
+  const s = r.stdout.trim()
+  return s && s !== 'None' ? s : 'none'
+}
+
 export async function startInstance(cfg: ForgeConfig): Promise<boolean> {
   const r = await aws(cfg, ['ec2', 'start-instances', '--instance-ids', cfg.instanceId], 120_000)
   return r.ok

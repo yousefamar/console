@@ -8,7 +8,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { resolveCheckout } from '../git-status.js'
 import { join } from 'node:path'
 import { forgeConfig, forgeAvailable, resolvePlacement, boardRemote, type ForgeConfig, type Placement } from './config.js'
-import { ensureForgeReady, stopIfIdle, instanceState } from './instance.js'
+import { ensureForgeReady, stopIfIdle, instanceState, ssmPingStatus } from './instance.js'
 import { ensureMaster, forwardDevPort, cancelDevPort, forgeExec, remoteCommandArgv, spawnRemote, HUB_PORT } from './ssh.js'
 import { ensureSessionMounts, memoryDirFor, isMounted } from './mounts.js'
 import { ensureRepoOnForge, foldBackFromForge, ensureConCli, repoNameFor } from './repo.js'
@@ -16,7 +16,7 @@ import { syncAgentEnv, syncCliToken } from './agent-env.js'
 import { syncTranscript } from './transcripts.js'
 
 export * from './config.js'
-export { ensureForgeReady, stopIfIdle, instanceState } from './instance.js'
+export { ensureForgeReady, stopIfIdle, instanceState, ssmPingStatus } from './instance.js'
 export { forgeExec, remoteCommandArgv, spawnRemote, forwardDevPort, cancelDevPort, ensureMaster, HUB_PORT, sshEnv as forgeSshEnv } from './ssh.js'
 export { foldBackFromForge, ensureRepoOnForge } from './repo.js'
 export { syncTranscript, pushTranscript, transcriptPath } from './transcripts.js'
@@ -155,7 +155,16 @@ export async function prepareRemoteSession(opts: {
   const cfg = forgeConfig()
   if (!cfg) return { ok: false, reason: 'no forge configured (~/.config/console/forge.json)' }
 
-  if (!(await ensureForgeReady(cfg, log))) return { ok: false, reason: 'forge did not become reachable', cfg }
+  if (!(await ensureForgeReady(cfg, log))) {
+    // Say WHICH kind of unreachable. A running box whose SSM agent has not
+    // registered refuses ssh identically to one that is still booting, and the
+    // two want opposite responses: re-fire the card, or wait.
+    const [state, ping] = await Promise.all([instanceState(cfg), ssmPingStatus(cfg)])
+    const detail = state === 'running' && ping !== 'Online'
+      ? `the box is RUNNING but its SSM agent has not registered (ping: ${ping}) — this is a box fault, not a card fault; re-fire the card`
+      : `instance state ${state}, SSM ping ${ping}`
+    return { ok: false, reason: `forge did not become reachable — ${detail}`, cfg }
+  }
   noteForgeUse()
 
   const env = await syncAgentEnv(cfg, log)
