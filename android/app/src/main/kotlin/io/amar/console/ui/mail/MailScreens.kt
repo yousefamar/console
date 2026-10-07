@@ -102,8 +102,10 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid
     var labelMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     val threadLabels = remember { mutableStateOf<Map<String, List<String>>>(emptyMap()) }
 
-    LaunchedEffect(Unit) { labelMap = repo.labelMap() }
     LaunchedEffect(threads) {
+        // Re-read the name map with the rows: reconcile() refreshes it, and a
+        // map read once at first composition never named a label made later.
+        labelMap = repo.labelMap()
         // Load per-thread user labels for the tag row.
         val map = HashMap<String, List<String>>()
         for (t in threads) repo.threadLabels(t.id).takeIf { it.isNotEmpty() }?.let { map[t.id] = it }
@@ -232,7 +234,7 @@ fun MailInboxScreen(repo: MailRepository, onOpenThread: (String) -> Unit, onGrid
                                 backgroundContent = { MailSwipeBackground(dismissState.dismissDirection) },
                             ) {
                                 Box(Modifier.background(MaterialTheme.colorScheme.background)) {
-                                    ThreadRow(thread, threadLabels.value[thread.id].orEmpty().mapNotNull { labelMap[it] ?: it }, onClick = { onOpenThread(thread.id) })
+                                    ThreadRow(thread, threadLabels.value[thread.id].orEmpty().mapNotNull { labelMap[it] }, onClick = { onOpenThread(thread.id) })
                                 }
                             }
                         }

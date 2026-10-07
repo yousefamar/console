@@ -654,7 +654,8 @@ class MailRepository(
                 for (el in arr) {
                     val o = el as? JsonObject ?: continue
                     val id = o["id"]?.jsonPrimitive?.content ?: continue
-                    put(id, o["name"]?.jsonPrimitive?.content ?: id)
+                    // No name → no entry: a raw "Label_38" badge is worse than none.
+                    put(id, o["name"]?.jsonPrimitive?.content ?: continue)
                 }
             }
             db.meta().put(MetaRow(LABEL_MAP_KEY, map.toString()))

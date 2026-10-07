@@ -42,7 +42,13 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
-_(nothing — v110 was cut 2026-10-07)_
+- **Mail rows never show a raw Gmail label id** (^zany-fox's Android half;
+  Yousef, 7 Oct: "Labels … are named incorrectly on Mail"). The SPA showed
+  `Label_38` for every label made since its last hard reset; the APK had the
+  same `labelMap[it] ?: it` fallback in `MailScreens.kt`, and read the map ONCE
+  at first composition, so a map `reconcile()` refreshed never reached an open
+  Mail screen. Now the map is re-read with every thread-list change, an id with
+  no name draws no badge, and `syncAuxData` stores no `id → id` entries.
 
 ## Shipped
 
