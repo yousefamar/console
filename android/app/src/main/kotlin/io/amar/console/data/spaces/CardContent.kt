@@ -8,6 +8,17 @@ package io.amar.console.data.spaces
 object CardContent {
     data class UrlChip(val url: String, val label: String)
     data class TagSplit(val text: String, val tags: List<String>)
+    data class HeadAndDetail(val head: String, val detail: List<String>)
+
+    /** Composer text → card text + detail lines (hub `splitHeadAndDetail`
+     *  twin). Dictation puts `\n\n` between paragraphs: the first non-blank
+     *  line is the card, every later non-blank line a detail line, blanks
+     *  collapsed. Sent as one `text`, the hub once wrote the newline raw and
+     *  the second paragraph became an invisible bare line (^loud-pony). */
+    fun splitHeadAndDetail(text: String): HeadAndDetail {
+        val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
+        return HeadAndDetail(lines.firstOrNull() ?: "", lines.drop(1))
+    }
 
     private val IMAGE_LINE = Regex("""!\[[^\]]*]\(""")
     private val IMAGE_ONLY = Regex("""^!\[[^\]]*]\(([^)]+)\)$""")

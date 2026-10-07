@@ -148,6 +148,17 @@ kanban-plugin: board
     }
 
     @Test
+    fun `a bare line directly under a card is its detail kept verbatim, a blank ends the run (loud-pony)`() {
+        val src = "---\nkanban-plugin: board\n---\n\n## Todo\n\n- [ ] Para one @key ^id1\nPara two\n  indented\n\nProse after a gap\n- [ ] Next\n"
+        val board = KanbanCodec.parse(src)
+        val col = board.columns[0]
+        assertEquals(listOf("Para one", "Next"), col.cards.map { it.text })
+        assertEquals(listOf("- [ ] Para one @key ^id1", "Para two", "  indented"), col.cards[0].lines)
+        assertEquals(listOf("Prose after a gap"), col.interstitials.map { it.line }.filter { it.isNotEmpty() })
+        assertEquals(src, KanbanCodec.serialize(board))
+    }
+
+    @Test
     fun `moveCard to Done checks the box and keeps interstitial indices sane`() {
         val board = KanbanCodec.parse(sample)
         assertTrue(KanbanCodec.moveCard(board, CardRef("In Progress", 0), "Done"))

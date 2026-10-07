@@ -39,6 +39,15 @@ export function detailLines(text: string): string[] {
   return text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => `  ${l}`)
 }
 
+/** Card text may arrive with newlines — a card dictated on the phone with a
+ *  paragraph break (^loud-pony). The first non-blank line is the card, every
+ *  later non-blank line is a detail line; blank lines collapse. Written raw,
+ *  the tail became a bare unindented line the next parse read as a new card. */
+export function splitHeadAndDetail(text: string): { head: string; detail: string[] } {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean)
+  return { head: lines[0] ?? '', detail: lines.slice(1) }
+}
+
 /** Resolve a project slug to its board path (same preference order as
  *  spaces.ts listSpaces): board.md / kanban.md by name, else the first
  *  kanban-flagged file in the folder. Accepts a vault-relative .md path too.
@@ -248,13 +257,15 @@ export class BoardOps {
     return this.mutate(project, (board, path) => {
       const column = opts.column ?? board.columns[0]?.title
       if (!column) throw new Error('board has no columns')
-      const card = addCard(board, column, text, {
+      const { head, detail: tail } = splitHeadAndDetail(text)
+      const card = addCard(board, column, head, {
         ...(opts.agentKey ? { agentKey: opts.agentKey } : {}),
         position: opts.top === false ? 'bottom' : 'top',
       })
       if (!card) throw new Error(`no column "${column}" on this board`)
-      if (opts.detail?.length) card.lines.push(...opts.detail.flatMap(detailLines))
-      return { text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, inherit: card.inherit, model: card.model, effort: card.effort, remote: card.remote, detail: opts.detail ?? [] }
+      const detail = [...tail, ...(opts.detail ?? [])]
+      if (detail.length) card.lines.push(...detail.flatMap(detailLines))
+      return cardView(card, column)
     })
   }
 
@@ -412,12 +423,15 @@ export class BoardOps {
     return this.mutate(project, (board) => {
       const hit = findCardByQuery(board, query)
       if ('error' in hit) throw new Error(hit.error)
-      if (updates.text?.trim()) {
-        hit.card.text = updates.text.trim()
+      const { head, detail: tail } = splitHeadAndDetail(updates.text ?? '')
+      if (head) {
+        hit.card.text = head
         refreshCardLine(hit.card)
       }
       if (updates.detail) {
-        hit.card.lines = [hit.card.lines[0]!, ...updates.detail.flatMap(detailLines)]
+        hit.card.lines = [hit.card.lines[0]!, ...[...tail, ...updates.detail].flatMap(detailLines)]
+      } else if (tail.length) {
+        hit.card.lines.push(...tail.flatMap(detailLines))
       }
       return cardView(hit.card, hit.ref.column)
     })

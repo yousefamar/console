@@ -1045,7 +1045,8 @@ private fun BoardView(
                     // addCard already retries once; on final failure the
                     // sheet STAYS OPEN with the typed text intact — a
                     // transient hub error must not eat a dictated card.
-                    val ok = spacesRepo.addCard(slug, text, colTitle)
+                    val split = io.amar.console.data.spaces.CardContent.splitHeadAndDetail(text)
+                    val ok = spacesRepo.addCard(slug, split.head, colTitle, split.detail)
                     if (ok) addToColumn = null
                     done(ok)
                 }
@@ -1469,9 +1470,9 @@ fun CardSheet(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     TextButton(onClick = {
-                        val lines = editText.trim().lines()
-                        if (lines.isNotEmpty() && lines[0].isNotBlank()) {
-                            run { spacesRepo.editCard(slug, card, lines[0].trim(), lines.drop(1)) }
+                        val split = io.amar.console.data.spaces.CardContent.splitHeadAndDetail(editText)
+                        if (split.head.isNotBlank()) {
+                            run { spacesRepo.editCard(slug, card, split.head, split.detail) }
                         }
                     }) { Text("Save") }
                     TextButton(onClick = { editing = false }) { Text("Cancel") }

@@ -158,13 +158,16 @@ object KanbanCodec {
         }
 
         var col: BoardColumn? = null
+        // A bare unindented line directly under a card's own lines is an
+        // orphaned detail line (hub parser twin, ^loud-pony); a blank ends the run.
+        var inCard = false
         while (i < lines.size) {
             val line = lines[i]
             if (line.startsWith(FOOTER_START)) { footer.addAll(lines.subList(i, lines.size)); break }
             val heading = HEADING_RE.find(line)
             if (heading != null) {
                 col = BoardColumn(heading.groupValues[1], mutableListOf(), line, mutableListOf())
-                columns.add(col); i++; continue
+                columns.add(col); inCard = false; i++; continue
             }
             val c = col
             if (c == null) { header.add(line); i++; continue }
@@ -175,13 +178,13 @@ object KanbanCodec {
                     t.text, card.groupValues[1] != " ", t.agentKey, t.blockId, t.blocked, mutableListOf(line),
                     nofork = t.nofork, inherit = t.inherit, model = t.model, effort = t.effort,
                 ))
-                i++; continue
+                inCard = true; i++; continue
             }
             val last = c.cards.lastOrNull()
-            if (last != null && CONTINUATION_RE.containsMatchIn(line)) {
+            if (last != null && (CONTINUATION_RE.containsMatchIn(line) || (inCard && line.isNotBlank()))) {
                 last.lines.add(line); i++; continue
             }
-            c.interstitials.add(Interstitial(c.cards.size - 1, line)); i++
+            c.interstitials.add(Interstitial(c.cards.size - 1, line)); inCard = false; i++
         }
         return KanbanBoard(header, columns, footer)
     }

@@ -78,6 +78,16 @@ class CardContentTest {
     }
 
     @Test
+    fun `splitHeadAndDetail makes the first paragraph the card and the rest detail, blanks collapsed (loud-pony)`() {
+        val s = CardContent.splitHeadAndDetail("  First para \n\nSecond para\n  \nThird line\n")
+        assertEquals("First para", s.head)
+        assertEquals(listOf("Second para", "Third line"), s.detail)
+        // Single-line text is unchanged; empty text yields an empty head.
+        assertEquals(CardContent.HeadAndDetail("Just one", emptyList()), CardContent.splitHeadAndDetail("Just one"))
+        assertEquals("", CardContent.splitHeadAndDetail("\n\n").head)
+    }
+
+    @Test
     fun `splitTrailingTags splits only the trailing run`() {
         val s = CardContent.splitTrailingTags("Fix the thing #bi #urgent")
         assertEquals("Fix the thing", s.text)

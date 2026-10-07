@@ -256,6 +256,12 @@ export function parseBoard(content: string): KanbanBoard {
   }
 
   let col: BoardColumn | null = null
+  // True while the previous line belonged to a card (its first line or a
+  // continuation) — a bare unindented line in that position is an orphaned
+  // detail line (a raw newline once written inside a card, ^loud-pony), kept
+  // verbatim on the card so the round-trip stays lossless. A blank line ends
+  // the run: prose after a gap is an interstitial, as before.
+  let inCard = false
   for (; i < lines.length; i++) {
     const line = lines[i]!
     if (line.startsWith(FOOTER_START)) {
@@ -266,6 +272,7 @@ export function parseBoard(content: string): KanbanBoard {
     if (heading) {
       col = { title: heading[1]!, cards: [], headingLine: line, interstitials: [] }
       columns.push(col)
+      inCard = false
       continue
     }
     if (!col) { header.push(line); continue }
@@ -273,15 +280,17 @@ export function parseBoard(content: string): KanbanBoard {
     if (card) {
       const { text, agentKey, blockId, blocked, nofork, inherit, remote, model, effort } = parseCardTokens(card[2]!)
       col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, blocked, nofork, inherit, remote, model, effort, lines: [line] })
+      inCard = true
       continue
     }
     // Indented continuation attaches to the previous card.
     const last = col.cards[col.cards.length - 1]
-    if (last && CONTINUATION_RE.test(line)) {
+    if (last && (CONTINUATION_RE.test(line) || (inCard && line.trim() !== ''))) {
       last.lines.push(line)
       continue
     }
     col.interstitials.push({ afterCard: col.cards.length - 1, line })
+    inCard = false
   }
 
   return { header, columns, footer }

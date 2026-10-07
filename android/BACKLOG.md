@@ -58,6 +58,7 @@ view-mode hub-sync (Room meta is fine on one device).
   sheet gains a one-line amber explanation when spilled (window exhausted,
   tripped by, due back `EEE d MMM HH:mm` in `Locale.ENGLISH`). Unit-tested
   incl. the chosen-Bedrock-is-plain and older-hub cases (`BackendChipTest`).
+- **Dictated card with a paragraph break lost its 2nd paragraph** (^loud-pony; astera ^quick-fox, 3 Oct). Root cause: the add sheet sent the whole composer text as one `text` and the hub wrote the `\n` raw into the card line, so the next parse read the tail as a bare unindented line — invisible to `con spaces board show`, the dispatch envelope and the fork. Fix both ends: `CardContent.splitHeadAndDetail` (first non-blank line → card, rest → detail, blanks collapsed; tested) feeds `addCard(text, column, detail)` from the add sheet and `editCard` from the card sheet's editor; the hub's `board-ops.ts add()/edit()` split the same way as a belt (any client), and all three parser ports (hub, SPA, `KanbanCodec.parse`) now attach a bare non-blank line directly under a card to that card verbatim (lossless round-trip; a blank line still ends the run) so existing orphans show as detail.
 
 ## Shipped
 

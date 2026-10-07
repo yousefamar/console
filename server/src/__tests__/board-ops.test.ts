@@ -181,6 +181,24 @@ describe('hand-back (^shy-boar)', () => {
     expect(card.lines.slice(1).map((l) => l.trim())).toEqual(['one', 'two', 'three'])
   })
 
+  it('add/edit split a newline-bearing text into card + detail lines — a dictated 2nd paragraph is never a bare orphan line (^loud-pony)', async () => {
+    const r = await ops.add('demo', 'First paragraph\n\nSecond paragraph\nThird line', { column: 'Backlog', detail: ['extra'] })
+    expect(r.text).toBe('First paragraph')
+    expect(r.detail).toEqual(['Second paragraph', 'Third line', 'extra'])
+    let disk = onDisk()
+    expect(disk).toContain('- [ ] First paragraph\n  Second paragraph\n  Third line\n  extra\n- [ ] First idea')
+    expect(parseBoard(disk).columns[0]!.cards.map((c) => c.text)).toEqual(['First paragraph', 'First idea', 'Second idea'])
+
+    // edit with a multi-line text and no detail: head replaces the text, tail appends to the existing detail.
+    await ops.edit('demo', '^aa11bb', { text: 'Second idea, sharper\nmore context' })
+    disk = onDisk()
+    expect(disk).toContain('- [ ] Second idea, sharper @eng ^aa11bb\n\t- existing note\n  more context')
+    // edit with text + detail: the tail leads the replaced detail.
+    await ops.edit('demo', '^aa11bb', { text: 'Second idea\ntail', detail: ['given'] })
+    expect(onDisk()).toContain('- [ ] Second idea @eng ^aa11bb\n  tail\n  given\n')
+    expect(parseBoard(onDisk()).columns[0]!.cards).toHaveLength(3)
+  })
+
   it('moving into Under Review without `- ` summary bullets returns a warning; with them it does not', async () => {
     writeFileSync(join(dir, 'projects', 'demo', 'board.md'), BOARD.replace('## Done', '## Under Review\n\n## Done'))
     const bare = await ops.move('demo', '^cc22dd', 'Under Review')

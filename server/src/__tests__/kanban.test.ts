@@ -190,6 +190,17 @@ describe('parseBoard / serializeBoard round-trip', () => {
     expect(serializeBoard(board)).toBe(src)
   })
 
+  it('a bare unindented line directly under a card is that card\'s detail, kept verbatim (^loud-pony orphan recovery)', () => {
+    const src = `---\nkanban-plugin: board\n---\n\n## Todo\n\n- [ ] Para one @key ^id1\nPara two\n  indented after\nPara three\n\nProse after a gap\n- [ ] Next card\n`
+    const board = parseBoard(src)
+    const col = board.columns[0]!
+    expect(col.cards.map((c) => c.text)).toEqual(['Para one', 'Next card'])
+    expect(col.cards[0]!.lines).toEqual(['- [ ] Para one @key ^id1', 'Para two', '  indented after', 'Para three'])
+    // A blank line ends the run — prose after a gap stays an interstitial, in place.
+    expect(col.interstitials.filter((x) => x.line).map((x) => x.line)).toEqual(['Prose after a gap'])
+    expect(serializeBoard(board)).toBe(src)
+  })
+
   it('preserves an empty column', () => {
     const src = `---\nkanban-plugin: board\n---\n\n## Empty\n\n\n## Full\n\n- [ ] x\n`
     expect(serializeBoard(parseBoard(src))).toBe(src)
