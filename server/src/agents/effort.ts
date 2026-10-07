@@ -25,6 +25,14 @@ export const SPAWN_KINDS = ['default', 'fork', 'cronFork', 'listenerFork', 'chat
 /** What kind of session a spawn is for — fixed at creation, persisted in the manifest. */
 export type SpawnKind = (typeof SPAWN_KINDS)[number]
 
+/** The kind a RESUMED session spawns as. The manifest row is the record; with
+ *  none (a killed fork resumed by name) a fork by lineage or name stays a fork —
+ *  ten Astera ticket-forks resumed on 7 Oct 2026 came back 'default' → xhigh. */
+export function resumedSpawnKind(prior: SpawnKind | undefined, parent?: string | null, name?: string | null): SpawnKind | undefined {
+  if (prior) return prior
+  return parent || / \(fork\)$/.test(name ?? '') ? 'fork' : undefined
+}
+
 export type EffortPolicy = Record<SpawnKind, Effort>
 
 export const DEFAULT_EFFORT_POLICY: EffortPolicy = {

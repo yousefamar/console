@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolveEffort, DEFAULT_EFFORT_POLICY, isEffort, EFFORTS } from '../agents/effort.js'
+import { resolveEffort, resumedSpawnKind, DEFAULT_EFFORT_POLICY, isEffort, EFFORTS } from '../agents/effort.js'
 import { EFFORT_LEVELS } from '../kanban/board.js'
 
 describe('resolveEffort', () => {
@@ -42,5 +42,15 @@ describe('resolveEffort', () => {
   it('every default is a level the CLI accepts, and the board tag grammar matches', () => {
     for (const v of Object.values(DEFAULT_EFFORT_POLICY)) expect(isEffort(v)).toBe(true)
     expect([...EFFORT_LEVELS]).toEqual([...EFFORTS])
+  })
+})
+
+describe('resumedSpawnKind', () => {
+  it('keeps the manifest kind, else infers a fork from lineage or name', () => {
+    expect(resumedSpawnKind('cronFork', null, 'Cron x (fork)')).toBe('cronFork')
+    expect(resumedSpawnKind(undefined, null, 'Sly boar (fork)')).toBe('fork')
+    expect(resumedSpawnKind(undefined, '071db3fa-aeb9-4b62-a182-6889e71e5536', 'whatever')).toBe('fork')
+    expect(resumedSpawnKind(undefined, null, 'Astera general')).toBeUndefined()
+    expect(resumedSpawnKind(undefined, undefined, undefined)).toBeUndefined()
   })
 })

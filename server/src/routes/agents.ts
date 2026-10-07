@@ -11,7 +11,7 @@ import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBa
 import { smallFastModel } from '../bedrock-profiles.js'
 import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { wouldCycle } from '../agents/lineage.js'
-import { isEffort } from '../agents/effort.js'
+import { isEffort, resumedSpawnKind } from '../agents/effort.js'
 import { isKanbanBoard } from '../kanban/board.js'
 import { spaceCwd, projectRepo } from '../spaces.js'
 import { buildReviewReminder, buildForkCompactPrompt, forkTitle, type ReviewCardRef } from '../kanban/dispatch.js'
@@ -1140,7 +1140,7 @@ export function handleClientMessage(ctx: AgentContext, ws: WebSocket, msg: Clien
         parentClaudeSessionId: msg.parentClaudeSessionId ?? prior?.parentClaudeSessionId,
         areas: prior?.areas,
         forkContext: prior?.forkContext,
-        spawnKind: prior?.spawnKind,
+        spawnKind: resumedSpawnKind(prior?.spawnKind, msg.parentClaudeSessionId ?? prior?.parentClaudeSessionId, msg.name ?? prior?.name ?? fromTranscript?.name),
         effort: prior?.effort,
         cacheTtl: prior?.cacheTtl,
         modelOverride: prior?.modelOverride,
