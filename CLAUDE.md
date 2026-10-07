@@ -633,9 +633,36 @@ local SSD was tried first and did not help.
   refused tunnel all run locally with the reason logged. The board must never
   stall on a sleeping cloud box.
 - **Readiness is prepared AHEAD of dispatch** (`prewarmCwd`), because the board
-  watcher stamps the card before the *synchronous* dispatch callback runs, so a
-  deferred dispatch would never be retried. Consequence: a card dispatched
-  while the box is cold runs locally that once.
+  watcher stamps the card before the *synchronous* dispatch callback runs. A
+  cold box used to mean "runs locally this once" — which was EVERY time (five
+  cards on 7 Oct), since each dispatch woke the box, never used it, and let it
+  idle-stop. Since 840a0e01 a cold box DEFERS instead: `decidePlacement` returns
+  `defer`, the session is created with `deferSpawn` (no process, so the card is
+  satisfied and its wake is buffered), the prewarm runs, and
+  `Session.startDeferred()` spawns on forge ~60-90 s later. Local is still the
+  fallback, but only for a box that genuinely FAILED, and the card is noted.
+- **Placement is no longer fixed for life**: `con agent forge move <session> |
+  --project <slug>` (`forge/move.ts`) moves a running session — prepare, push
+  the transcript desktop → forge (`pushTranscript`; without it a `--resume`
+  there silently starts a NEW conversation), rebuild its card worktree at the
+  same absolute path with its branch and uncommitted changes
+  (`ensureWorktreeOnForge`, plain push so an un-folded-back forge branch refuses
+  rather than being overwritten), forward a dev port, then `applyPlacement()`
+  puts the local process down so the next message resumes on the box. Mid-turn
+  sessions move at turn end (`afterTurn`). `--project` takes In Progress card
+  forks only: Under Review forks are waiting on Yousef and generals are his own
+  conversations, and neither belongs on a box that stops when it goes idle.
+- **Path parity covers checkouts outside `~/proj/code` too.** Astera's is
+  `/opt/code/astera-app` and the vault's `app` symlink stores that absolute
+  string, so a remote Astera fork followed it into nothing. `ensureRepoOnForge`
+  now symlinks the desktop's own path (and its `-worktrees` sibling) onto the
+  mirror, so both spellings resolve on both machines.
+- **A remote fork is told it has room, and the throttles agree.**
+  `CONSOLE_PLACEMENT=forge` rides the session env; the REMOTE envelope stanza
+  says run the typecheck, suite, Playwright and build in parallel and do not
+  throttle yourself; the LOAD stanza (about THIS machine's one disk) is
+  suppressed for remote forks; and astera's `scripts/heavy.sh` execs straight
+  through on forge, keeping only its run timeout.
 - **Transport is SSH-over-SSM** (`scripts/forge/ssm-proxy.sh`): the security
   group has ZERO inbound rules. No public port, no Tailscale key, no human step.
   Needs `session-manager-plugin` (in `~/.local/bin`, installed without root).
@@ -650,8 +677,13 @@ local SSD was tried first and did not help.
   this machine. `settings.json` is rewritten there to drop `AWS_PROFILE` so it
   uses its instance role; cost attribution survives because the owner tag rides
   the inference-profile ARN, not the caller.
-- Ops: `con agent forge status|up|down|run`, `scripts/forge/provision.sh`
-  (idempotent, needs admin AWS creds). Costs ~$108/mo at ~6 h/day on-demand
-  with the 20-min idle auto-stop; a stopped instance bills only EBS.
+- Ops: `con agent forge status|up|down|move|run`, `scripts/forge/provision.sh`
+  (idempotent, needs admin AWS creds — the hub's own IAM user may only
+  start/stop/describe the one instance, so a RESIZE needs the admin profile and
+  a stopped box). m7i.4xlarge since 8 Oct 2026 (16 vCPU / 64 GiB, $0.9324/hr):
+  ~$170/mo at ~6 h/day with the 20-min idle auto-stop; a stopped instance bills
+  only EBS. Known rough edge: after one start on 8 Oct the SSM agent took >20
+  min to register and every prepare timed out — not root-caused; it recovered
+  on the next start.
 - Design, measurements and as-built notes:
   `~/sync/brain/root/projects/console/research/remote-compute-offload.md`.
