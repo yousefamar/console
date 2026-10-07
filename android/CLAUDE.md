@@ -162,7 +162,13 @@ while the app is foregrounded (plus short background borrows), so a remote
     own upsert matches on that when no id is given), ledger entries on the
     ACCOUNT. Never send a `~`/`local_…` temp id as the hub's `id`, and deleting
     a never-synced row cancels its queued create rather than issuing a temp-id
-    DELETE that 404s forever.
+    DELETE that 404s forever. Where the hub HONOURS a client-supplied `id`
+    (finance categories + rules: `input.id ?? mint()`), mint a real one on the
+    phone (`cat_<8hex>`) so the identity is final from the optimistic write and
+    there is no temp-id swap at all; and because that hub upsert is
+    `Object.assign(existing, input)`, an EDIT must send cleared optionals as
+    `null` — omitting a field keeps the old value (^busy-goat; the SPA has that
+    bug, its `undefined`s drop out of the JSON — don't port it).
 
 **Coroutine cancellation (three separate incidents)**
 - Never let a debounce cancel the job the WORK runs inside. `trigger()`
@@ -351,7 +357,8 @@ written. Launch them detached and poll the log:
 A `:app:testDebugUnitTest FROM-CACHE` line is a PASS, not a skip: the cache key
 is the inputs, so it restores the full `TEST-*.xml` set from a run with
 identical sources — check the counts and mtimes rather than re-running.
-`SyncBusClientTest` is a known flake in the full run — re-run in isolation;
+`SyncBusClientTest` (and `SyncEngineTest` "foreground call … never borrows",
+^warm-kiwi) are known ordering flakes in the full run — re-run in isolation;
 green there = fine. Headless `autowt cleanup` needs `--mode merged|all`; it can
 leave an unregistered dir under `~/proj/code/console-worktrees/` — verify with
 `git worktree list` before deleting.

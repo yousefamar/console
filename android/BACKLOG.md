@@ -42,6 +42,12 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+_(nothing — v110 was cut 2026-10-07)_
+
+## Shipped
+
+### v110 (2026-10-07)
+
 - **Spaces header shows which auth backend the fleet is on, and whether it was
   chosen** (^warm-kiwi; Yousef, 6 Oct: "I also need a way to see what we're
   on" — a failover spill onto pay-per-token Bedrock ran 17 h unnoticed because
@@ -126,8 +132,6 @@ view-mode hub-sync (Room meta is fine on one device).
     optimistic write → request → refresh → heal, reconcile guards, the
     cascade, the 404s, the classification re-pull sparing a queued override).
     `MoneyModelsTest` updated for archived-kept.
-
-## Shipped
 
 ### v109 (2026-10-06)
 - **Opening a dormant agent showed a blank transcript** (^lime-orca, Yousef:
