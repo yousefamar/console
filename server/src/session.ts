@@ -36,7 +36,7 @@ import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
-import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
+import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, usageLimitTypeOf, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
 import { resolveEffort, effortHooks, type Effort, type EffortReason, type SpawnKind } from './agents/effort.js'
@@ -1450,7 +1450,7 @@ export class Session extends EventEmitter {
               // belt to that brace). The turn is also a transient failure —
               // the Continue nudge below lands on Bedrock after the failover.
               if (isUsageLimitError(text)) {
-                this.emit('rate_limit', { status: 'rejected' } satisfies ClaudeRateLimitInfo, text.slice(0, 200))
+                this.emit('rate_limit', { status: 'rejected', rateLimitType: usageLimitTypeOf(text) } satisfies ClaudeRateLimitInfo, text.slice(0, 200))
               }
               if (isTransientApiError(text) || isUsageLimitError(text)) {
                 // 429/503/overloaded: the turn died but the session is fine.

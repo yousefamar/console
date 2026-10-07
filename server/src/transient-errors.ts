@@ -74,6 +74,16 @@ export function isUsageLimitError(text: string): boolean {
   )
 }
 
+/** The window a usage-limit error TEXT implies, when its wording names one.
+ *  "out of usage credits" / "out of extra usage" is the credit-metered model
+ *  (Fable on Max) spending its allowance — typed `overage` so the failover
+ *  steps past that model instead of reading a bare `rejected` as plan
+ *  exhaustion and spilling the fleet to Bedrock. */
+export function usageLimitTypeOf(text: string): 'overage' | undefined {
+  const t = text.toLowerCase()
+  return t.includes('out of usage credits') || t.includes('out of extra usage') ? 'overage' : undefined
+}
+
 /** Backoff schedule for auto-resume nudges (ms). Index = attempt number. */
 export const RESUME_BACKOFF_MS = [60_000, 180_000, 420_000, 900_000] as const
 

@@ -84,6 +84,8 @@ export const RETURN_SLACK_MS = 60_000
  *  must not park the fleet on Bedrock for a month). */
 export const MAX_HOLD_MS = 8 * 24 * 3_600_000
 const HISTORY_CAP = 100
+/** An untyped rejection this soon after the same session's typed one is its echo. */
+export const ECHO_WINDOW_MS = 120_000
 
 export interface FailoverDeps {
   /** Perform the fleet switch (env + chain + respawn). */
@@ -153,6 +155,8 @@ export class BackendFailover {
   private state: FailoverState = { preferred: 'first_party', active: null, history: [], lastWarning: null, modelHold: null, modelHistory: [] }
   private timer: ReturnType<typeof setTimeout> | null = null
   private modelTimer: ReturnType<typeof setTimeout> | null = null
+  /** session → when it last reported a TYPED rejection (echo suppression) */
+  private readonly lastTypedAt = new Map<string, number>()
   private readonly now: () => number
 
   constructor(private readonly path: string, private readonly deps: FailoverDeps) {
@@ -205,6 +209,18 @@ export class BackendFailover {
       return
     }
     if (this.state.preferred !== 'first_party') return // Bedrock by choice — nothing to fail over from
+    // A typeless rejection is session.ts's text fallback for an API-error
+    // message. It trails the structured `rate_limit_event` of the same turn,
+    // so after one it is an echo, not a new limit: on 3 and 5 Oct 2026 it
+    // stretched three five_hour spills from the real reset (~49 min out) to
+    // the 5 h default hold — 7.5 extra fleet-hours on pay-per-token Bedrock.
+    if (from) {
+      if (info.rateLimitType) this.lastTypedAt.set(from, now)
+      else if (now - (this.lastTypedAt.get(from) ?? -Infinity) < ECHO_WINDOW_MS) {
+        this.deps.log(`[failover] untyped rejection from ${from} echoes its structured one — ignored`)
+        return
+      }
+    }
     const returnAt = (resetsAt ?? now + DEFAULT_HOLD_MS) + RETURN_SLACK_MS
     const family = modelFamilyOf(info.rateLimitType)
     if (family && this.deps.stepDownFrom) {
@@ -230,8 +246,11 @@ export class BackendFailover {
     const ep = this.state.active
     if (ep) {
       // Already spilled (e.g. the 5 h window tripped, now the weekly one) —
-      // only ever push the return later, never earlier.
-      if (returnAt > ep.returnAt) {
+      // only ever push the return later, never earlier. A guessed hold (no
+      // resetsAt) never stretches a known reset, and a known reset replaces
+      // a guessed hold even when it is sooner.
+      if (resetsAt === null && ep.resetsAt !== null) return
+      if (returnAt > ep.returnAt || (ep.resetsAt === null && resetsAt !== null)) {
         ep.returnAt = returnAt
         ep.resetsAt = resetsAt
         if (info.rateLimitType) ep.rateLimitType = info.rateLimitType

@@ -141,7 +141,10 @@ for f in files:
                 try: vis += len(json.dumps(b.get('input') or {}))
                 except Exception: pass
         seen[mid] = len(out)
-        out.append({'k': 'req', 'ts': ts, 'sid': sid, 'fid': fid, 'proj': proj, 'cwd': d.get('cwd') or '', 'model': model,
+        # Bedrock answers carry `msg_bdrk_…` ids; a first-party (Max) answer is `msg_01…`.
+        # Only Bedrock is metered — a Max request is flat-rate however many $ it models at.
+        bk = 'bedrock' if mid.startswith('msg_bdrk') else 'max' if mid.startswith('msg_') else '?'
+        out.append({'k': 'req', 'ts': ts, 'sid': sid, 'fid': fid, 'proj': proj, 'cwd': d.get('cwd') or '', 'model': model, 'bk': bk,
                     'ver': d.get('version') or '', 'effort': d.get('effort') or '', 'entry': d.get('entrypoint') or '',
                     'side': bool(d.get('isSidechain')), 'cr': cr, 'w5': w5m, 'w1': w1h, 'inp': ip, 'out': op,
                     'usd': usd, 'r_out': r_out, 'usd_rd': cr * r_rd / 1e6, 'usd_w': (w5m * r_w5 + w1h * r_w1) / 1e6,
