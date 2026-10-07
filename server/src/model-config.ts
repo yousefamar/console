@@ -71,6 +71,14 @@ export interface FallbackResult {
  *  so the hub that booted at 23:41 came back up still on haiku, and the poison
  *  row re-spawned on every boot, ready to do it again.
  *
+ *  What SET IT OFF, 2m18s earlier, was a backend switch: `[23:34:31] [failover]
+ *  switching backend to bedrock` (seven_day_overage_included). A switch restarts
+ *  every session onto the new backend's chain, so it re-spawns every bad row at
+ *  once — which is why the walk happened then and not on an ordinary boot. The
+ *  general shape outlives the specific poison: switch → restart-all → any
+ *  spawn that fails for a non-model reason → chain walk. This guard is the only
+ *  thing standing between that shape and the bottom of the chain.
+ *
  *  Three distinct models failing inside two minutes is not three dead models. */
 const BURST_WINDOW_MS = 120_000
 const BURST_THRESHOLD = 3
