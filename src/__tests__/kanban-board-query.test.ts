@@ -19,6 +19,10 @@ describe('findCardByQuery', () => {
     expect(hit?.card.lines).toHaveLength(2)
   })
 
+  it('resolves a bare id too, like the hub', () => {
+    expect(findCardByQuery(board, 'glad-bee')?.ref).toEqual({ column: 'Under Review', index: 0 })
+  })
+
   it('falls back to exact text for an unstamped card; misses return null', () => {
     expect(findCardByQuery(board, 'Unstamped idea')?.ref).toEqual({ column: 'Backlog', index: 0 })
     expect(findCardByQuery(board, ' ^old-one ')?.ref.column).toBe('Done')

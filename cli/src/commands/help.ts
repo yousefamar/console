@@ -597,6 +597,7 @@ Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project> block "<card>"        Tag #blocked (keeps column position) [--note "why"]
   board <project> unblock "<card>"
   board <project> note "<card>" "text"  Append note lines under a card (newlines → one line each)
+  board <project> note "<card>" --undo  Take the last note back off the card (--remove-last <n> for n trailing lines)
   board <project> attach "<card>" <file> Attach a screenshot (png/jpg/gif/webp) or clip (webm/mp4, ≤20 MB) [--caption "what"]
   board <project> edit "<card>"         Rewrite text/detail [--text "new"] [--detail "a|b"]
   board <project> remove "<card>"       Delete a card (human judgment — agents move, never delete)
@@ -608,6 +609,10 @@ Notes:
   <project> is a slug resolved like the Spaces UI (board.md/kanban.md by name,
   else the first kanban-flagged file) or a vault-relative .md path.
   "<card>" is a ^blockid or a UNIQUE text substring — ambiguity errors, never guesses.
+  An id wins with or without the caret, and an id-SHAPED argument that matches no
+  card id errors instead of falling back to text (another card's text quoting
+  "^glad-wolf" is NOT that card). A write that resolved by text says so in a
+  "warning" field — read it; note "<card>" --undo takes a misplaced note back.
   --detail takes pipe-separated bullets. The hub is the single writer with a
   per-board lock, so concurrent agents serialize cleanly.
   Hand-back: before moving a card to Under Review, "note" a concise "- " bulleted

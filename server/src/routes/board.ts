@@ -4,10 +4,11 @@
 //
 //   GET  /board/:project                    → columns + cards
 //   POST /board/:project/cards              {text, column?, assign?, detail?, bottom?}
-//   POST /board/:project/move               {card, to}         card = "^id" | text (unique substring)
+//   POST /board/:project/move               {card, to}         card = "^id" | text (unique substring); an id always wins
 //   POST /board/:project/assign             {card, agent|null}
 //   POST /board/:project/block              {card, blocked, note?}
 //   POST /board/:project/note               {card, note}       multi-line OK — one detail line per line
+//   POST /board/:project/unnote             {card, count?}     take a note back: count lines, else the last recorded note's
 //   POST /board/:project/attach             {card, image: base64, ext?, caption?}   screenshot/clip (png/jpg/gif/webp/webm/mp4, ≤20 MB) → asset + media detail line
 //   POST /board/:project/owner              {agent|null}       board frontmatter default_owner
 //   POST /board/:project/model              {card, model|null}   pin the ticket-fork's model
@@ -114,6 +115,13 @@ export function handleBoardRoutes(
       return true
     case 'note':
       run((b) => ops.note(project, String(b.card ?? ''), String(b.note ?? ''), actor))
+      return true
+    case 'unnote':
+      run((b) => {
+        const count = b.count === undefined || b.count === null ? undefined : Number(b.count)
+        if (count !== undefined && (!Number.isInteger(count) || count < 1)) throw new Error('count must be a positive whole number of trailing detail lines')
+        return ops.unnote(project, String(b.card ?? ''), { count }, actor)
+      })
       return true
     case 'attach':
       run((b) => {

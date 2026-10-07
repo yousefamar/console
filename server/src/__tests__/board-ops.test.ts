@@ -48,13 +48,46 @@ describe('resolveBoardPath', () => {
   })
 })
 
+/** The 2026-10-07 shape: a card whose TEXT quotes another card's id. */
+const MENTION_BOARD = `---
+kanban-plugin: board
+---
+
+## In Progress
+
+- [ ] CONTINUE ^glad-wolf after the fleet kill: alcohol tax @eng ^brisk-boar
+
+## Done
+
+- [x] Alcohol tax class on marketplace menu lines @eng ^glad-wolf
+`
+
 describe('findCardByQuery', () => {
   it('matches ^id, exact text, unique substring; rejects ambiguity', () => {
     const board = parseBoard(BOARD)
-    expect(findCardByQuery(board, '^aa11bb')).toMatchObject({ ref: { column: 'Backlog', index: 1 } })
-    expect(findCardByQuery(board, 'Going')).toMatchObject({ ref: { column: 'In Progress', index: 0 } })
+    expect(findCardByQuery(board, '^aa11bb')).toMatchObject({ ref: { column: 'Backlog', index: 1 }, matched: 'id' })
+    expect(findCardByQuery(board, 'Going')).toMatchObject({ ref: { column: 'In Progress', index: 0 }, matched: 'text' })
     expect(findCardByQuery(board, 'idea')).toMatchObject({ error: expect.stringContaining('ambiguous') })
     expect(findCardByQuery(board, 'zzz')).toMatchObject({ error: expect.stringContaining('no card') })
+  })
+
+  it('an id wins over another card that merely quotes it, caret or not', () => {
+    const board = parseBoard(MENTION_BOARD)
+    for (const q of ['glad-wolf', '^glad-wolf', 'GLAD-WOLF']) {
+      expect(findCardByQuery(board, q)).toMatchObject({ card: { blockId: 'glad-wolf' }, matched: 'id' })
+    }
+  })
+
+  it('an id-shaped argument matching no id errors, naming the cards that quote it', () => {
+    // The real card is gone (another board, removed, never stamped) and only
+    // the mention is left: the write must NOT land on the mentioning card.
+    const board = parseBoard(MENTION_BOARD.replace(/^- \[x\] Alcohol.*$/m, ''))
+    const r = findCardByQuery(board, 'glad-wolf') as { error: string }
+    expect(r.error).toContain('no card with id ^glad-wolf')
+    expect(r.error).toContain('^brisk-boar') // the quoting card, offered by its OWN id
+    expect(findCardByQuery(board, 'glad-fox')).toMatchObject({ error: expect.stringContaining('no card with id ^glad-fox') })
+    // Text addressing still works for anything not id-shaped.
+    expect(findCardByQuery(parseBoard(MENTION_BOARD), 'alcohol tax')).toMatchObject({ error: expect.stringContaining('ambiguous') })
   })
 })
 
@@ -114,6 +147,35 @@ describe('BoardOps mutations', () => {
     await expect(ops.move('demo', '^nope99', 'Done')).rejects.toThrow(/no card/)
     await ops.add('demo', 'After failure', {})
     expect(onDisk()).toContain('After failure')
+  })
+})
+
+describe('a note is reversible, and says when it resolved by text', () => {
+  it('undo removes exactly the lines the last recorded note added', async () => {
+    const o = new BoardOps(store, join(dir, 'actors.json'))
+    await o.note('demo', '^aa11bb', '- one\n- two', 'eng')
+    expect(onDisk()).toContain('  - two')
+    const r = await o.unnote('demo', '^aa11bb', {}, 'eng')
+    expect(r.removed).toEqual(['- one', '- two'])
+    expect(onDisk()).not.toContain('- one')
+    expect(onDisk()).toContain('existing note') // the card's own history survives
+    await expect(o.unnote('demo', '^aa11bb', {}, 'eng')).rejects.toThrow(/already taken back/)
+  })
+
+  it('--remove-last works without a record and refuses to overrun the card', async () => {
+    await ops.note('demo', '^aa11bb', 'junk')
+    await expect(ops.unnote('demo', '^aa11bb', {})).rejects.toThrow(/remove-last/)
+    expect((await ops.unnote('demo', '^aa11bb', { count: 1 })).removed).toEqual(['junk'])
+    await expect(ops.unnote('demo', '^aa11bb', { count: 9 })).rejects.toThrow(/it has 1/)
+  })
+
+  it('a text-resolved write warns which card it hit', async () => {
+    const r = await ops.note('demo', 'Going', '- landed on a text match')
+    expect(r.blockId).toBe('cc22dd')
+    expect(r.warning).toContain('^cc22dd')
+    expect(r.warning).toContain('--undo')
+    // An id-addressed write is the normal case and stays quiet.
+    expect((await ops.note('demo', '^cc22dd', '- by id')).warning).toBeUndefined()
   })
 })
 

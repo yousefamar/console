@@ -73,30 +73,66 @@ export async function resolveBoardPath(store: NoteStore, project: string): Promi
   return null
 }
 
-/** Find a card by `^blockId` or by text — exact match first, then a UNIQUE
- *  case-insensitive substring. Ambiguity is an error, not a guess. */
-export function findCardByQuery(board: KanbanBoard, query: string): { ref: CardRef; card: BoardCard } | { error: string } {
-  if (query.startsWith('^')) {
-    const id = query.slice(1)
-    for (const col of board.columns) {
-      const index = col.cards.findIndex((c) => c.blockId === id)
-      if (index !== -1) return { ref: { column: col.title, index }, card: col.cards[index]! }
-    }
-    return { error: `no card with id ^${id}` }
-  }
+/** The `^id` grammar mintBlockId produces: `<adjective>-<noun>`, words ≤6
+ *  letters, with a numeric suffix after a collision. */
+const ID_SHAPED = /^[a-z]{2,6}-[a-z]{2,6}(?:-\d+)?$/
+
+function textHits(board: KanbanBoard, query: string): Array<{ ref: CardRef; card: BoardCard }> {
   const q = query.toLowerCase()
   const hits: Array<{ ref: CardRef; card: BoardCard }> = []
   for (const col of board.columns) {
     col.cards.forEach((card, index) => {
-      if (card.text === query) hits.unshift({ ref: { column: col.title, index }, card })
-      else if (card.text.toLowerCase().includes(q)) hits.push({ ref: { column: col.title, index }, card })
+      if (card.text.toLowerCase().includes(q)) hits.push({ ref: { column: col.title, index }, card })
     })
   }
+  return hits
+}
+
+const describeCard = (h: { card: BoardCard }): string =>
+  `"${h.card.text.slice(0, 40)}"${h.card.blockId ? ` ^${h.card.blockId}` : ''}`
+
+/** Find a card by `^blockId` or by text.
+ *
+ *  An ID ALWAYS WINS, with or without the caret, and an id-SHAPED argument
+ *  that matches no id is an error rather than a text search: on 2026-10-07 an
+ *  astera fork ran `note glad-wolf` and the hub appended its whole hand-back
+ *  to ^brisk-boar — a DIFFERENT card, whose own text reads "CONTINUE
+ *  ^glad-wolf after the fleet kill" — and answered `success: true`. The real
+ *  ^glad-wolf never matched by text at all, because the parser strips the
+ *  stamp out of `card.text`, so the mention was the only hit and a unique hit
+ *  used to be taken as the answer.
+ *
+ *  Text addressing (for everything that is not id-shaped) is an exact match
+ *  first, then a UNIQUE case-insensitive substring. Ambiguity is an error,
+ *  never a guess. */
+export function findCardByQuery(board: KanbanBoard, query: string): { ref: CardRef; card: BoardCard; matched: 'id' | 'text' } | { error: string } {
+  const bare = query.startsWith('^') ? query.slice(1) : query
+  const id = bare.toLowerCase()
+  for (const col of board.columns) {
+    const index = col.cards.findIndex((c) => c.blockId?.toLowerCase() === id)
+    if (index !== -1) return { ref: { column: col.title, index }, card: col.cards[index]!, matched: 'id' }
+  }
+  if (query.startsWith('^') || ID_SHAPED.test(id)) {
+    const mentions = textHits(board, bare)
+    const also = mentions.length
+      ? ` ${mentions.length} card(s) MENTION it in their own text, which is not the same card: ${mentions.slice(0, 5).map(describeCard).join(', ')} — address one of those by its OWN ^id.`
+      : ''
+    return { error: `no card with id ^${bare} on this board.${also} (An id-shaped argument is never text-matched; to search card text, pass a longer phrase.)` }
+  }
+  const hits = textHits(board, query)
   const exact = hits.filter((h) => h.card.text === query)
-  if (exact.length === 1) return exact[0]!
-  if (hits.length === 1) return hits[0]!
+  if (exact.length === 1) return { ...exact[0]!, matched: 'text' }
+  if (hits.length === 1) return { ...hits[0]!, matched: 'text' }
   if (hits.length === 0) return { error: `no card matches "${query}"` }
-  return { error: `"${query}" is ambiguous — ${hits.length} cards match: ${hits.slice(0, 5).map((h) => `"${h.card.text.slice(0, 40)}"${h.card.blockId ? ` ^${h.card.blockId}` : ''}`).join(', ')}. Use the ^id.` }
+  return { error: `"${query}" is ambiguous — ${hits.length} cards match: ${hits.slice(0, 5).map(describeCard).join(', ')}. Use the ^id.` }
+}
+
+/** A write that landed on a card addressed by TEXT names what it hit, so a
+ *  caller that meant an id sees its mistake in the response (see the
+ *  ^glad-wolf/^brisk-boar note above). */
+function textMatchWarning(card: BoardCard, undoHint = false): string {
+  const target = card.blockId ? `^${card.blockId}` : 'an unstamped card'
+  return `resolved by TEXT, not by id: this wrote to ${target} "${card.text.slice(0, 60)}". If you meant a card id, pass "^id".${undoHint ? ` \`note "${target}" --undo\` takes the note back.` : ''}`
 }
 
 export interface ActorRecord {
@@ -106,6 +142,9 @@ export interface ActorRecord {
   op?: 'move' | 'assign' | 'block' | 'model' | 'effort' | 'nofork' | 'inherit' | 'remote' | 'note'
   /** Target column of a `move`. */
   column?: string
+  /** How many detail lines the last `note` appended — what `note --undo`
+   *  removes. 0 once undone, so a second undo cannot eat the note before it. */
+  noteLines?: number
 }
 
 export interface CardView {
@@ -127,8 +166,9 @@ export interface CardView {
    *  board's `remote:` frontmatter decides, and its absence means local. */
   remote: 'forge' | 'local' | null
   detail: string[]
-  /** Set on a move into Under Review when the card carries no `- ` summary
-   *  bullets — the CLI surfaces it to the agent at hand-back time. */
+  /** Something the write got away with but the caller should see: a move into
+   *  Under Review with no `- ` summary bullets, or a card addressed by text
+   *  rather than by `^id`. The CLI surfaces it to the agent. */
   warning?: string
 }
 
@@ -184,9 +224,13 @@ export class BoardOps {
     return this.actors[`${path}#${blockId}`]
   }
 
-  private recordActor(path: string, blockId: string | null | undefined, actor: string | undefined, meta: { op: ActorRecord['op']; column?: string }): void {
+  private recordActor(path: string, blockId: string | null | undefined, actor: string | undefined, meta: { op: ActorRecord['op']; column?: string; noteLines?: number }): void {
     if (!actor || !blockId || !this.actorFile) return
-    this.actors[`${path}#${blockId}`] = { actor, ts: Date.now(), op: meta.op, ...(meta.column ? { column: meta.column } : {}) }
+    this.actors[`${path}#${blockId}`] = {
+      actor, ts: Date.now(), op: meta.op,
+      ...(meta.column ? { column: meta.column } : {}),
+      ...(meta.noteLines === undefined ? {} : { noteLines: meta.noteLines }),
+    }
     const keys = Object.keys(this.actors)
     if (keys.length > 500) {
       for (const k of keys.sort((a, b) => this.actors[a]!.ts - this.actors[b]!.ts).slice(0, keys.length - 500)) delete this.actors[k]
@@ -381,9 +425,38 @@ export class BoardOps {
     return this.mutate(project, (board, path) => {
       const hit = findCardByQuery(board, query)
       if ('error' in hit) throw new Error(hit.error)
-      hit.card.lines.push(...detailLines(note))
-      this.recordActor(path, hit.card.blockId, actor, { op: 'note' })
-      return cardView(hit.card, hit.ref.column)
+      const added = detailLines(note)
+      hit.card.lines.push(...added)
+      this.recordActor(path, hit.card.blockId, actor, { op: 'note', noteLines: added.length })
+      const warning = hit.matched === 'text' ? textMatchWarning(hit.card, true) : undefined
+      return { ...cardView(hit.card, hit.ref.column), ...(warning ? { warning } : {}) }
+    })
+  }
+
+  /** Take a note back off a card — the repair path for one that landed on the
+   *  wrong card (before ^glad-wolf there was none, so repairing it meant
+   *  re-passing every surviving bullet through `edit --detail`, by hand).
+   *  `count` is explicit (`--remove-last N`) or, with none, the line count of
+   *  the last note this hub recorded for the card (`--undo`). An attachment's
+   *  bytes stay in assets/; only its detail line goes. */
+  unnote(project: string, query: string, opts: { count?: number }, actor?: string): Promise<CardView & { removed: string[] }> {
+    return this.mutate(project, (board, path) => {
+      const hit = findCardByQuery(board, query)
+      if ('error' in hit) throw new Error(hit.error)
+      const card = hit.card
+      const where = card.blockId ? `^${card.blockId}` : `"${card.text.slice(0, 40)}"`
+      const detail = card.lines.length - 1
+      const record = card.blockId ? this.actors[`${path}#${card.blockId}`] : undefined
+      const recorded = record?.op === 'note' ? record.noteLines : undefined
+      const count = opts.count ?? recorded
+      if (count === undefined) {
+        throw new Error(`nothing recorded to undo on ${where}: this hub has no note of its own to take back (a hub restart, a direct file edit or the SPA clears that). Pass --remove-last <n> — the card has ${detail} detail line(s); \`con board ${project} show --json\` lists them.`)
+      }
+      if (count <= 0) throw new Error(`nothing to undo on ${where}: its last note was already taken back. Pass --remove-last <n> to drop more.`)
+      if (count > detail) throw new Error(`cannot remove ${count} line(s) from ${where}: it has ${detail}`)
+      const removed = card.lines.splice(card.lines.length - count, count).map((l) => l.trim())
+      this.recordActor(path, card.blockId, actor, { op: 'note', noteLines: 0 })
+      return { ...cardView(card, hit.ref.column), removed }
     })
   }
 
@@ -433,11 +506,12 @@ export class BoardOps {
       } else if (tail.length) {
         hit.card.lines.push(...tail.flatMap(detailLines))
       }
-      return cardView(hit.card, hit.ref.column)
+      const warning = hit.matched === 'text' ? textMatchWarning(hit.card) : undefined
+      return { ...cardView(hit.card, hit.ref.column), ...(warning ? { warning } : {}) }
     })
   }
 
-  remove(project: string, query: string): Promise<{ removed: string }> {
+  remove(project: string, query: string): Promise<{ removed: string; warning?: string }> {
     return this.mutate(project, (board) => {
       const hit = findCardByQuery(board, query)
       if ('error' in hit) throw new Error(hit.error)
@@ -446,7 +520,8 @@ export class BoardOps {
       for (const x of col.interstitials) {
         if (x.afterCard >= hit.ref.index) x.afterCard = Math.max(-1, x.afterCard - 1)
       }
-      return { removed: hit.card.text }
+      const warning = hit.matched === 'text' ? textMatchWarning(hit.card) : undefined
+      return { removed: hit.card.text, ...(warning ? { warning } : {}) }
     })
   }
 }

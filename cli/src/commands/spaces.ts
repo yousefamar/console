@@ -6,10 +6,11 @@
 //
 //   con spaces board <project>                                # show
 //   con spaces board <project> add "text" [--to Backlog] [--assign key] [--detail "a|b"] [--bottom]
-//   con spaces board <project> move "<card>" <column>         # card = ^id or unique text
+//   con spaces board <project> move "<card>" <column>         # card = ^id or unique text; an ^id always wins
 //   con spaces board <project> assign "<card>" <agentKey|none>
 //   con spaces board <project> block "<card>" [--note "why"] / unblock "<card>"
 //   con spaces board <project> note "<card>" "text"           # multi-line OK: one detail line per line
+//   con spaces board <project> note "<card>" --undo | --remove-last <n>   # take a note back off the card
 //   con spaces board <project> attach "<card>" <image.png|clip.webm> [--caption "what it shows"]
 //   con spaces board <project> edit "<card>" [--text "new"] [--detail "a|b"]
 //   con spaces board <project> remove "<card>"
@@ -37,7 +38,7 @@ interface CardView {
  *  the hub body's field name and the one people reach for. */
 const BOARD_FLAGS: Record<string, readonly string[]> = {
   show: [], add: ['to', 'column', 'assign', 'detail', 'bottom'], move: [], assign: [], owner: [], model: [],
-  nofork: [], forkok: [], inherit: [], fresh: [], forge: [], local: [], here: [], block: ['note'], unblock: ['note'], note: [], attach: ['caption'],
+  nofork: [], forkok: [], inherit: [], fresh: [], forge: [], local: [], here: [], block: ['note'], unblock: ['note'], note: ['undo', 'remove-last'], attach: ['caption'],
   edit: ['text', 'detail'], remove: [], redispatch: [], history: [], restore: ['confirm'],
 }
 
@@ -151,8 +152,18 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       return
     }
     case 'note': {
-      const [card, note] = [pos[0], pos[1]]
-      if (!card || !note) { exitWithError('USAGE', 'Usage: con spaces board <project> note "<card>" "text"   (newlines split into one detail line each — bulleted summaries welcome)', flags); return }
+      const undo = opts.undo !== undefined || opts['remove-last'] !== undefined
+      // `--undo` written BEFORE the card swallows it as its value (parseFlags
+      // can't know the flag is boolean), so read it back as the card.
+      const card = pos[0] ?? (opts.undo && opts.undo !== 'true' ? opts.undo : undefined)
+      const note = pos[1]
+      if (!card || (!note && !undo)) { exitWithError('USAGE', 'Usage: con spaces board <project> note "<card>" "text"   (newlines split into one detail line each — bulleted summaries welcome); note "<card>" --undo | --remove-last <n>   takes a note back off the card', flags); return }
+      if (undo) {
+        const n = opts['remove-last']
+        if (n !== undefined && !/^\d+$/.test(n)) { exitWithError('USAGE', '--remove-last takes a count of trailing detail lines, e.g. --remove-last 3', flags); return }
+        output(await hubFetch(`/board/${enc}/unnote`, { method: 'POST', body: { card, ...(n === undefined ? {} : { count: Number(n) }) } }), flags)
+        return
+      }
       output(await hubFetch(`/board/${enc}/note`, { method: 'POST', body: { card, note } }), flags)
       return
     }
