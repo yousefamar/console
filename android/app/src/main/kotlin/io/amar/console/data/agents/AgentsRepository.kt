@@ -22,6 +22,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -134,7 +135,13 @@ class AgentsRepository(
         val chain: List<String> = emptyList(),
         val lockedByEnv: Boolean = false,
         val backend: String? = null,
+        /** The human's standing backend choice; `backend != preferred` = spilled. */
+        val preferred: String? = null,
+        val spill: Spill? = null,
     )
+
+    /** The open failover episode (hub `model_state.spill`). */
+    data class Spill(val since: Long, val window: String?, val returnAt: Long, val trippedBy: String?)
 
     data class PastSession(val sessionId: String, val prompt: String, val date: Long)
     data class Handoff(val fromSessionId: String, val targetAgentKey: String)
@@ -364,6 +371,15 @@ class AgentsRepository(
                     chain = chain,
                     lockedByEnv = msg["lockedByEnv"]?.jsonPrimitive?.booleanOrNull ?: false,
                     backend = msg["backend"]?.jsonPrimitive?.content,
+                    preferred = (msg["preferred"] as? JsonPrimitive)?.contentOrNull,
+                    spill = (msg["spill"] as? JsonObject)?.let { sp ->
+                        Spill(
+                            since = sp["since"]?.jsonPrimitive?.longOrNull ?: 0L,
+                            window = (sp["window"] as? JsonPrimitive)?.contentOrNull,
+                            returnAt = sp["returnAt"]?.jsonPrimitive?.longOrNull ?: 0L,
+                            trippedBy = (sp["trippedBy"] as? JsonPrimitive)?.contentOrNull,
+                        )
+                    },
                 )
                 if (msg["autoFellBack"]?.jsonPrimitive?.booleanOrNull == true) {
                     _fallbackNotice.value = FallbackNotice(

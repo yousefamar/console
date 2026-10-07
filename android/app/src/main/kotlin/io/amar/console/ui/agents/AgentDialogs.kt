@@ -99,6 +99,9 @@ fun FleetModelSheet(repo: AgentsRepository, onDismiss: () -> Unit) {
                 }
             }
             error?.let { Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error) }
+            io.amar.console.data.agents.backendChipLabel(state)?.takeIf { it.spilled }?.let { chip ->
+                Text(chip.explanation, style = MaterialTheme.typography.labelSmall, color = AMBER)
+            }
 
             if (state.lockedByEnv) {
                 Text("Locked by CLAUDE_MODEL env — picker disabled", style = MaterialTheme.typography.labelSmall, color = AMBER)

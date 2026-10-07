@@ -41,7 +41,23 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
-_(nothing — v109 was cut 2026-10-06)_
+- **Spaces header shows which auth backend the fleet is on, and whether it was
+  chosen** (^warm-kiwi; Yousef, 6 Oct: "I also need a way to see what we're
+  on" — a failover spill onto pay-per-token Bedrock ran 17 h unnoticed because
+  nothing on the phone distinguished a spill from the subscription). Root
+  cause: `model_state` carried `backend` but the APK only read it inside the
+  fleet sheet's segmented control, and that control cannot tell a chosen
+  Bedrock from a spill — the hub now ships `preferred` (the human's standing
+  choice) and `spill {since, window, returnAt, trippedBy}`; `ModelState` parses
+  both (optional-guarded — an older hub omits them and nothing reads as
+  spilled). Pure `backendChipLabel(state)` (`data/agents/BackendChip.kt`, port
+  of the SPA's `BackendChip`) → `Max` / `Bedrock`, amber `⚠` only when
+  `backend == bedrock && preferred == first_party`; a CHOSEN Bedrock reads
+  plain — that distinction is the point. Rendered as a label chip beside the
+  Tune button in `SpacesScreen` (tap opens the fleet sheet), and the fleet
+  sheet gains a one-line amber explanation when spilled (window exhausted,
+  tripped by, due back `EEE d MMM HH:mm` in `Locale.ENGLISH`). Unit-tested
+  incl. the chosen-Bedrock-is-plain and older-hub cases (`BackendChipTest`).
 
 ## Shipped
 

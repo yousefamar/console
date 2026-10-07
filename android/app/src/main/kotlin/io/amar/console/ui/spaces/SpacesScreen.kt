@@ -269,6 +269,7 @@ fun SpacesScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val fallback by agents.fallbackNotice.collectAsState()
     val handoff by agents.handoff.collectAsState()
+    val modelState by agents.modelState.collectAsState()
 
     // Curator: ONE row above AREAS (hoisted — bound to every area, it would
     // otherwise badge all seven); its alerted/working/unread forks nest under
@@ -289,6 +290,16 @@ fun SpacesScreen(
                 // opens the same Console-wide bar since 2026-09-11).
                 IconButton(onClick = onSearch) {
                     Icon(Icons.Filled.Search, contentDescription = "Search", modifier = Modifier.size(20.dp))
+                }
+                // Which backend the fleet is on, and whether it was chosen: a
+                // spill onto pay-per-token Bedrock once ran 17 h unnoticed.
+                io.amar.console.data.agents.backendChipLabel(modelState)?.let { chip ->
+                    Text(
+                        chip.label + if (chip.spilled) " ⚠" else "",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (chip.spilled) AMBER else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(end = 2.dp).clickable { showFleet = true },
+                    )
                 }
                 IconButton(onClick = { showFleet = true }) {
                     Icon(androidx.compose.material.icons.Icons.Filled.Tune, contentDescription = "Fleet model", modifier = Modifier.size(20.dp))
