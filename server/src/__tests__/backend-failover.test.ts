@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { BackendFailover, DEFAULT_HOLD_MS, RETURN_SLACK_MS, normaliseResetsAt, MAX_HOLD_MS } from '../backend-failover.js'
+import { BackendFailover, DEFAULT_HOLD_MS, RETURN_SLACK_MS, RETURN_RETRY_MS, normaliseResetsAt, MAX_HOLD_MS } from '../backend-failover.js'
 import type { AuthBackend } from '../auth-backend.js'
 
 const T0 = 1_800_000_000_000
@@ -319,5 +319,61 @@ describe('out of credits is a MODEL problem, not a plan one (2026-10-06)', () =>
     expect(modelFamilyToken('us.anthropic.claude-fable-5')).toBe('fable')
     expect(modelFamilyToken('claude-opus-5-5')).toBeNull()
     expect(modelFamilyToken('claude-haiku-4-5-20251001')).toBeNull()
+  })
+})
+
+// 7 Oct 2026: the return onto the subscription respawned every session onto a
+// dead OAuth login and they all died. The return now waits for a login check.
+describe('BackendFailover return waits for the login check', () => {
+  function gated(check: () => Promise<{ ok: boolean; detail?: string }>) {
+    const dir = mkdtempSync(join(tmpdir(), 'failover-gate-'))
+    const now = { t: T0 }
+    const switches: AuthBackend[] = []
+    const events: string[] = []
+    const logs: string[] = []
+    let active: AuthBackend = 'first_party'
+    const f = new BackendFailover(join(dir, 'f.json'), {
+      switchTo: (b) => { switches.push(b); active = b },
+      activeBackend: () => active,
+      log: (m) => logs.push(m),
+      emit: (topic) => events.push(topic),
+      now: () => now.t,
+      canReturn: check,
+    })
+    f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 3600, rateLimitType: 'five_hour' }, 'a')
+    now.t = T0 + 3_700_000
+    return { dir, now, f, switches, events, logs }
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+
+  it('a passing check returns the fleet as before', async () => {
+    const g = gated(async () => ({ ok: true }))
+    g.f.fireTimerForTest()
+    await flush()
+    expect(g.switches).toEqual(['bedrock', 'first_party'])
+    expect(g.f.getState().active).toBeNull()
+    rmSync(g.dir, { recursive: true, force: true })
+  })
+
+  it('a failing check keeps the fleet on Bedrock, leaves the episode open and re-arms', async () => {
+    const g = gated(async () => ({ ok: false, detail: 'Failed to authenticate: OAuth session expired' }))
+    g.f.fireTimerForTest()
+    await flush()
+    expect(g.switches).toEqual(['bedrock'])
+    const ep = g.f.getState().active!
+    expect(ep).not.toBeNull()
+    expect(ep.returnAt).toBe(g.now.t + RETURN_RETRY_MS)
+    expect(g.events).toContain('console.backend.return_blocked')
+    expect(g.logs.some((l) => l.includes('NOT returning') && l.includes('OAuth session expired'))).toBe(true)
+    rmSync(g.dir, { recursive: true, force: true })
+  })
+
+  it('a check that throws is a refusal, not a return', async () => {
+    const g = gated(async () => { throw new Error('spawn ENOENT') })
+    g.f.fireTimerForTest()
+    await flush()
+    expect(g.switches).toEqual(['bedrock'])
+    expect(g.f.getState().active).not.toBeNull()
+    rmSync(g.dir, { recursive: true, force: true })
   })
 })

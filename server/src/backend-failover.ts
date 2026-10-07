@@ -103,7 +103,13 @@ export interface FailoverDeps {
   /** The model the fleet is currently spawning with, so an out-of-credits
    *  rejection can tell "the hub model is metered" from "a pinned session is". */
   activeModel?: () => string
+  /** Prove the subscription login works before respawning the fleet onto it
+   *  (max-login.ts). A failed check keeps the fleet on Bedrock and retries. */
+  canReturn?: () => Promise<{ ok: boolean; detail?: string }>
 }
+
+/** How long to wait before re-checking a return the login check refused. */
+export const RETURN_RETRY_MS = 30 * 60_000
 
 /** `seven_day_<family>` is a per-model window; the plan-wide ones are
  *  five_hour / seven_day / seven_day_overage_included / overage. */
@@ -302,8 +308,32 @@ export class BackendFailover {
     this.restoreModelHold('window reset')
   }
 
-  /** The window reset — back onto the subscription. */
+  /** The window reset — back onto the subscription, but only once the login is
+   *  proven: 7 Oct 2026 a return onto a dead OAuth login killed every session. */
   private returnToPreferred(): void {
+    const ep = this.state.active
+    if (!ep) return
+    if (!this.deps.canReturn) { this.completeReturn(); return }
+    const refuse = (detail: string) => {
+      if (this.state.active !== ep) return // a human closed it meanwhile
+      const retryAt = this.now() + RETURN_RETRY_MS
+      ep.returnAt = retryAt
+      this.arm(retryAt)
+      this.save()
+      this.deps.log(`[failover] NOT returning to the subscription — its login check failed (${detail}); staying on Bedrock, re-checking at ${new Date(retryAt).toISOString()}`)
+      this.deps.emit?.('console.backend.return_blocked', { detail, retryAt }, `blocked:${ep.hitAt}:${retryAt}`)
+    }
+    this.deps.canReturn().then(
+      (r) => {
+        if (this.state.active !== ep) return
+        if (r.ok) this.completeReturn()
+        else refuse(r.detail ?? 'unknown')
+      },
+      (e) => refuse((e as Error).message),
+    )
+  }
+
+  private completeReturn(): void {
     const ep = this.state.active
     if (!ep) return
     const onBedrockMs = this.now() - ep.hitAt

@@ -41,6 +41,7 @@ import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGrou
 import { BACKEND_PRESETS, detectActiveBackend, readSettingsEnv, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BackendFailover } from './backend-failover.js'
 import { SubscriptionUsageLedger, summariseUsage } from './subscription-usage.js'
+import { checkMaxLogin } from './max-login.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
@@ -915,6 +916,12 @@ const backendFailover = new BackendFailover(join(feedsConfigDir, 'backend-failov
     return { from, to }
   },
   activeModel: () => agentCtx.modelConfig.getModel(),
+  canReturn: async () => {
+    const r = await checkMaxLogin()
+    if (r.ok) return { ok: true }
+    notifyMaxLoginDead(r.detail, r.auth)
+    return { ok: false, detail: r.detail }
+  },
   restoreModel: (model, steppedTo) => {
     if (agentCtx.modelConfig.getModel() !== steppedTo) return // a human picked something else meanwhile
     agentCtx.modelConfig.setModel(model)
@@ -926,6 +933,33 @@ agentCtx.failover = backendFailover
 // Utilisation of the Max windows over time — the data behind "how many
 // subscriptions". Polls the CLI's own usage endpoint with the CLI's token.
 const subscriptionUsage = new SubscriptionUsageLedger(join(feedsConfigDir, 'subscription-usage.json'), { log })
+
+let lastLoginAlertAt = 0
+/** The subscription login is unusable: tell Yousef now, while the fleet is
+ *  still safe on Bedrock, rather than letting a switch discover it. */
+function notifyMaxLoginDead(detail: string, auth: boolean) {
+  log(`[max-login] check failed${auth ? ' (auth)' : ''}: ${detail}`)
+  if (!auth || Date.now() - lastLoginAlertAt < 6 * 3_600_000) return
+  lastLoginAlertAt = Date.now()
+  pushServer.broadcast({ type: 'generic', title: 'Claude Max login is dead', body: 'Run `claude auth login`. The fleet stays on Bedrock until the login works.', id: 'max-login-dead' })
+}
+
+// While spilled, no session uses the subscription, so nothing refreshes its
+// OAuth token (the hub only reads it) and the login silently goes stale — on
+// 7 Oct 2026 the switch back then landed on a dead login. A real check every
+// 3 h refreshes it in place, and catches a revoked one hours before the return.
+let lastLoginCheckAt = 0
+setInterval(() => {
+  const spilled = detectActiveBackend() === 'bedrock' && backendFailover.getState().preferred === 'first_party'
+  const ledgerDenied = !!subscriptionUsage.getState().authError
+  const since = Date.now() - lastLoginCheckAt
+  if (!((spilled && since > 3 * 3_600_000) || (ledgerDenied && since > 30 * 60_000))) return
+  lastLoginCheckAt = Date.now()
+  void checkMaxLogin().then((r) => {
+    if (r.ok) { log('[max-login] subscription login OK'); void subscriptionUsage.poll(); return }
+    notifyMaxLoginDead(r.detail, r.auth)
+  })
+}, 10 * 60_000).unref()
 
 // --------------------------------------------------------------------------
 // Push-to-talk mic ownership (see server/src/mic.ts).
@@ -2228,13 +2262,24 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     if (req.method === 'POST') {
       let raw = ''
       req.on('data', (c) => { raw += c })
-      req.on('end', () => {
+      req.on('end', async () => {
         try {
           const { backend } = JSON.parse(raw || '{}') as { backend?: string }
           if (backend !== 'first_party' && backend !== 'bedrock') {
             res.writeHead(400, { 'Content-Type': 'application/json' })
             res.end(JSON.stringify({ error: "backend must be 'first_party' or 'bedrock'" }))
             return
+          }
+          // Every live session respawns onto the subscription, so prove its
+          // login first — 7 Oct 2026 a switch onto a dead login killed them all.
+          if (backend === 'first_party') {
+            const check = await checkMaxLogin()
+            if (!check.ok) {
+              notifyMaxLoginDead(check.detail, check.auth)
+              res.writeHead(409, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ error: `Not switching: the Claude Max login check failed (${check.detail}).${check.auth ? ' Run `claude auth login`, then retry.' : ''} No session was touched.` }))
+              return
+            }
           }
           const preset = applyUserBackendChoice(agentCtx, backend as AuthBackend)
           res.writeHead(200, { 'Content-Type': 'application/json' })
