@@ -182,6 +182,13 @@ export interface SessionOptions {
    *  back to the same port on the desktop, so `http://localhost:<port>` is the
    *  remote server. Rides the env as CONSOLE_DEV_PORT. */
   devPort?: number
+  /** Create the session WITHOUT a subprocess: it exists (so a board dispatch is
+   *  satisfied and its wake can be buffered) but nothing spawns until
+   *  `startDeferred()` names a placement. The board uses this when a card wants
+   *  forge and the box is still cold — waking the box takes ~60-90 s, which the
+   *  synchronous dispatch path cannot wait for, and the alternative was running
+   *  every such card locally "just this once", every time. */
+  deferSpawn?: boolean
 }
 
 /** Pin the CLI's per-project directory (transcripts + auto-memory) to the
@@ -393,6 +400,14 @@ export class Session extends EventEmitter {
     if (options.hibernateOnStart && options.resume && !options.fork) {
       this.status = 'idle'
       this.hibernated = true
+      return
+    }
+    // Deferred spawn (see SessionOptions.deferSpawn): no process, and no
+    // `hibernated` flag either — there is no transcript to --resume yet, so the
+    // hibernation wake path must not be able to fire. startDeferred() spawns.
+    if (options.deferSpawn) {
+      this.deferredSpawn = options
+      this.status = 'idle'
       return
     }
     this.spawn(options)
@@ -823,6 +838,15 @@ export class Session extends EventEmitter {
     this.lastActivityAt = Date.now()
     this.midTurn = true
     this.everActive = true
+    // Awaiting a placement decision (deferSpawn) — there is nothing to write
+    // to. Hold the prompt; startDeferred() delivers it to the fresh process.
+    if (this.deferredSpawn) {
+      this.pendingWakeMessage = this.pendingWakeMessage
+        ? { content: `${this.pendingWakeMessage.content}\n\n${content}`, images: [...(this.pendingWakeMessage.images ?? []), ...(images ?? [])] }
+        : { content, images }
+      this.status = 'running'
+      return
+    }
     // Hibernated (or mid-hibernation) — bring the subprocess back first.
     if (this.hibernating) {
       // SIGKILL in flight; the exit handler wakes + sends this for us.
@@ -1104,6 +1128,9 @@ export class Session extends EventEmitter {
   /** ssh host alias the current process actually runs on, when remote — shown
    *  in the session status bar so "where did this run?" is never a guess. */
   remoteHost: string | null = null
+  /** The spawn options held back by SessionOptions.deferSpawn, until
+   *  startDeferred() decides where this session runs. */
+  private deferredSpawn: SessionOptions | null = null
   /** A fresh instance has no activity to judge by; flips on the first sendMessage. */
   private everActive = false
   /** Message that arrived during the hibernating window — sent after exit→wake. */
@@ -1190,6 +1217,29 @@ export class Session extends EventEmitter {
     const memory = linkMemoryDir(join(projects, cwdToProjectDir(this.cwd), 'memory'), join(toDir, 'memory'))
     this.cwd = newCwd
     return { ok: true, memory }
+  }
+
+  /** Spawn a session created with `deferSpawn`, now that its placement is
+   *  known, and deliver whatever was buffered for it meanwhile. Returns false
+   *  if there was nothing deferred or the session has since been ended. */
+  startDeferred(opts: { placement: 'local' | 'forge'; devPort?: number | null } = { placement: 'local' }): boolean {
+    const options = this.deferredSpawn
+    if (!options) return false
+    if (this.status === 'ended' || this.endedByUser) { this.deferredSpawn = null; return false }
+    this.deferredSpawn = null
+    this.placement = opts.placement
+    this.devPort = opts.devPort ?? null
+    this.spawn(options)
+    const pending = this.pendingWakeMessage
+    this.pendingWakeMessage = null
+    if (pending) this.sendMessage(pending.content, pending.images)
+    else if (!options.silent && options.prompt) this.sendMessage(options.prompt, options.images)
+    return true
+  }
+
+  /** True while this session exists but has no process, awaiting startDeferred. */
+  get awaitingSpawn(): boolean {
+    return this.deferredSpawn !== null
   }
 
   /** Re-spawn a hibernated session with --resume (history preserved, no

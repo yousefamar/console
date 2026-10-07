@@ -216,18 +216,27 @@ export function remoteExists(cfg: ForgeConfig) {
   }
 }
 
-/** The SYNCHRONOUS decision the dispatch path makes. Wanting forge is not
- *  enough — the box has to be prepared for this cwd already (see the readiness
- *  note above), otherwise this one fork runs locally with the reason attached. */
+/** The SYNCHRONOUS decision the dispatch path makes.
+ *
+ *  Wanting forge is not enough — the box has to be prepared for this cwd
+ *  already (see the readiness note above). When it is not, the answer is
+ *  `defer`: the caller creates the session WITHOUT a process, prewarms, and
+ *  spawns on forge when the box is up (Session.startDeferred). Local stays the
+ *  fallback, but only for a forge that genuinely FAILED — not for one that was
+ *  merely asleep, which used to send every first card of the day local ("this
+ *  once", five times a day: ^warm-hare, ^warm-kiwi, ^busy-goat, ^loud-pony,
+ *  ^zany-fox on 7 Oct 2026, all of them waking the box for nothing). */
 export function decidePlacement(opts: {
   cwd: string
   cardRemote?: Placement | null
   boardRemote?: Placement | null
-}): { placement: Placement; reason: string } {
-  const wanted = resolvePlacement({ cardRemote: opts.cardRemote, boardRemote: opts.boardRemote })
+  /** Tests only — production reads ~/.config/console/forge.json. */
+  available?: boolean
+}): { placement: Placement; reason: string; defer?: boolean } {
+  const wanted = resolvePlacement({ cardRemote: opts.cardRemote, boardRemote: opts.boardRemote, available: opts.available })
   if (wanted.placement === 'local') return wanted
   if (!isCwdPrepared(opts.cwd)) {
-    return { placement: 'local', reason: 'forge requested but the box was not warm yet — running locally this once' }
+    return { placement: 'forge', reason: 'forge requested and the box is cold — holding the spawn until it is ready', defer: true }
   }
   return wanted
 }

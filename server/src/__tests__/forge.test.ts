@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { boardRemote, resolvePlacement } from '../forge/config.js'
+import { decidePlacement } from '../forge/index.js'
 import { remoteCommandArgv } from '../forge/ssh.js'
 import { remoteSettings } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
@@ -50,6 +51,23 @@ describe('placement resolution', () => {
     const r = resolvePlacement({ cardRemote: 'forge', available: false })
     expect(r.placement).toBe('local')
     expect(r.reason).toMatch(/not configured/)
+  })
+})
+
+describe('decidePlacement — a cold box DEFERS, it does not demote', () => {
+  it('holds the spawn when forge is wanted but the cwd is not prepared', () => {
+    const r = decidePlacement({ cwd: '/home/amar/sync/brain/root/projects/astera', boardRemote: 'forge', available: true })
+    expect(r).toMatchObject({ placement: 'forge', defer: true })
+    expect(r.reason).toMatch(/cold/)
+  })
+  it('never defers a local card', () => {
+    expect(decidePlacement({ cwd: '/tmp/x', available: true }).defer).toBeUndefined()
+    expect(decidePlacement({ cwd: '/tmp/x', cardRemote: 'local', boardRemote: 'forge', available: true })).toMatchObject({ placement: 'local' })
+  })
+  it('never defers when there is no forge at all — that is a real local fallback', () => {
+    const r = decidePlacement({ cwd: '/tmp/x', cardRemote: 'forge', available: false })
+    expect(r.placement).toBe('local')
+    expect(r.defer).toBeUndefined()
   })
 })
 

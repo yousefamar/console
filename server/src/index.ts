@@ -51,7 +51,7 @@ import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnv
 import { probeSilentWindDown, summaryFromCardLines } from './kanban/winddown.js'
 import {
   prepareRemoteSession, releaseRemoteSession, forgeAvailable, decidePlacement, prewarmCwd, boardRemote,
-  allocateDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
+  allocateDevPort, forwardDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
   stopForgeIfIdle, isCwdPrepared, preparedCwdList,
 } from './forge/index.js'
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
@@ -1209,6 +1209,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
     if (!live) { log(`[boards] no live session for @${card.agentKey} (${boardPath})`); return false }
     let worker: Session | null = null
     let forked = false
+    let deferredToForge = false
     const isFork = !!live.parentClaudeSessionId
     // #nofork = the card opts out of the fork+worktree+merge ceremony: wake
     // the session directly (trivial cards; Yousef's opt-OUT call — fork
@@ -1220,16 +1221,20 @@ const boardWatcher = new BoardWatcher(noteStore, {
       // got local is logged with the reason and told so in its envelope —
       // "where did this run?" is never a guess.
       const place = decidePlacement({ cwd: live.cwd, cardRemote, boardRemote: boardWants })
-      if (place.placement !== 'forge' && (cardRemote === 'forge' || boardWants === 'forge')) {
+      if (place.defer || (place.placement !== 'forge' && (cardRemote === 'forge' || boardWants === 'forge'))) {
         log(`[boards] ^${card.blockId} ${place.reason}`)
       }
+      deferredToForge = place.defer === true
       worker = forkRoleSessionForTicket(agentCtx, live, card.blockId!, card.model, {
-        inherit, effort: card.effort, placement: place.placement, devPort: place.placement === 'forge' ? allocateDevPort(card.blockId!) : undefined,
+        inherit, effort: card.effort, placement: place.placement,
+        devPort: place.placement === 'forge' && !deferredToForge ? allocateDevPort(card.blockId!) : undefined,
+        deferSpawn: deferredToForge,
       })
-      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey} (${inherit ? 'inherited transcript' : 'fresh context'}${card.model ? `, model ${card.model}` : ''}${card.effort ? `, effort ${card.effort}` : ''}${place.placement === 'forge' ? `, ON FORGE${worker.devPort ? ` dev port ${worker.devPort}` : ''}` : ''})`) }
+      if (worker) { forked = true; log(`[boards] ^${card.blockId} forked ${card.agentKey} → ${worker.agentKey} (${inherit ? 'inherited transcript' : 'fresh context'}${card.model ? `, model ${card.model}` : ''}${card.effort ? `, effort ${card.effort}` : ''}${deferredToForge ? ', FORGE PENDING — spawn held until the box is up' : place.placement === 'forge' ? `, ON FORGE${worker.devPort ? ` dev port ${worker.devPort}` : ''}` : ''})`) }
       // Keep the box warm for the NEXT card on this board, and refresh the repo
-      // copy for this one's siblings. Fire-and-forget by design.
-      if (cardRemote === 'forge' || boardWants === 'forge') void prewarmCwd(live.cwd, (m) => log(m))
+      // copy for this one's siblings. Fire-and-forget by design — EXCEPT when
+      // this card's own spawn is waiting on it (below), which needs the result.
+      if (!deferredToForge && (cardRemote === 'forge' || boardWants === 'forge')) void prewarmCwd(live.cwd, (m) => log(m))
     } else if (card.nofork) {
       log(`[boards] ^${card.blockId} #nofork — waking ${card.agentKey} directly`)
     }
@@ -1252,7 +1257,11 @@ const boardWatcher = new BoardWatcher(noteStore, {
         log(`[boards] card image unreadable (${path}): ${(e as Error).message}`)
       }
     }
-    wakeWorker(worker, forked, buildBoardEnvelope({
+    // Built at WAKE time, not dispatch time: a deferred forge spawn only learns
+    // its host and dev port when the box comes up, and the envelope's REMOTE
+    // section has to carry the real ones.
+    const target = worker
+    const wake = () => wakeWorker(target, forked, buildBoardEnvelope({
       boardAbsPath: join(noteStore.vaultPath, boardPath),
       assetsAbsPath: noteStore.assetsPath,
       card: { text: card.text, blockId: card.blockId!, lines: card.lines },
@@ -1263,11 +1272,32 @@ const boardWatcher = new BoardWatcher(noteStore, {
       // A ticket-fork inherits the SOURCE role's self-identity prompt — tell
       // it who it is now, or it reads the reassigned board line and stands
       // down from its own card.
-      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: card.agentKey, claudeSessionId: worker.claudeSessionId ?? null, context: inherit ? 'inherited' : 'fresh' } : null,
+      forkIdentity: forked && target.agentKey ? { key: target.agentKey, sourceKey: card.agentKey, claudeSessionId: target.claudeSessionId ?? null, context: inherit ? 'inherited' : 'fresh' } : null,
       parentDigest: forked && !inherit ? parentDigestFor(live) : null,
       load,
-      forge: worker.placement === 'forge' ? { host: worker.remoteHost ?? forgeConfig()?.host ?? 'forge', devPort: worker.devPort } : null,
+      forge: target.placement === 'forge' ? { host: target.remoteHost ?? forgeConfig()?.host ?? 'forge', devPort: target.devPort } : null,
     }), images)
+    if (deferredToForge) {
+      // The card is already stamped and its fork already exists — nothing here
+      // can lose the dispatch. Wake the box, then spawn on it; a forge that
+      // genuinely fails (not merely asleep) falls back to local and says so on
+      // the card, because a cloud box must never wedge the board.
+      void (async () => {
+        const r = await prewarmCwd(live.cwd, (m) => log(m))
+        if (target.status === 'ended') return
+        if (r.ok) {
+          const port = allocateDevPort(card.blockId!)
+          if (port && r.cfg) await forwardDevPort(r.cfg, port)
+          target.startDeferred({ placement: 'forge', devPort: port })
+          log(`[boards] ^${card.blockId} forge ready — spawned ${target.agentKey} ON FORGE${port ? ` dev port ${port}` : ''}`)
+        } else {
+          target.startDeferred({ placement: 'local' })
+          log(`[boards] ^${card.blockId} forge failed (${r.reason}) — running ${target.agentKey} locally`)
+          if (project) void boardOps.note(project, `^${card.blockId}`, `- ⚠ this card asked for forge, but the box could not be made ready (${r.reason}) — the fork is running on Yousef's desktop instead`, 'hub').catch(() => {})
+        }
+        wake()
+      })()
+    } else wake()
     eventBus.emit({ topic: 'board.card.dispatched', source: 'board', key: `${card.blockId}:${worker.agentKey ?? card.agentKey}`, data: { project, boardPath, cardId: card.blockId, text: card.text.slice(0, 200), agentKey: worker.agentKey ?? card.agentKey, sourceKey: card.agentKey, column, forked }, ref: `con board ${project ?? '<project>'}` })
     // Ticket-fork: hand the card to the FORK's own @key (the watcher rewrites
     // the board line) so stale nudges and transition wakes hit the fork — not
@@ -1463,9 +1493,20 @@ const boardWatcher = new BoardWatcher(noteStore, {
     }
     let worker: Session | null = null
     let forked = false
+    let reopenDeferred = false
     if (!source.parentClaudeSessionId && source.claudeSessionId && !t.nofork) {
-      worker = forkRoleSessionForTicket(agentCtx, source, t.blockId, t.model, { inherit: t.inherit, effort: t.effort })
-      if (worker) { forked = true; log(`[boards] ^${t.blockId} reopen re-forked ${source.agentKey} → ${worker.agentKey} (${t.inherit ? 'inherited transcript' : 'fresh context'})`) }
+      // A reopen re-fork goes where the ORIGINAL fork would have gone: the
+      // card's `#forge` and the board's `remote:` are carried for exactly this
+      // (InFlightCard), and without it a bounced forge card quietly came back
+      // to the desktop.
+      const place = decidePlacement({ cwd: source.cwd, cardRemote: t.remote, boardRemote: t.boardRemote })
+      reopenDeferred = place.defer === true
+      worker = forkRoleSessionForTicket(agentCtx, source, t.blockId, t.model, {
+        inherit: t.inherit, effort: t.effort, placement: place.placement,
+        devPort: place.placement === 'forge' && !reopenDeferred ? allocateDevPort(t.blockId) : undefined,
+        deferSpawn: reopenDeferred,
+      })
+      if (worker) { forked = true; log(`[boards] ^${t.blockId} reopen re-forked ${source.agentKey} → ${worker.agentKey} (${t.inherit ? 'inherited transcript' : 'fresh context'}${reopenDeferred ? ', FORGE PENDING' : place.placement === 'forge' ? ', ON FORGE' : ''})`) }
     }
     if (!worker) worker = source
     const images: ImageAttachment[] = []
@@ -1478,7 +1519,8 @@ const boardWatcher = new BoardWatcher(noteStore, {
         log(`[boards] card image unreadable (${path}): ${(e as Error).message}`)
       }
     }
-    wakeWorker(worker, forked, buildBoardEnvelope({
+    const reopenTarget = worker
+    const reopenWake = () => wakeWorker(reopenTarget, forked, buildBoardEnvelope({
       boardAbsPath,
       assetsAbsPath: noteStore.assetsPath,
       card: { text: t.text, blockId: t.blockId, lines: t.lines },
@@ -1486,9 +1528,25 @@ const boardWatcher = new BoardWatcher(noteStore, {
       project: projectForBoardPath(t.boardPath),
       deployGate: t.deployGate,
       skills: skillHintsFor(projectForBoardPath(t.boardPath), t.lines),
-      forkIdentity: forked && worker.agentKey ? { key: worker.agentKey, sourceKey: source.agentKey ?? null, claudeSessionId: worker.claudeSessionId ?? null, context: t.inherit ? 'inherited' : 'fresh' } : null,
+      forkIdentity: forked && reopenTarget.agentKey ? { key: reopenTarget.agentKey, sourceKey: source.agentKey ?? null, claudeSessionId: reopenTarget.claudeSessionId ?? null, context: t.inherit ? 'inherited' : 'fresh' } : null,
       parentDigest: forked && !t.inherit ? parentDigestFor(source) : null,
+      forge: reopenTarget.placement === 'forge' ? { host: reopenTarget.remoteHost ?? forgeConfig()?.host ?? 'forge', devPort: reopenTarget.devPort } : null,
     }), images)
+    if (reopenDeferred) {
+      void (async () => {
+        const r = await prewarmCwd(source.cwd, (m) => log(m))
+        if (reopenTarget.status === 'ended') return
+        if (r.ok) {
+          const port = allocateDevPort(t.blockId)
+          if (port && r.cfg) await forwardDevPort(r.cfg, port)
+          reopenTarget.startDeferred({ placement: 'forge', devPort: port })
+        } else {
+          reopenTarget.startDeferred({ placement: 'local' })
+          log(`[boards] ^${t.blockId} forge failed (${r.reason}) — reopen fork running locally`)
+        }
+        reopenWake()
+      })()
+    } else reopenWake()
     if (worker.agentKey && worker.agentKey !== t.agentKey) return worker.agentKey
     return true
   },

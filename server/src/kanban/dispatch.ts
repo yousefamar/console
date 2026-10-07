@@ -76,6 +76,9 @@ export interface InFlightCard {
   inherit: boolean
   model: string | null
   effort: string | null
+  /** `#forge`/`#local` — carried for the same reason as model/effort: a reopen
+   *  re-dispatch must put the fresh fork where the original one ran. */
+  remote: 'forge' | 'local' | null
   /** Original card lines (text + indented notes) — a reopen re-dispatch sends
    *  the full envelope, and the accumulated notes ARE the handover. */
   lines: string[]
@@ -103,6 +106,7 @@ export function inFlightCards(board: KanbanBoard, opts: { boardInherit?: boolean
         inherit: card.inherit || boardInherit,
         model: card.model,
         effort: card.effort,
+        remote: card.remote,
         lines: card.lines,
       })
     }

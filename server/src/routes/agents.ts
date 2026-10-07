@@ -311,7 +311,7 @@ export function findProjectBoard(vaultPath: string, slug: string): string | null
  *  claudeSessionId yet (pre-init) — caller falls back to waking the source
  *  directly. The ENVELOPE must be sent immediately after this returns:
  *  `claude --fork-session` emits no init until its first message. */
-export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string, model?: string | null, opts: { inherit?: boolean; effort?: string | null; placement?: 'local' | 'forge'; devPort?: number | null } = {}): Session | null {
+export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blockId: string, model?: string | null, opts: { inherit?: boolean; effort?: string | null; placement?: 'local' | 'forge'; devPort?: number | null; deferSpawn?: boolean } = {}): Session | null {
   if (!source.claudeSessionId) return null
   // Context mode (^tall-colt): FRESH by default — a new session at the
   // parent's cwd (CLAUDE.md + auto-memory arrive natively, the envelope
@@ -373,11 +373,13 @@ export function forkRoleSessionForTicket(ctx: AgentContext, source: Session, blo
     spawnKind: 'fork',
     ...(isEffort(opts.effort) ? { effort: opts.effort } : {}),
     // Card `#forge` / board `remote: forge` — this fork's `claude`, its
-    // worktree and its dev server all live on the remote compute box. The
-    // caller has already confirmed the box is warm for this cwd; it passes
-    // 'local' otherwise, so there is no failure mode to handle here.
+    // worktree and its dev server all live on the remote compute box. When the
+    // box is cold the caller passes `deferSpawn`: the fork exists with no
+    // process until the prewarm lands (Session.startDeferred), so a sleeping
+    // box delays a card rather than quietly demoting it to local.
     ...(opts.placement === 'forge' ? { placement: 'forge' as const } : {}),
     ...(opts.devPort ? { devPort: opts.devPort } : {}),
+    ...(opts.deferSpawn ? { deferSpawn: true as const } : {}),
   })
   const created = { type: 'session_created' as const, sessionId: session.id, cwd: session.cwd, prompt: '', name: title }
   session.logMessage(created)

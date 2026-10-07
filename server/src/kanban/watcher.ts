@@ -60,6 +60,9 @@ export interface BoardTransition extends InFlightCard {
   /** Board frontmatter `default_owner:` — the reopen re-dispatch fallback
    *  when the card's assignee is dead and no source role is derivable. */
   defaultOwner: string | null
+  /** Board frontmatter `remote:` — with the card's own `remote` (from
+   *  InFlightCard) this is what a reopen re-dispatch places the fresh fork by. */
+  boardRemote: 'forge' | 'local' | null
 }
 
 export interface BoardWatcherOpts {
@@ -400,9 +403,10 @@ export class BoardWatcher {
     // Diff in-flight state for transitions.
     const gate = boardDeployGate(content)
     const fmOwner2 = boardDefaultOwner(content)
+    const remoteDefault2 = boardRemote(content)
     const reopened: BoardTransition[] = []
     for (const card of inFlightCards(board, { boardInherit: boardForkContext(content) === 'inherit' })) {
-      const t: BoardTransition = { ...card, boardPath: path, deployGate: gate, defaultOwner: fmOwner2 }
+      const t: BoardTransition = { ...card, boardPath: path, deployGate: gate, defaultOwner: fmOwner2, boardRemote: remoteDefault2 }
       const prev = this.inFlight.get(card.blockId)
       this.inFlight.set(card.blockId, t)
       if (card.review || card.done || card.blocked) {
@@ -619,7 +623,7 @@ export class BoardWatcher {
     const flight = inFlightCards(board, { boardInherit: boardForkContext(content) === 'inherit' }).find((c) => c.blockId === blockId)
     if (!flight) return { ok: false, error: `no stamped card ^${blockId} on ${boardPath}` }
     if (flight.done) return { ok: false, error: `^${blockId} is Done — move it to a dispatch column first` }
-    const t: BoardTransition = { ...flight, boardPath, deployGate: boardDeployGate(content), defaultOwner: boardDefaultOwner(content) }
+    const t: BoardTransition = { ...flight, boardPath, deployGate: boardDeployGate(content), defaultOwner: boardDefaultOwner(content), boardRemote: boardRemote(content) }
     this.staleTrack.set(blockId, { since: this.now(), nudges: 0 })
     this.inFlight.set(blockId, t)
     await this.applyReopens(boardPath, [t])
