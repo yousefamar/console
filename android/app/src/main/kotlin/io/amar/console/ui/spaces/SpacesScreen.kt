@@ -54,6 +54,10 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewKanban
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
+import io.amar.console.data.agents.SessionGlyph
+import io.amar.console.data.agents.sessionGlyph
+import io.amar.console.ui.components.BotCloud
+import io.amar.console.ui.components.BranchCloud
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -223,6 +227,7 @@ fun SpacesScreen(
                 levelOf(s)?.takeIf { !suppressed(s) } ?: "context",
                 depth = depth,
                 fork = s.parentClaudeSessionId != null,
+                placement = s.placement,
             ))
             for (c in (childrenOf[s.claudeSessionId] ?: emptyList()).sortedBy { sortKey(it) }) {
                 if (c.id != s.id) walk(c, depth + 1)
@@ -383,7 +388,7 @@ fun SpacesScreen(
                                 activity[f.id]?.running == true -> "working"
                                 else -> "unread"
                             },
-                            depth = 0, fork = true,
+                            depth = 0, fork = true, placement = f.placement,
                         ),
                         onClick = { onOpenSession(f.id) },
                     )
@@ -423,6 +428,7 @@ fun SpacesScreen(
                                 else -> "unread"
                             },
                             fork = s.parentClaudeSessionId != null,
+                            placement = s.placement,
                         ),
                         onClick = { onOpenSession(s.id) },
                     )
@@ -612,6 +618,8 @@ data class SpaceAlertItem(
     /** Fork-lineage indent depth (sessions only). */
     val depth: Int = 0,
     val fork: Boolean = false,
+    /** SessionInfo.placement — 'forge' draws the cloud glyph (sessions only). */
+    val placement: String? = null,
 )
 
 @Composable
@@ -717,11 +725,14 @@ private fun AlertRow(a: SpaceAlertItem, onClick: () -> Unit) {
             "stale" -> Dot(MaterialTheme.accents.yellow)
             else -> Text("✎", style = MaterialTheme.typography.labelSmall, color = AMBER)
         }
-        if (a.fork) {
-            Icon(
+        when (sessionGlyph(a.placement, a.fork)) {
+            SessionGlyph.BRANCH_CLOUD -> BranchCloud(tint = VIOLET, cloudTint = MaterialTheme.colorScheme.onSurfaceVariant, size = 15.dp)
+            SessionGlyph.BOT_CLOUD -> BotCloud(tint = MaterialTheme.colorScheme.onSurfaceVariant, size = 15.dp)
+            SessionGlyph.BRANCH -> Icon(
                 Icons.AutoMirrored.Filled.CallSplit,
                 contentDescription = "Fork", tint = VIOLET, modifier = Modifier.size(11.dp),
             )
+            SessionGlyph.BOT -> {}
         }
         Text(
             a.label, style = MaterialTheme.typography.bodySmall,
@@ -1639,24 +1650,26 @@ private fun SpaceAgentsList(
                         s.hasUnread -> Dot(MaterialTheme.colorScheme.primary)
                         else -> Spacer(Modifier.size(8.dp))
                     }
-                    if (s.parentClaudeSessionId != null) {
-                        Icon(
+                    val stateTint = when {
+                        s.needsAttention -> MaterialTheme.colorScheme.error
+                        activity[s.id]?.running == true -> AMBER
+                        s.hasUnread -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                    // On forge the glyph slot goes to the cloud (SPA 83157d29:
+                    // BranchCloud for a fork, BotCloud top-level — the crown
+                    // yields too); lineage keeps its indent. Locally: fork →
+                    // branch; project owner (frontmatter default_owner, else
+                    // the hub's convention pick) → crowned Bot in the row's
+                    // state colour (SPA ^shy-ibis).
+                    when (sessionGlyph(s.placement, isFork = s.parentClaudeSessionId != null)) {
+                        SessionGlyph.BRANCH_CLOUD -> BranchCloud(tint = VIOLET, cloudTint = stateTint, size = 18.dp)
+                        SessionGlyph.BOT_CLOUD -> BotCloud(tint = stateTint, size = 18.dp)
+                        SessionGlyph.BRANCH -> Icon(
                             Icons.AutoMirrored.Filled.CallSplit,
                             contentDescription = "Fork", tint = VIOLET, modifier = Modifier.size(12.dp),
                         )
-                    }
-                    // Project owner (frontmatter default_owner, else the hub's
-                    // convention pick) wears a crowned Bot in the row's state
-                    // colour — SPA ^shy-ibis, replacing the old ★ prefix.
-                    if (s.id == default?.id) {
-                        CrownedBot(
-                            tint = when {
-                                s.needsAttention -> MaterialTheme.colorScheme.error
-                                activity[s.id]?.running == true -> AMBER
-                                s.hasUnread -> MaterialTheme.colorScheme.primary
-                                else -> MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
+                        SessionGlyph.BOT -> if (s.id == default?.id) CrownedBot(tint = stateTint)
                     }
                     // A session running outside its space's home — the bug
                     // class: spawned from the hub's own cwd — reads the wrong

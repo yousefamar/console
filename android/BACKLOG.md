@@ -59,6 +59,22 @@ view-mode hub-sync (Room meta is fine on one device).
   tripped by, due back `EEE d MMM HH:mm` in `Locale.ENGLISH`). Unit-tested
   incl. the chosen-Bedrock-is-plain and older-hub cases (`BackendChipTest`).
 - **Dictated card with a paragraph break lost its 2nd paragraph** (^loud-pony; astera ^quick-fox, 3 Oct). Root cause: the add sheet sent the whole composer text as one `text` and the hub wrote the `\n` raw into the card line, so the next parse read the tail as a bare unindented line — invisible to `con spaces board show`, the dispatch envelope and the fork. Fix both ends: `CardContent.splitHeadAndDetail` (first non-blank line → card, rest → detail, blanks collapsed; tested) feeds `addCard(text, column, detail)` from the add sheet and `editCard` from the card sheet's editor; the hub's `board-ops.ts add()/edit()` split the same way as a belt (any client), and all three parser ports (hub, SPA, `KanbanCodec.parse`) now attach a bare non-blank line directly under a card to that card verbatim (lossless round-trip; a blank line still ends the run) so existing orphans show as detail.
+- **Sessions running on forge ride a cloud** (^warm-hare; SPA 83157d29 +
+  baf9d507). Gap: hub `SessionInfo` gained `placement?: 'local' | 'forge'` +
+  `devPort?` (7a0cced0) and the phone had no twin, so a remote fork looked
+  exactly like a local one. Room 15→16: `agent_sessions.placement` (TEXT) +
+  `devPort` (INTEGER), both NULL-default (`AutoMigration(15,16)`, schema
+  `16.json`, MigrationTest replays 15 with a seeded row); `sessionRow()` reads
+  both (absent = local). Pure `data/agents/Placement.kt` (`sessionGlyph`,
+  `placementChip`, `isRemotePlacement`; `PlacementTest`) decides the glyph:
+  remoteness and lineage are separate axes — the cloud wins the glyph slot
+  (even over the owner's crown), the fork indent stays. `ui/components/
+  CloudGlyphs.kt` `BotCloud`/`BranchCloud` are Box composites of
+  SmartToy/CallSplit over `Icons.Filled.Cloud` (the `CrownedBot` precedent).
+  Sites: Spaces agent rows + rail alert rows (`SpaceAlertItem.placement`),
+  CommandBar `Kind.SESSION` glyph (`Entry.remote`), `AgentStatusBar` chip
+  `forge` / `forge:<devPort>` beside the cwd chip, and a "runs on forge
+  (AWS)" line under the long-press sheet title.
 
 ## Shipped
 

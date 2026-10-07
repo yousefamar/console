@@ -110,6 +110,16 @@ class MigrationTest {
     fun `migrate 10 to latest`() = migrateFrom(10)
 
     @Test
+    fun `migrate 15 to latest keeps agent sessions and defaults placement to null`() = migrateFrom(15) { db ->
+        db.execSQL(
+            """INSERT INTO agent_sessions
+               (id, name, status, hasUnread, needsAttention, attentionSnippet, agentKey, modelLabel,
+                hibernated, cwd, lastCachedIndex, messageLogLength)
+               VALUES ('s1', 'S', 'idle', 0, 0, NULL, NULL, NULL, 0, NULL, -1, 0)"""
+        )
+    }
+
+    @Test
     fun `migrate 13 to latest carries feed snoozes into item_snooze with the feed prefix`() {
         val dbFile = File(context.cacheDir, "migration-13-snooze.db")
         dbFile.delete()

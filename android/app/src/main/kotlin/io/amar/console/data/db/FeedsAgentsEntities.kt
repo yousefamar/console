@@ -204,6 +204,11 @@ data class AgentSessionRow(
     @ColumnInfo(defaultValue = "0") val lastActivityAt: Long = 0,
     /** First line of the last assistant text — Inbox row preview. */
     @ColumnInfo(defaultValue = "NULL") val lastTextSnippet: String? = null,
+    // --- v16: where the claude process runs (hub SessionInfo.placement, 7a0cced0) ---
+    /** 'local' | 'forge' (AWS box); null = older hub payload = local. */
+    @ColumnInfo(defaultValue = "NULL") val placement: String? = null,
+    /** Dev-server port tunnelled back from forge, when the hub reports one. */
+    @ColumnInfo(defaultValue = "NULL") val devPort: Int? = null,
 )
 
 fun AgentSessionRow.areaList(): List<String> =

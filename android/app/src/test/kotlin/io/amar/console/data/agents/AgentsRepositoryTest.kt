@@ -299,6 +299,24 @@ class AgentsRepositoryTest {
         put("lastReadIndex", kotlinx.serialization.json.JsonPrimitive(0))
     }
 
+    @Test
+    fun `a list push reads placement and devPort, absent means local`() = runTest {
+        logs["s1"] = FakeLog(total = 0); logs["s2"] = FakeLog(total = 0)
+        val remote = kotlinx.serialization.json.JsonObject(sessionInfo("s1", 0) + mapOf(
+            "placement" to kotlinx.serialization.json.JsonPrimitive("forge"),
+            "devPort" to kotlinx.serialization.json.JsonPrimitive(5174),
+        ))
+
+        repo.applySessionsList(listOf(remote, sessionInfo("s2", 0)))
+
+        val s1 = db.agents().byId("s1")!!
+        assertEquals("forge", s1.placement)
+        assertEquals(5174, s1.devPort)
+        val s2 = db.agents().byId("s2")!!
+        assertEquals(null, s2.placement)
+        assertEquals(null, s2.devPort)
+    }
+
     // --- Dormant sessions (^lime-orca): a hub restart restores every idle
     // session into hibernation with an EMPTY in-memory log, so there is
     // nothing left to page and the transcript rendered blank on mobile ---

@@ -54,6 +54,8 @@ import io.amar.console.data.search.CommandBarLogic
 import io.amar.console.data.search.CommandBarLogic.Entry
 import io.amar.console.data.search.CommandBarLogic.Kind
 import io.amar.console.data.search.CommandBarLogic.Target
+import io.amar.console.ui.components.BotCloud
+import io.amar.console.ui.components.BranchCloud
 import io.amar.console.ui.theme.accents
 import kotlinx.coroutines.delay
 
@@ -191,6 +193,13 @@ private fun KindGlyph(e: Entry, appIcon: android.graphics.drawable.Drawable?, ti
         }
         if (bmp != null) Image(bmp, contentDescription = null, modifier = Modifier.size(18.dp))
         else Icon(Icons.Filled.Apps, null, Modifier.size(16.dp), tint = tint)
+        return
+    }
+    // SPA CommandBar.tsx: a forge session rides a cloud — BranchCloud for a fork
+    // (violet branch), BotCloud top-level; local keeps the plain glyphs.
+    if (e.kind == Kind.SESSION && e.remote) {
+        if (e.isFork) BranchCloud(tint = MaterialTheme.accents.violet.copy(alpha = 0.7f), cloudTint = tint, size = 16.dp)
+        else BotCloud(tint = tint, size = 16.dp)
         return
     }
     val (vector, color) = when (e.kind) {

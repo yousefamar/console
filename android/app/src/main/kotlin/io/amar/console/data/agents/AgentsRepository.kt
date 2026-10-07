@@ -931,6 +931,8 @@ class AgentsRepository(
             areasCsv = (s["areas"] as? JsonArray)?.mapNotNull { it.jsonPrimitive.content }?.joinToString(","),
             lastActivityAt = s["lastActivityAt"]?.jsonPrimitive?.longOrNull ?: 0,
             lastTextSnippet = s["lastTextSnippet"]?.jsonPrimitive?.content,
+            placement = s["placement"]?.jsonPrimitive?.contentOrNull,
+            devPort = s["devPort"]?.jsonPrimitive?.intOrNull,
         )
     }
 

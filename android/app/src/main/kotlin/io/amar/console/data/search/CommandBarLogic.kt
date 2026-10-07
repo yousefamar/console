@@ -1,5 +1,6 @@
 package io.amar.console.data.search
 
+import io.amar.console.data.agents.isRemotePlacement
 import io.amar.console.data.db.AgentSessionRow
 import io.amar.console.data.db.BookmarkRow
 import io.amar.console.data.db.CalEventRow
@@ -55,6 +56,8 @@ object CommandBarLogic {
         val recency: Long,
         val target: Target,
         val isFork: Boolean = false,
+        /** Session runs on forge (SessionInfo.placement) — cloud glyph. */
+        val remote: Boolean = false,
         val running: Boolean = false,
         val unread: Boolean = false,
         /** Launch count (apps only) — a tiebreak ahead of recency so the usage
@@ -212,6 +215,7 @@ object CommandBarLogic {
                 key = "s:${s.id}", title = name.removeSuffix(" (fork)"), hint = slug, kind = Kind.SESSION,
                 recency = recency, target = Target.Session(s.id),
                 isFork = s.parentClaudeSessionId != null || name.endsWith(" (fork)"),
+                remote = isRemotePlacement(s.placement),
                 running = s.id in src.running, unread = s.hasUnread,
             ))
         }

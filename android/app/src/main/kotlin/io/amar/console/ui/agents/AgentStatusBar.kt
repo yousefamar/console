@@ -23,6 +23,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import io.amar.console.data.agents.placementChip
+import io.amar.console.ui.components.BotCloud
 import io.amar.console.ui.theme.accents
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.material3.Text
@@ -129,6 +131,15 @@ fun StatusBar(
                 Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Folder, contentDescription = "cwd", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(11.dp))
                     Text(shortCwd(cwd), style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                }
+            }
+            // The claude process runs on forge (AWS); the cwd above is mirrored
+            // there. `forge:<port>` when a dev server is tunnelled back. SPA
+            // AgentSessionView status bar (baf9d507).
+            placementChip(session.placement, session.devPort)?.let { chip ->
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                    BotCloud(tint = MaterialTheme.colorScheme.onSurfaceVariant, size = 11.dp)
+                    Text(chip, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                 }
             }
             // Git branch + stats.

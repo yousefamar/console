@@ -192,6 +192,12 @@ fun SessionActionsSheet(
     androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(session.name, style = MaterialTheme.typography.titleMedium)
+            if (io.amar.console.data.agents.isRemotePlacement(session.placement)) {
+                Text(
+                    "runs on forge (AWS)" + (session.devPort?.let { " · dev server :$it" } ?: ""),
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             if (renaming) {
                 OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Button(onClick = { if (name.isNotBlank()) onRename(name.trim()); onDismiss() }, enabled = name.isNotBlank()) { Text("Save") }
