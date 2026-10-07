@@ -37,8 +37,11 @@ export interface FailoverEpisode {
   trippedBy?: string
   /** Set when the episode closed. */
   returnedAt?: number
-  /** 'reset' = timer fired, 'manual' = `con agent backend set` closed it. */
-  closedBy?: 'reset' | 'manual'
+  /** 'reset' = timer fired, 'manual' = `con agent backend set` closed it,
+   *  'rotated' = a second Max login took over (max-logins.ts). */
+  closedBy?: 'reset' | 'manual' | 'rotated'
+  /** The login the fleet moved onto, when `closedBy` is 'rotated'. */
+  rotatedTo?: string
 }
 
 export interface UsageWarning {
@@ -108,6 +111,13 @@ export interface FailoverDeps {
   /** Prove the subscription login works before respawning the fleet onto it
    *  (max-login.ts). A failed check keeps the fleet on Bedrock and retries. */
   canReturn?: () => Promise<{ ok: boolean; detail?: string }>
+  /** Move the fleet onto ANOTHER Max login instead of serving the whole hold
+   *  on pay-per-token Bedrock (max-logins.ts). Called right after a plan-wide
+   *  spill opens; resolves to the login taken over, or null when there is
+   *  nowhere to go (one subscription, or all of them are spent). Marking the
+   *  exhausted login and probing the candidate belong to the implementation —
+   *  this must only resolve non-null once the fleet can really serve there. */
+  rotateLogin?: (ctx: { rateLimitType?: string; resetsAt: number | null; trippedBy?: string }) => Promise<{ to: string } | null>
 }
 
 /** How long to wait before re-checking a return the login check refused. */
@@ -269,6 +279,36 @@ export class BackendFailover {
     this.deps.emit?.('console.backend.failover', {
       to: 'bedrock', rateLimitType: info.rateLimitType ?? null, resetsAt, returnAt, trippedBy: from ?? null,
     }, `failover:${now}`)
+    // Then try to get straight off Bedrock onto a second subscription. Spill
+    // first, rotate second, deliberately: the fleet is never left pointing at a
+    // login that has not been proven, and if there is no second login this is a
+    // no-op — the path above is exactly what it always was. The cost of the two
+    // respawns is a few dollars of cache rewrites against ~$180/day of metered
+    // traffic (8 Oct 2026: a genuine `seven_day` exhaustion held the fleet on
+    // Bedrock for 74 h).
+    void this.tryLoginRotation(this.state.active, info.rateLimitType, resetsAt, from)
+  }
+
+  /** Hand the hold over to another Max login, if one can serve it. */
+  private async tryLoginRotation(ep: FailoverEpisode | null, rateLimitType: string | undefined, resetsAt: number | null, trippedBy?: string): Promise<void> {
+    if (!ep || !this.deps.rotateLogin) return
+    let moved: { to: string } | null = null
+    try {
+      moved = await this.deps.rotateLogin({ rateLimitType, resetsAt, trippedBy })
+    } catch (e) {
+      this.deps.log(`[failover] login rotation failed: ${(e as Error).message}`)
+      return
+    }
+    if (!moved) return
+    if (this.state.active !== ep) return // the hold was closed while we probed
+    const onBedrockMs = this.now() - ep.hitAt
+    ep.rotatedTo = moved.to
+    this.closeEpisode('rotated')
+    this.deps.log(`[failover] rotated onto Max login '${moved.to}' after ${(onBedrockMs / 1000).toFixed(0)} s on Bedrock`)
+    if (this.deps.activeBackend() !== 'first_party') this.deps.switchTo('first_party', `rotated onto Max login '${moved.to}'`)
+    this.deps.emit?.('console.backend.login_rotated', {
+      to: moved.to, onBedrockMs, rateLimitType: rateLimitType ?? null, resetsAt, trippedBy: trippedBy ?? null,
+    }, `rotated:${ep.hitAt}`)
   }
 
   /** A per-model window is exhausted: stay on the subscription, step the hub
@@ -364,7 +404,7 @@ export class BackendFailover {
     }, `restored:${ep.hitAt}`)
   }
 
-  private closeEpisode(by: 'reset' | 'manual'): void {
+  private closeEpisode(by: 'reset' | 'manual' | 'rotated'): void {
     const ep = this.state.active
     if (!ep) return
     ep.returnedAt = this.now()

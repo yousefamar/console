@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { Session, type SessionOptions, type ImageAttachment } from '../session.js'
 import type { ModelConfig } from '../model-config.js'
 import { BACKEND_PRESETS, detectActiveBackend, writeBackendSettings, type AuthBackend, type BackendPreset } from '../auth-backend.js'
+import { loginRegistry, type MaxLogin } from '../max-logins.js'
 import { smallFastModel } from '../bedrock-profiles.js'
 import { buildBoardProtocol } from '../agents/org-protocol.js'
 import { wouldCycle } from '../agents/lineage.js'
@@ -227,6 +228,20 @@ export function applyBackendSwitch(ctx: AgentContext, backend: AuthBackend): Bac
   broadcastModelState(ctx)
   forceRestartAllSessionsForBackend(ctx)
   return preset
+}
+
+/** Move the fleet onto another Claude Max login (max-logins.ts): point the
+ *  registry at it, make sure its settings.json carries the live backend, and
+ *  respawn every live session so they pick up the new `CLAUDE_CONFIG_DIR`.
+ *  Hibernated sessions need nothing — they resolve the active login at wake. */
+export function applyLoginSwitch(ctx: AgentContext, name: string): MaxLogin {
+  const reg = loginRegistry()
+  if (!reg) throw new Error('login registry is not wired')
+  const login = reg.setActive(name)
+  writeBackendSettings(detectActiveBackend()) // fans out to every login dir
+  ctx.log(`[logins] fleet is now on Max login '${login.name}' — restarting all live sessions`)
+  forceRestartAllSessionsForBackend(ctx)
+  return login
 }
 
 /** A HUMAN picked the backend (`con agent backend set`, SPA toggle). Records

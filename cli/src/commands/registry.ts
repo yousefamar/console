@@ -399,6 +399,21 @@ export const COMMANDS: CommandDef[] = [
   { name: 'agent merge', description: 'Merge a fork back into its parent: the fork self-summarises what it learned/did, that digest is injected into the parent session, then the fork is closed. Use instead of killing a fork when its findings should survive. Accepts a hub session id, a conv id (fork claudeSessionId), or a unique name.', safety: 'write',
     args: [{ name: 'session', required: true, description: 'Fork to merge (session id / conv id / name)' }],
     examples: ['con agent merge session_47_1781…', 'con agent merge 6ecfb8ec-…'] },
+  { name: 'agent login', description: 'WHICH Claude Max subscription the fleet spawns under (one config dir per login; `projects` is shared by symlink so transcripts, memory and --resume are unaffected by a switch). A second login is what turns a spent weekly window from days of pay-per-token Bedrock into a rotation — the hub rotates by itself when a plan-wide window is exhausted, and this is the manual lever. `add` only provisions the dir: the OAuth login is interactive and must be run by hand with CLAUDE_CONFIG_DIR set. `use` proves the login with a real probe before any session respawns.', safety: 'write',
+    args: [
+      { name: 'subcommand', required: false, description: '`list` (default), `add`, `use`, `check`, `remove`' },
+      { name: 'name', required: false, description: 'Login name, for everything but `list`' },
+    ],
+    flags: {
+      dir: { type: 'string', description: 'Config dir for `add` (default ~/.claude-logins/<name>)' },
+      force: { type: 'boolean', description: 'For `use`: switch without proving the login first' },
+    },
+    examples: [
+      'con agent login',
+      'con agent login add second',
+      'con agent login check second',
+      'con agent login use second',
+    ] },
   { name: 'agent backend', description: 'Which auth backend the fleet spawns under: `first_party` (Claude Max subscription, the standing choice) or `bedrock` (pay-per-token backup). `set` rewrites ~/.claude/settings.json env, swaps the model chain and respawns every live session. The hub fails over to Bedrock by itself when a Max window (5 h / weekly) is exhausted and returns once it resets; `get` shows the active backend, any open spill, the spill history and the subscription\'s utilisation (the data for "how many subscriptions").', safety: 'write',
     args: [
       { name: 'subcommand', required: false, description: '`get` (default), `set`, `history`, `usage`' },

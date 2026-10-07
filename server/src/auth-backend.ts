@@ -26,6 +26,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from '
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { aliasProfileEnv } from './bedrock-profiles.js'
+import { loginDirs } from './max-logins.js'
 
 export type AuthBackend = 'first_party' | 'bedrock'
 
@@ -123,6 +124,14 @@ function settingsPath(): string {
   return join(homedir(), '.claude', 'settings.json')
 }
 
+/** Every settings.json the switch must rewrite: the canonical one plus one per
+ *  registered Max login (max-logins.ts). With a single login this is exactly
+ *  `[settingsPath()]`, as it always was. A login whose settings.json lagged
+ *  would spawn on the wrong backend the moment the fleet rotated onto it. */
+function settingsPaths(): string[] {
+  return loginDirs().map((dir) => join(dir, 'settings.json'))
+}
+
 /** A preset's env, resolved AT CALL TIME. Bedrock's model-alias ARNs come from
  *  bedrock-profiles.ts, whose table is enriched by an async AWS lookup during
  *  boot — so they must be read when the switch is applied, not when this module
@@ -169,16 +178,20 @@ export function readSettingsEnv(): Record<string, string> {
  *  invocation reads. Does NOT touch the model chain or respawn sessions —
  *  callers (routes/agents.ts) own that via ModelConfig + restartAllSessionsForModel. */
 export function writeBackendSettings(backend: AuthBackend): void {
-  const path = settingsPath()
   let current: Record<string, unknown> = {}
-  if (existsSync(path)) {
-    try { current = JSON.parse(readFileSync(path, 'utf-8')) } catch { /* start fresh on corrupt file */ }
+  const canonical = settingsPath()
+  if (existsSync(canonical)) {
+    try { current = JSON.parse(readFileSync(canonical, 'utf-8')) } catch { /* start fresh on corrupt file */ }
   }
-  const next = computeSettingsWithBackend(current, backend)
-  mkdirSync(dirname(path), { recursive: true })
-  const tmp = `${path}.tmp`
-  writeFileSync(tmp, JSON.stringify(next, null, 2))
-  renameSync(tmp, path)
+  // The canonical file is the source of truth for every login dir's copy, so a
+  // dir that drifted converges here rather than keeping its own env.
+  const body = JSON.stringify(computeSettingsWithBackend(current, backend), null, 2)
+  for (const path of settingsPaths()) {
+    mkdirSync(dirname(path), { recursive: true })
+    const tmp = `${path}.tmp`
+    writeFileSync(tmp, body)
+    renameSync(tmp, path)
+  }
 }
 
 /** Re-bake the ACTIVE backend's managed env at boot so settings.json tracks the

@@ -36,9 +36,14 @@ const STRIPPED_ENV = [
   'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
 ]
 
-export function maxLoginEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+/** `configDir` probes a SPECIFIC Max login (max-logins.ts) rather than whichever
+ *  one the fleet is on — that is how a rotation candidate is checked before the
+ *  fleet moves onto it. Still the login's REAL dir, never a copy of it: the
+ *  refresh this probe performs must land where that login's sessions read it. */
+export function maxLoginEnv(base: NodeJS.ProcessEnv, configDir?: string): NodeJS.ProcessEnv {
   const env = { ...base }
   for (const k of STRIPPED_ENV) delete env[k]
+  if (configDir) env.CLAUDE_CONFIG_DIR = configDir
   return env
 }
 
@@ -73,14 +78,14 @@ export function classifyMaxLogin(code: number | null, stdout: string, stderr: st
   return { ok: false, auth: AUTH_RE.test(`${result}\n${stderr}\n${stdout}`), detail }
 }
 
-export function checkMaxLogin(opts: { timeoutMs?: number } = {}): Promise<MaxLoginCheck> {
+export function checkMaxLogin(opts: { timeoutMs?: number; configDir?: string } = {}): Promise<MaxLoginCheck> {
   const timeoutMs = opts.timeoutMs ?? 120_000
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
     let settled = false
     const done = (r: MaxLoginCheck) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r) } }
-    const proc = spawn('claude', maxLoginArgs(), { cwd: tmpdir(), env: maxLoginEnv(process.env), stdio: ['ignore', 'pipe', 'pipe'] })
+    const proc = spawn('claude', maxLoginArgs(), { cwd: tmpdir(), env: maxLoginEnv(process.env, opts.configDir), stdio: ['ignore', 'pipe', 'pipe'] })
     const timer = setTimeout(() => {
       proc.kill('SIGKILL')
       done({ ok: false, auth: false, detail: `no answer in ${Math.round(timeoutMs / 1000)} s` })

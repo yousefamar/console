@@ -16,7 +16,7 @@
 
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { homedir } from 'node:os'
+import { activeLoginDir } from './max-logins.js'
 
 export interface UsageWindow {
   /** 0..100, as the API reports it. */
@@ -44,8 +44,11 @@ const SAMPLE_CAP = 14 * 24 * 6
 
 export const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage'
 
-export function credentialsPath(): string {
-  return join(homedir(), '.claude', '.credentials.json')
+/** The ACTIVE login's credentials (max-logins.ts) — with one subscription this
+ *  is `~/.claude/.credentials.json` exactly as before, and after a rotation the
+ *  ledger follows the login the fleet is actually spending. */
+export function credentialsPath(dir = activeLoginDir()): string {
+  return join(dir, '.credentials.json')
 }
 
 /** The Max OAuth access token, or null when there is no subscription login. */
@@ -142,7 +145,7 @@ export class SubscriptionUsageLedger {
   async poll(): Promise<UsageSample | null> {
     const cred = this.readToken()
     if (!cred) {
-      this.setAuthError('no subscription login in ~/.claude/.credentials.json')
+      this.setAuthError(`no subscription login in ${credentialsPath()}`)
       return null
     }
     try {

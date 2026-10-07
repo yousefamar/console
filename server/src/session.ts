@@ -36,6 +36,7 @@ import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
+import { activeLoginDir } from './max-logins.js'
 import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, usageLimitTypeOf, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
@@ -206,7 +207,11 @@ export interface SessionOptions {
 export function projectDirEnv(cwd: string, env: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const name = cwdToProjectDir(cwd)
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(name)) return {}
-  return { CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), CLAUDE_CODE_PROJECT_DIR_NAME: name }
+  // The dir is also WHICH MAX LOGIN this session spawns under (max-logins.ts).
+  // With one subscription it is `~/.claude`, as it always was; its `projects`
+  // tree is shared into every other login dir by symlink, so transcript and
+  // memory paths (and therefore `--resume`) do not move when the fleet rotates.
+  return { CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR ?? activeLoginDir(), CLAUDE_CODE_PROJECT_DIR_NAME: name }
 }
 
 export type RelocateMemoryOutcome = 'linked' | 'already-shared' | 'kept-existing' | 'none'

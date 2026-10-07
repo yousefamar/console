@@ -23,6 +23,7 @@ export async function agent(verb: string | undefined, args: string[], flags: Glo
     case 'cwd': return agentCwd(args, flags)
     case 'reparent': return agentReparent(args, flags)
     case 'backend': return agentBackend(args, flags)
+    case 'login': return agentLogin(args, flags)
     case 'fork-cost': return agentForkCost(args, flags)
     case 'search': return agentSearch(args, flags)
     case 'read': return agentRead(args, flags)
@@ -611,6 +612,66 @@ async function agentBackend(args: string[], flags: GlobalFlags): Promise<void> {
     return
   }
   exitWithError('USAGE', `Unknown: con agent backend ${sub}. Usage: con agent backend [get | set <first_party|bedrock> | history | usage]`, flags)
+}
+
+interface LoginRow { name: string; dir: string; addedAt: number; exhaustedUntil?: number | null; exhaustedBy?: string | null; hasCredentials: boolean }
+
+/** `con agent login [list | add <name> | use <name> | check <name> | remove <name>]`
+ *  — WHICH Claude Max subscription the fleet spawns under. A second login turns
+ *  a weekly exhaustion from days of pay-per-token Bedrock into a rotation: the
+ *  hub does it on its own, this is the manual lever. `add` only provisions the
+ *  config dir; the OAuth login itself is interactive and must be run by hand. */
+async function agentLogin(args: string[], flags: GlobalFlags): Promise<void> {
+  const sub = args[0] ?? 'list'
+  const name = args[1]
+  const opts = parseFlags(args.slice(1))
+  const bad = unknownFlags(opts, ['dir', 'force'])
+  if (bad.length) {
+    exitWithError('USAGE', `Unknown flag(s) for con agent login: ${bad.map((f) => `--${f}`).join(', ')}. Usage: con agent login [list | add <name> [--dir <path>] | use <name> [--force] | check <name> | remove <name>]`, flags)
+    return
+  }
+  if (sub === 'list' || sub === 'get') {
+    const state = await hubFetch<{ active: string; multi: boolean; logins: LoginRow[] }>('/agents/logins')
+    if (isJsonMode(flags)) { output(state, flags); return }
+    const rows = state.logins.map((l) => ({
+      login: l.name === state.active ? `${l.name} *` : l.name,
+      dir: l.dir,
+      loggedIn: l.hasCredentials ? 'yes' : 'NO — needs `claude auth login`',
+      spentUntil: l.exhaustedUntil ? fmtTime(l.exhaustedUntil) : '—',
+      why: l.exhaustedBy ?? '',
+    }))
+    output(rows, flags)
+    if (!state.multi && !isJsonMode(flags)) {
+      output('\nOne subscription: the fleet spills to Bedrock when a window is spent. `con agent login add <name>` to add a second.', flags)
+    }
+    return
+  }
+  if (!name) {
+    exitWithError('USAGE', `Usage: con agent login ${sub} <name>`, flags)
+    return
+  }
+  if (sub === 'add') {
+    const dir = opts.dir
+    const r = await hubFetch<{ login: LoginRow; next: string }>('/agents/logins', { method: 'POST', body: { action: 'add', name, dir } })
+    output(isJsonMode(flags) ? r : `added '${r.login.name}' at ${r.login.dir}\n\nIt is NOT logged in yet. Run this yourself (the OAuth flow is interactive):\n  ${r.next}\n\nThen: con agent login check ${name}`, flags)
+    return
+  }
+  if (sub === 'use' || sub === 'set') {
+    const r = await hubFetch<{ active: string; dir?: string; unchanged?: boolean }>('/agents/logins', { method: 'POST', body: { action: 'use', name, force: opts.force === 'true' } })
+    output(isJsonMode(flags) ? r : r.unchanged ? `already on '${r.active}'` : `fleet is now on Max login '${r.active}' (${r.dir}) — live sessions respawned`, flags)
+    return
+  }
+  if (sub === 'check') {
+    const r = await hubFetch<{ name: string; dir: string; ok: boolean; auth?: boolean; detail?: string }>('/agents/logins', { method: 'POST', body: { action: 'check', name } })
+    output(isJsonMode(flags) ? r : r.ok ? `'${r.name}' is logged in and answering` : `'${r.name}' FAILED: ${r.detail}${r.auth ? `\n  Run: CLAUDE_CONFIG_DIR=${r.dir} claude auth login` : ''}`, flags)
+    return
+  }
+  if (sub === 'remove') {
+    const r = await hubFetch<{ removed: string; active: string }>('/agents/logins', { method: 'POST', body: { action: 'remove', name } })
+    output(isJsonMode(flags) ? r : `removed '${r.removed}'; fleet is on '${r.active}' (the config dir itself is left on disk)`, flags)
+    return
+  }
+  exitWithError('USAGE', `Unknown: con agent login ${sub}. Usage: con agent login [list | add <name> [--dir <path>] | use <name> | check <name> | remove <name>]`, flags)
 }
 
 /** `con agent model` — inspect or switch the model all hub agents spawn with.

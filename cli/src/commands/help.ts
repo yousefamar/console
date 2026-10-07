@@ -647,6 +647,8 @@ Commands:
   reparent      Move a session under another in the fork tree (<session> <parent> | --root)
   fork-cost    Per-turn spend of ticket-forks, fresh vs inherited context [--days N]
   model         Inspect/switch the model all agents spawn with
+  login         Which Claude Max subscription the fleet runs on: list | add <name> | use <name> | check <name>
+                A second login rotates a spent weekly window instead of spilling to Bedrock for days
   search        Find past sessions by full text (all transcripts on this machine) [--project --here --since --file --tools]
   read          Read a past session / turn / tool result by address [--grep --turns --tools]
   inbox create <name> [--for <agentKey> | --project <slug>] [--from-name --signature --domain --quota --password --quiet]

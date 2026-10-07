@@ -377,3 +377,81 @@ describe('BackendFailover return waits for the login check', () => {
     rmSync(g.dir, { recursive: true, force: true })
   })
 })
+
+// 8 Oct 2026: a genuine `seven_day` exhaustion parked the whole fleet on
+// pay-per-token Bedrock for 74 h ($6–9k modelled). With a second Max login
+// registered, the hold is handed over to it instead (max-logins.ts). The spill
+// still happens first, so the fleet is never pointed at an unproven login.
+describe('BackendFailover rotates onto another Max login', () => {
+  function spilled(rotate?: (ctx: { rateLimitType?: string; resetsAt: number | null }) => Promise<{ to: string } | null>) {
+    const dir = mkdtempSync(join(tmpdir(), 'failover-rot-'))
+    const now = { t: T0 }
+    const switches: AuthBackend[] = []
+    const events: Array<{ topic: string; data: Record<string, unknown> }> = []
+    const logs: string[] = []
+    let active: AuthBackend = 'first_party'
+    const f = new BackendFailover(join(dir, 'f.json'), {
+      switchTo: (b) => { switches.push(b); active = b },
+      activeBackend: () => active,
+      log: (m) => logs.push(m),
+      emit: (topic, data) => events.push({ topic, data }),
+      now: () => now.t,
+      rotateLogin: rotate,
+    })
+    now.t = T0 + 20_000 // the probe takes a few seconds
+    f.onRateLimit({ status: 'rejected', resetsAt: T0 / 1000 + 260_000, rateLimitType: 'seven_day' }, 'Deft otter (fork)')
+    return { dir, now, f, switches, events, logs, topics: () => events.map((e) => e.topic) }
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+
+  it('spills, then hands the hold to the second login and comes off Bedrock', async () => {
+    const g = spilled(async () => ({ to: 'second' }))
+    await flush()
+    expect(g.switches).toEqual(['bedrock', 'first_party'])
+    expect(g.f.getState().active).toBeNull()
+    const ep = g.f.getState().history.at(-1)!
+    expect(ep.closedBy).toBe('rotated')
+    expect(ep.rotatedTo).toBe('second')
+    expect(ep.rateLimitType).toBe('seven_day')
+    expect(g.topics()).toEqual(['console.backend.failover', 'console.backend.login_rotated'])
+    expect(g.events.at(-1)!.data).toMatchObject({ to: 'second', rateLimitType: 'seven_day', trippedBy: 'Deft otter (fork)' })
+    rmSync(g.dir, { recursive: true, force: true })
+  })
+
+  it('tells the rotation which window is spent, so it can mark the login', async () => {
+    const seen: Array<{ rateLimitType?: string; resetsAt: number | null }> = []
+    const g = spilled(async (ctx) => { seen.push(ctx); return null })
+    await flush()
+    expect(seen).toEqual([{ rateLimitType: 'seven_day', resetsAt: T0 + 260_000_000, trippedBy: 'Deft otter (fork)' }])
+    rmSync(g.dir, { recursive: true, force: true })
+  })
+
+  it('nowhere to rotate leaves the Bedrock hold exactly as it was', async () => {
+    const g = spilled(async () => null)
+    await flush()
+    expect(g.switches).toEqual(['bedrock'])
+    const ep = g.f.getState().active!
+    expect(ep.rateLimitType).toBe('seven_day')
+    expect(ep.returnAt).toBe(T0 + 260_000_000 + RETURN_SLACK_MS)
+    expect(g.topics()).toEqual(['console.backend.failover'])
+    rmSync(g.dir, { recursive: true, force: true })
+  })
+
+  it('a rotation that throws is not a return — the hold stands', async () => {
+    const g = spilled(async () => { throw new Error('probe ENOENT') })
+    await flush()
+    expect(g.switches).toEqual(['bedrock'])
+    expect(g.f.getState().active).not.toBeNull()
+    expect(g.logs.some((l) => l.includes('login rotation failed') && l.includes('probe ENOENT'))).toBe(true)
+    rmSync(g.dir, { recursive: true, force: true })
+  })
+
+  it('with one subscription (no rotateLogin dep) the spill path is untouched', async () => {
+    const g = spilled(undefined)
+    await flush()
+    expect(g.switches).toEqual(['bedrock'])
+    expect(g.f.getState().active).not.toBeNull()
+    expect(g.topics()).toEqual(['console.backend.failover'])
+    rmSync(g.dir, { recursive: true, force: true })
+  })
+})

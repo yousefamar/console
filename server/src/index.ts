@@ -38,10 +38,11 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, broadcastModelState, restartAllSessionsForModel, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, applyLoginSwitch, broadcastModelState, restartAllSessionsForModel, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, readSettingsEnv, syncBackendSettings, type AuthBackend } from './auth-backend.js'
-import { BackendFailover } from './backend-failover.js'
-import { SubscriptionUsageLedger, summariseUsage } from './subscription-usage.js'
+import { BackendFailover, DEFAULT_HOLD_MS } from './backend-failover.js'
+import { SubscriptionUsageLedger, summariseUsage, credentialsPath } from './subscription-usage.js'
+import { MaxLoginRegistry, setLoginRegistry } from './max-logins.js'
 import { checkMaxLogin } from './max-login.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
@@ -900,6 +901,14 @@ const agentCtx: AgentContext = {
 // a timer brings it back once the window resets. Needs agentCtx for the
 // switch, so it is attached after the literal. `boot()` runs after the
 // session restore (below) so a re-armed return respawns live sessions.
+// Which Claude Max subscription the fleet spawns under (max-logins.ts). With
+// one login registered this is `~/.claude` and changes nothing; a second one
+// turns the failover's rotation step on. `ensureAll` re-links each login dir's
+// shared directories at every boot, repairing anything the CLI replaced.
+const maxLogins = new MaxLoginRegistry(join(feedsConfigDir, 'max-logins.json'), { log })
+setLoginRegistry(maxLogins)
+maxLogins.ensureAll()
+
 const backendFailover = new BackendFailover(join(feedsConfigDir, 'backend-failover.json'), {
   switchTo: (backend, reason) => {
     log(`[failover] switching backend to ${backend}: ${reason}`)
@@ -932,6 +941,35 @@ const backendFailover = new BackendFailover(join(feedsConfigDir, 'backend-failov
     agentCtx.modelConfig.setModel(model)
     broadcastModelState(agentCtx)
     restartAllSessionsForModel(agentCtx)
+  },
+  // A plan-wide window is spent on THIS subscription — try another one before
+  // serving the whole hold on pay-per-token Bedrock. Only points the registry
+  // at the candidate; the failover performs the single respawn by switching the
+  // backend back to first_party. The probe runs against the candidate's own
+  // REAL config dir (never a copy — 7 Oct 2026), so the refresh it performs
+  // lands where that login's sessions read it.
+  rotateLogin: async ({ rateLimitType, resetsAt }) => {
+    if (!maxLogins.isMulti()) return null
+    const spent = maxLogins.active()
+    maxLogins.markExhausted(spent.name, resetsAt ?? Date.now() + DEFAULT_HOLD_MS, rateLimitType)
+    const next = maxLogins.pickRotation()
+    if (!next) {
+      log(`[logins] ${rateLimitType ?? 'a limit'} spent '${spent.name}' and every other login is spent too — staying on Bedrock`)
+      return null
+    }
+    if (!existsSync(credentialsPath(next.dir))) {
+      log(`[logins] '${next.name}' has no login of its own yet (${credentialsPath(next.dir)}) — run \`claude auth login\` with CLAUDE_CONFIG_DIR set to it`)
+      return null
+    }
+    const check = await checkMaxLogin({ configDir: next.dir, timeoutMs: 60_000 })
+    if (!check.ok) {
+      maxLogins.markExhausted(next.name, null, `login check failed: ${check.detail}`)
+      log(`[logins] not rotating onto '${next.name}': ${check.detail}`)
+      return null
+    }
+    maxLogins.setActive(next.name)
+    void subscriptionUsage.poll()
+    return { to: next.name }
   },
 })
 agentCtx.failover = backendFailover
@@ -2337,6 +2375,96 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error: (e as Error).message }))
+        }
+      })
+      return
+    }
+    res.writeHead(405, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'method not allowed' }))
+    return
+  }
+
+  // Which Claude Max SUBSCRIPTION the fleet spawns under (max-logins.ts). A
+  // second login is what turns a weekly exhaustion from 74 h of metered
+  // Bedrock into a rotation; the failover does it automatically, this is the
+  // manual lever and the place a new login gets provisioned.
+  if (path === '/agents/logins') {
+    if (req.method === 'GET') {
+      const state = maxLogins.getState()
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({
+        active: state.active,
+        multi: maxLogins.isMulti(),
+        logins: state.logins.map((l) => ({ ...l, hasCredentials: existsSync(credentialsPath(l.dir)) })),
+      }))
+      return
+    }
+    if (req.method === 'POST') {
+      let raw = ''
+      req.on('data', (c) => { raw += c })
+      req.on('end', async () => {
+        const fail = (code: number, error: string) => {
+          res.writeHead(code, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error }))
+        }
+        try {
+          const { action, name, dir, force } = JSON.parse(raw || '{}') as { action?: string; name?: string; dir?: string; force?: boolean }
+          if (!name) { fail(400, 'name is required'); return }
+          if (action === 'add') {
+            const login = maxLogins.add(name, dir)
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({
+              login,
+              // It cannot be logged in from here: the OAuth flow is interactive
+              // and must run as Yousef, in that dir, so the token it writes is
+              // the one that dir's sessions will read.
+              next: `CLAUDE_CONFIG_DIR=${login.dir} claude auth login`,
+            }))
+            return
+          }
+          if (action === 'remove') {
+            maxLogins.remove(name)
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ removed: name, active: maxLogins.getState().active }))
+            return
+          }
+          const login = maxLogins.get(name)
+          if (!login) { fail(404, `no login '${name}'`); return }
+          if (action === 'check') {
+            const check = await checkMaxLogin({ configDir: login.dir })
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ name, dir: login.dir, ...check }))
+            return
+          }
+          if (action === 'use') {
+            if (name === maxLogins.getState().active) {
+              res.writeHead(200, { 'Content-Type': 'application/json' })
+              res.end(JSON.stringify({ active: name, unchanged: true }))
+              return
+            }
+            // Same rule as a switch onto the subscription: prove the login
+            // before every live session respawns onto it (7 Oct 2026).
+            if (!force) {
+              if (!existsSync(credentialsPath(login.dir))) {
+                fail(409, `'${name}' is not logged in yet. Run: CLAUDE_CONFIG_DIR=${login.dir} claude auth login`)
+                return
+              }
+              const check = await checkMaxLogin({ configDir: login.dir })
+              if (!check.ok) {
+                fail(409, `Not switching: '${name}' failed its login check (${check.detail}).${check.auth ? ` Run: CLAUDE_CONFIG_DIR=${login.dir} claude auth login` : ''} No session was touched.`)
+                return
+              }
+            }
+            const moved = applyLoginSwitch(agentCtx, name)
+            maxLogins.clearExhausted(name)
+            void subscriptionUsage.poll()
+            res.writeHead(200, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ active: moved.name, dir: moved.dir }))
+            return
+          }
+          fail(400, "action must be 'add', 'use', 'remove' or 'check'")
+        } catch (e) {
+          fail(400, (e as Error).message)
         }
       })
       return
