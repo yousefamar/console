@@ -963,6 +963,27 @@ async function agentForge(args: string[], flags: GlobalFlags): Promise<void> {
     case 'down':
       output(await hubFetch('/forge/down', { method: 'POST', body: {} }), flags)
       return
+    case 'move': {
+      // Placement used to be fixed at spawn, so a session that started locally
+      // stayed there for life. This moves a LIVE one: transcript, worktree
+      // (uncommitted changes included) and dev port go across, and the session
+      // resumes on forge from its next message.
+      const who = pos[1]
+      const project = values.project
+      if (!who && !project) {
+        exitWithError('USAGE', 'Usage: con agent forge move <session>   |   con agent forge move --project <slug>   (the project\'s In Progress card forks)', flags)
+        return
+      }
+      if (!isJsonMode(flags)) info('preparing forge and moving (first move wakes the box, ~60-90s)…')
+      const res = await hubFetch('/forge/move', { method: 'POST', body: who ? { session: who } : { project } }) as
+        { moved?: Array<{ session: string; ok: boolean; reason: string; deferred?: boolean }>; error?: string; matches?: string[] }
+      if (isJsonMode(flags)) { output(res, flags); return }
+      if (res.matches) { outputLine(`ambiguous — ${res.matches.join(', ')}`); process.exitCode = 1; return }
+      if (res.error) { outputLine(res.error); process.exitCode = 1; return }
+      for (const m of res.moved ?? []) outputLine(`${m.ok ? (m.deferred ? '~' : '✓') : '✗'} ${m.session}: ${m.reason}`)
+      if ((res.moved ?? []).some((m) => !m.ok)) process.exitCode = 1
+      return
+    }
     case 'run': {
       const cmd = pos.slice(1).join(' ')
       if (!cmd) { exitWithError('USAGE', 'Usage: con agent forge run "<command>"   (runs it on forge, streams output back)', flags); return }
@@ -974,6 +995,6 @@ async function agentForge(args: string[], flags: GlobalFlags): Promise<void> {
       return
     }
     default:
-      exitWithError('USAGE', `Unknown forge command: ${sub}. Try: status, up, down, run.`, flags)
+      exitWithError('USAGE', `Unknown forge command: ${sub}. Try: status, up, down, move, run.`, flags)
   }
 }

@@ -16,7 +16,7 @@ export AWS_PROFILE="${FORGE_AWS_PROFILE:-default}"
 export AWS_REGION="${FORGE_REGION:-eu-west-2}"
 
 NAME="${FORGE_NAME:-forge}"
-TYPE="${FORGE_INSTANCE_TYPE:-m7i-flex.2xlarge}"
+TYPE="${FORGE_INSTANCE_TYPE:-m7i.4xlarge}"
 DISK_GB="${FORGE_DISK_GB:-300}"
 KEY="${FORGE_SSH_KEY:-$HOME/.ssh/forge_ed25519}"
 HUB_CRED_FILE="${FORGE_CRED_FILE:-$HOME/.config/console/forge.json}"

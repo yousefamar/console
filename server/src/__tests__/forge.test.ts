@@ -7,6 +7,8 @@ import { remoteCommandArgv } from '../forge/ssh.js'
 import { remoteSettings } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
 import { memoryDirFor } from '../forge/mounts.js'
+import { parseWorktreeList } from '../forge/repo.js'
+import { blockIdFromAgentKey } from '../forge/move.js'
 import { parseCardTokens, parseBoard, serializeBoard } from '../kanban/board.js'
 
 const cfg = {
@@ -164,5 +166,34 @@ describe('path parity', () => {
   it('derives the auto-memory dir that has to be mounted', () => {
     expect(memoryDirFor('/home/amar/sync/brain/root/projects/console'))
       .toBe('/home/amar/.claude/projects/-home-amar-sync-brain-root-projects-console/memory')
+  })
+})
+
+describe('forge move — picking what to carry across', () => {
+  it('reads a session\'s card worktrees out of git worktree list', () => {
+    const porcelain = [
+      'worktree /opt/code/astera-app', 'HEAD abc', 'branch refs/heads/main', '',
+      'worktree /opt/code/astera-app-worktrees/gray-deer', 'HEAD def', 'branch refs/heads/card/gray-deer-forge', '',
+      'worktree /opt/code/astera-app-worktrees/pink-bat', 'HEAD 123', 'branch refs/heads/pink-bat', '',
+    ].join('\n')
+    const trees = parseWorktreeList(porcelain, '/opt/code/astera-app')
+    // The primary checkout is not a card worktree and must never be rsynced over.
+    expect(trees.map((w) => w.path)).toEqual([
+      '/opt/code/astera-app-worktrees/gray-deer',
+      '/opt/code/astera-app-worktrees/pink-bat',
+    ])
+    expect(trees[0]!.branch).toBe('card/gray-deer-forge')
+  })
+
+  it('skips a detached worktree — there is no branch to push', () => {
+    const porcelain = ['worktree /tmp/wt/detached', 'HEAD abc', 'detached', ''].join('\n')
+    expect(parseWorktreeList(porcelain, '/tmp/repo')).toEqual([])
+  })
+
+  it('finds the blockId in a ticket fork\'s agentKey, and nothing in a general session\'s', () => {
+    expect(blockIdFromAgentKey('astera-general-gray-deer-fork')).toBe('gray-deer')
+    expect(blockIdFromAgentKey('console-general-pink-bat-fork')).toBe('pink-bat')
+    expect(blockIdFromAgentKey('astera-general')).toBeNull()
+    expect(blockIdFromAgentKey(undefined)).toBeNull()
   })
 })

@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   forgeConfig, forgeAvailable, instanceState, ensureMaster, prewarmCwd,
   forgeExec, isCwdPrepared, stopForgeIfIdle, forgeConfigFile,
+  type MoveTarget, type MoveResult,
 } from '../forge/index.js'
 
 export interface ForgeRouteCtx {
@@ -15,6 +16,14 @@ export interface ForgeRouteCtx {
   sessions: () => Array<{ id: string; name?: string; devPort?: number | null; cwd: string }>
   /** cwds the hub currently believes are warm. */
   preparedCwds: () => string[]
+  /** One live session by id, name or agentKey — or why it could not be named. */
+  resolveSession: (q: string) => MoveTarget[] | { error: string; matches?: string[] }
+  /** The card forks a project currently has In Progress: what `--project`
+   *  moves. Deliberately NOT every session of the project — a general session
+   *  is Yousef's own conversation and an Under Review fork is waiting on him,
+   *  so neither belongs on a box that stops when it goes idle. */
+  workingForksOf: (project: string) => MoveTarget[] | { error: string }
+  move: (s: MoveTarget) => Promise<MoveResult>
   log: (m: string) => void
   readBody: (req: IncomingMessage) => Promise<string>
 }
@@ -78,6 +87,23 @@ export function handleForgeRoutes(req: IncomingMessage, res: ServerResponse, pat
       // Force the idle check by pretending the idle window has elapsed.
       const stopped = await stopForgeIfIdle(0, ctx.log, { force: true })
       json(200, { ok: stopped, reason: stopped ? 'stopping' : 'not running' })
+    })().catch((err: unknown) => json(500, { error: String(err) }))
+    return true
+  }
+
+  if (path === '/forge/move' && req.method === 'POST') {
+    void (async () => {
+      if (!forgeAvailable()) { json(400, { error: 'forge is not configured' }); return }
+      const b = await body<{ session?: string; project?: string }>()
+      if (!b.session && !b.project) { json(400, { error: 'name a session, or --project <slug> for its In Progress card forks' }); return }
+      const picked = b.session ? ctx.resolveSession(b.session) : ctx.workingForksOf(b.project!)
+      if (!Array.isArray(picked)) { json(picked.error === 'ambiguous' ? 409 : 404, picked); return }
+      if (picked.length === 0) { json(404, { error: b.session ? `no live session matches "${b.session}"` : `no In Progress card forks for ${b.project}` }); return }
+      const results = []
+      // Serial, not parallel: the first move wakes the box and syncs the repo,
+      // and two concurrent pushes to the same bare mirror race each other.
+      for (const s of picked) results.push(await ctx.move(s))
+      json(results.every((r) => r.ok) ? 200 : 207, { moved: results })
     })().catch((err: unknown) => json(500, { error: String(err) }))
     return true
   }

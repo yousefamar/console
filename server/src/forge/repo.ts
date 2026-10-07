@@ -19,7 +19,8 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { basename } from 'node:path'
+import { basename, dirname } from 'node:path'
+import { homedir } from 'node:os'
 import type { ForgeConfig } from './config.js'
 import { forgeExec } from './ssh.js'
 
@@ -100,8 +101,116 @@ export async function ensureRepoOnForge(cfg: ForgeConfig, localRepoPath: string,
     git -C ${code} rev-parse --short HEAD`)
   if (checkout.code !== 0) return { ok: false, reason: `forge checkout of ${code} failed: ${checkout.stderr.trim()}`, branch }
 
+  await mirrorDesktopPath(cfg, localRepoPath, log)
   log(`[forge] ${name}: synced ${branch} → ${code} @ ${checkout.stdout.trim()}`)
   return { ok: true, reason: `synced ${branch} @ ${checkout.stdout.trim()}`, branch }
+}
+
+/** Make the checkout answer to its DESKTOP path on forge as well.
+ *
+ *  Path parity is the whole premise of the box (see bootstrap.sh), but it only
+ *  held for repos under ~/proj/code. Astera's checkout is /opt/code/astera-app,
+ *  and the vault project dir's `app` symlink — carried to forge verbatim by the
+ *  sshfs mount, as a symlink's target is just a string — names that absolute
+ *  path. So a remote Astera fork followed `app` into a directory that did not
+ *  exist. Symlinking the desktop's own path to the mirror fixes every spelling
+ *  at once, for the worktrees dir too. No-op when the paths already agree. */
+async function mirrorDesktopPath(cfg: ForgeConfig, localRepoPath: string, log: (m: string) => void): Promise<void> {
+  const name = repoNameFor(localRepoPath)
+  const parent = dirname(localRepoPath)
+  if (parent === cfg.codeDir) return
+  const r = await forgeExec(cfg, `set -e
+    sudo mkdir -p '${parent}'
+    sudo ln -sfnT '${cfg.codeDir}/${name}' '${parent}/${name}'
+    mkdir -p '${cfg.codeDir}/${name}-worktrees'
+    sudo ln -sfnT '${cfg.codeDir}/${name}-worktrees' '${parent}/${name}-worktrees'`)
+  if (r.code !== 0) log(`[forge] could not mirror ${parent}/${name} onto ${cfg.codeDir}/${name}: ${r.stderr.trim()}`)
+}
+
+/** `git worktree list --porcelain` → paths and branches. A detached worktree
+ *  has no `branch` line and is skipped: there is no branch to push. */
+export function parseWorktreeList(porcelain: string, primaryPath: string): Array<{ path: string; branch: string }> {
+  const out: Array<{ path: string; branch: string }> = []
+  let path = ''
+  for (const line of porcelain.split('\n')) {
+    if (line.startsWith('worktree ')) path = line.slice(9).trim()
+    else if (line.startsWith('branch ') && path) {
+      out.push({ path, branch: line.slice(7).trim().replace(/^refs\/heads\//, '') })
+      path = ''
+    }
+  }
+  const primary = primaryPath.replace(/\/+$/, '')
+  // The primary checkout is a "worktree" to git; callers want the siblings.
+  return out.filter((w) => w.path.replace(/\/+$/, '') !== primary)
+}
+
+/** The desktop's worktrees for a repo, as git itself reports them. */
+export async function localWorktrees(localRepoPath: string): Promise<Array<{ path: string; branch: string }>> {
+  const r = await git(['worktree', 'list', '--porcelain'], localRepoPath)
+  if (!r.ok) return []
+  return parseWorktreeList(r.stdout, localRepoPath)
+}
+
+/** Build the same worktree on forge, at the same absolute path, carrying the
+ *  branch AND whatever is uncommitted in it.
+ *
+ *  Uncommitted work is the reason this exists: a card fork in the middle of a
+ *  change has most of its state in the working tree, and a move that dropped it
+ *  would be a move nobody would use. The branch goes by git (so history and the
+ *  index are real), the dirt goes by rsync on top.
+ *
+ *  Not synced: `.git` (forge's worktree has its own), and the build artefacts a
+ *  fork regenerates anyway. A file deleted locally but not committed SURVIVES
+ *  on forge — rsync runs without `--delete` on purpose, because the remote tree
+ *  also holds forge's own untracked output and deleting by guess is worse. */
+export async function ensureWorktreeOnForge(
+  cfg: ForgeConfig,
+  localRepoPath: string,
+  worktree: { path: string; branch: string },
+  log: (m: string) => void = () => {},
+): Promise<SyncResult> {
+  const name = repoNameFor(localRepoPath)
+  const code = `${cfg.codeDir}/${name}`
+  const wt = worktree.path.replace(/\/+$/, '')
+  const br = worktree.branch
+  const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+
+  // Plain push, never forced: a rejection means forge's copy of this branch has
+  // commits the desktop does not, i.e. an earlier stint on the box whose work
+  // has not come home. Overwriting that is exactly the data loss the fold-back
+  // rules exist to prevent, so say so and refuse the move.
+  const push = await git(['push', 'forge', `${br}:refs/heads/${br}`], localRepoPath)
+  if (!push.ok) {
+    return { ok: false, branch: br, reason: `pushing ${br} to forge was rejected — forge may already hold commits on it from an earlier stint; reconcile by hand before moving: ${push.stderr.trim()}` }
+  }
+
+  // -B resets forge's branch to what the desktop just pushed. Safe in this
+  // direction only: the desktop is the source of truth until the fork lands.
+  const add = await forgeExec(cfg, `set -e
+    git -C ${q(code)} fetch --quiet origin
+    if [ -d ${q(wt)}/.git ] || [ -f ${q(wt)}/.git ]; then
+      git -C ${q(wt)} checkout --quiet -B ${q(br)} ${q(`origin/${br}`)}
+    else
+      mkdir -p ${q(dirname(wt))}
+      git -C ${q(code)} worktree add --quiet -B ${q(br)} ${q(wt)} ${q(`origin/${br}`)}
+    fi
+    git -C ${q(wt)} rev-parse --short HEAD`, { timeoutMs: 180_000 })
+  if (add.code !== 0) return { ok: false, reason: `forge worktree ${wt} failed: ${add.stderr.trim()}`, branch: br }
+
+  const extra = [`${homedir()}/.local/bin`, '/usr/local/bin', '/usr/bin', '/bin']
+  const merged = [...new Set([...extra, ...(process.env.PATH ?? '').split(':')])].filter(Boolean)
+  const excludes = ['.git', 'node_modules', '.next', '.turbo', 'dist', 'build', 'target', '.venv', 'playwright-report', 'test-results', '.pnpm-store']
+  try {
+    await execFileP('rsync', [
+      '-az', '-e', 'ssh -o BatchMode=yes',
+      ...excludes.flatMap((e) => ['--exclude', e]),
+      `${wt}/`, `${cfg.host}:${wt}/`,
+    ], { env: { ...process.env, PATH: merged.join(':') }, timeout: 900_000, maxBuffer: 16 * 1024 * 1024 })
+  } catch (err) {
+    return { ok: false, reason: `uncommitted changes in ${wt} did not reach forge: ${((err as Error).message ?? '').split('\n')[0]}`, branch: br }
+  }
+  log(`[forge] ${name}: worktree ${wt} on ${br} @ ${add.stdout.trim()}, working changes included`)
+  return { ok: true, reason: `worktree ${wt} @ ${add.stdout.trim()}`, branch: br }
 }
 
 /** Pull a remote fork's merged work back onto the desktop's main.

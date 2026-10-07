@@ -19,7 +19,9 @@ export * from './config.js'
 export { ensureForgeReady, stopIfIdle, instanceState } from './instance.js'
 export { forgeExec, remoteCommandArgv, spawnRemote, forwardDevPort, cancelDevPort, ensureMaster, HUB_PORT, sshEnv as forgeSshEnv } from './ssh.js'
 export { foldBackFromForge, ensureRepoOnForge } from './repo.js'
-export { syncTranscript, transcriptPath } from './transcripts.js'
+export { syncTranscript, pushTranscript, transcriptPath } from './transcripts.js'
+export { moveSessionToForge, worktreesForSession } from './move.js'
+export type { MoveTarget, MoveResult } from './move.js'
 export { memoryDirFor } from './mounts.js'
 
 /** Dev-server ports handed to remote sessions. Starts above the desktop's own

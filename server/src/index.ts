@@ -46,13 +46,13 @@ import { checkMaxLogin } from './max-login.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
 import { vaultRelative } from './agents/vault-edit.js'
-import { cardImagePaths, boardDefaultOwner } from './kanban/board.js'
-import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, sessionCarriesBlockId, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
+import { cardImagePaths, boardDefaultOwner, parseBoard } from './kanban/board.js'
+import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnvelope, resolveDefaultOwner, sessionCarriesBlockId, inFlightCards, DEFAULT_MAX_RUNNING_FORKS, DEFAULT_COMPACT_FORKS_ON_SPAWN, DONE_COLUMN_RE } from './kanban/dispatch.js'
 import { probeSilentWindDown, summaryFromCardLines } from './kanban/winddown.js'
 import {
   prepareRemoteSession, releaseRemoteSession, forgeAvailable, decidePlacement, prewarmCwd, boardRemote,
   allocateDevPort, forwardDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
-  stopForgeIfIdle, isCwdPrepared, preparedCwdList,
+  stopForgeIfIdle, isCwdPrepared, preparedCwdList, moveSessionToForge, type MoveTarget,
 } from './forge/index.js'
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
@@ -1179,6 +1179,53 @@ function conventionOwnerForProject(project: string): string | null {
   if (owner) log(`[boards] default owner for ${project}: @${owner}${bound.filter((r) => !r.fork).length > 1 ? ' (convention pick — set default_owner: in board frontmatter to override)' : ''}`)
   return owner
 }
+/** A live session as `forge move` needs it. The Session class already has every
+ *  piece; this only narrows it to the structural type forge/move.ts accepts
+ *  (forge/ must not import session.ts — session.ts imports forge/). */
+function moveTargetFor(s: Session): MoveTarget {
+  return {
+    id: s.id,
+    name: s.name,
+    agentKey: s.agentKey ?? undefined,
+    cwd: s.cwd,
+    claudeSessionId: s.claudeSessionId ?? null,
+    placement: s.placement,
+    busy: s.status === 'running' || s.approvalPending,
+    applyPlacement: (placement, devPort) => s.applyPlacement(placement, devPort),
+    afterTurn: (fn) => s.afterTurn(fn),
+  }
+}
+
+/** `con agent forge move <session>` — one live session by id, name or agentKey.
+ *  Ambiguity is an error, never a guess: moving the wrong session puts someone
+ *  else's conversation on another machine. */
+function resolveMoveTargets(q: string): MoveTarget[] | { error: string; matches?: string[] } {
+  const live = [...sessions.values()].filter((s) => s.status !== 'ended' && !s.endedByUser)
+  const needle = q.trim().toLowerCase()
+  const exact = live.filter((s) => s.id === q || s.agentKey === q || s.name?.toLowerCase() === needle)
+  const hits = exact.length ? exact : live.filter((s) => s.name?.toLowerCase().includes(needle) || s.agentKey?.toLowerCase().includes(needle))
+  if (hits.length === 0) return { error: `no live session matches "${q}"` }
+  if (hits.length > 1) return { error: 'ambiguous', matches: hits.map((s) => s.name ?? s.id) }
+  return [moveTargetFor(hits[0])]
+}
+
+/** `con agent forge move --project <slug>` — the project's card forks that are
+ *  actively being worked. In Progress only, by Yousef's choice (8 Oct 2026):
+ *  an Under Review fork is waiting on his feedback and a general session is his
+ *  own conversation, and neither should sit on a box that stops when idle. */
+function workingForksOf(project: string): MoveTarget[] | { error: string } {
+  const boardPath = findProjectBoard(noteStore.vaultPath, project)
+  if (!boardPath) return { error: `no board for project "${project}"` }
+  let board
+  try { board = parseBoard(readFileSync(boardPath, 'utf-8')) } catch { return { error: `could not read ${boardPath}` } }
+  const working = inFlightCards(board).filter((c) => !c.review && !c.done)
+  const live = [...sessions.values()].filter((s) => s.status !== 'ended' && !s.endedByUser && s.placement !== 'forge')
+  return working
+    .map((c) => live.find((s) => sessionCarriesBlockId({ agentKey: s.agentKey, name: s.name }, c.blockId)))
+    .filter((s): s is Session => !!s)
+    .map(moveTargetFor)
+}
+
 /** Who owns a project right now — the same answer the board dispatcher gives
  *  an unassigned card: `default_owner:` on its board, else the convention. */
 function ownerForProject(project: string): string | null {
@@ -2571,6 +2618,9 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
       .filter((s) => s.placement === 'forge' && s.status !== 'ended')
       .map((s) => ({ id: s.id, name: s.name, devPort: s.devPort, cwd: s.cwd })),
     preparedCwds: () => preparedCwdList(),
+    resolveSession: (q) => resolveMoveTargets(q),
+    workingForksOf: (project) => workingForksOf(project),
+    move: (s) => moveSessionToForge(s, (m) => log(m)),
     log: (m) => log(m),
     readBody,
   })) return

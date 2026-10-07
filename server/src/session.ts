@@ -172,7 +172,8 @@ export interface SessionOptions {
   /** Where this session's `claude` process runs. 'forge' pipes it over SSH to
    *  the remote compute box (server/src/forge/) so its dev servers, builds and
    *  tests stop competing with the hub for this machine's 8 cores and one
-   *  disk. The CALLER must have run `prepareRemoteSession` first — by the time
+   *  disk (forge has 16 and its own NVMe, and nothing else on it).
+   *  The CALLER must have run `prepareRemoteSession` first — by the time
    *  spawn happens the box has to be awake, the cwd mounted and the repo
    *  synced; on any failure the caller leaves this unset and the session is
    *  simply local. Persisted, so a hub-restart resume lands on the same box.
@@ -544,6 +545,11 @@ export class Session extends EventEmitter {
         // Remote sessions get their own dev-server port, already forwarded back
         // to the same port on the desktop. Told to the agent in the envelope too.
         ...(this.devPort ? { CONSOLE_DEV_PORT: String(this.devPort) } : {}),
+        // Where this process is running, so a SCRIPT can tell. The envelope
+        // tells the agent, but the throttles that exist to protect the desktop
+        // (astera's scripts/heavy.sh, its dev-server reaper) are shell, and a
+        // remote fork must be able to opt them out without being asked to.
+        CONSOLE_PLACEMENT: this.placement ?? 'local',
     }
 
     // A respawn (model restart, hibernation wake) must not reuse the old
@@ -1219,6 +1225,37 @@ export class Session extends EventEmitter {
     return { ok: true, memory }
   }
 
+  /** Change WHERE this session's process runs, keeping the conversation.
+   *
+   *  Mechanically a hibernation: the live process is put down and the next
+   *  message respawns with `--resume` — on the other machine. The caller
+   *  (forge/move.ts) must already have put the transcript and the worktree
+   *  there; this only flips the switch, and only for an idle session. */
+  applyPlacement(placement: 'local' | 'forge', devPort: number | null): { ok: boolean; error?: string } {
+    if (this.placement === placement) return { ok: false, error: 'already there' }
+    if (this.endedByUser || this.status === 'ended') return { ok: false, error: 'session has ended' }
+    if (!this.claudeSessionId) return { ok: false, error: 'session has no claudeSessionId yet' }
+    if (this.status === 'running' || this.approvalPending) return { ok: false, error: 'session is mid-turn — wait for it to go idle' }
+    if (this.processAlive && this.process) {
+      this.hibernating = true
+      this.stdinReady = false
+      this.process.kill('SIGKILL')
+    }
+    this.placement = placement
+    this.devPort = devPort
+    return { ok: true }
+  }
+
+  /** Run `fn` once, when the current turn finishes. Used by a mid-turn
+   *  `forge move`: the turn's own output has to land before anything reads the
+   *  transcript or the working tree. Replaces any earlier pending callback —
+   *  two moves queued at once would race each other. */
+  afterTurn(fn: () => void): void {
+    this.afterTurnHook = fn
+  }
+
+  private afterTurnHook: (() => void) | null = null
+
   /** Spawn a session created with `deferSpawn`, now that its placement is
    *  known, and deliver whatever was buffered for it meanwhile. Returns false
    *  if there was nothing deferred or the session has since been ended. */
@@ -1681,6 +1718,13 @@ export class Session extends EventEmitter {
       const cfg = forgeConfig()
       if (cfg) void syncTranscript(cfg, this.cwd, this.claudeSessionId, (m) => this.emitHub({ type: 'status', sessionId: this.id, text: m }))
       noteForgeUse()
+    }
+    // A `forge move` that arrived mid-turn applies here, now that the turn's
+    // own output is on disk.
+    if (this.afterTurnHook) {
+      const fn = this.afterTurnHook
+      this.afterTurnHook = null
+      try { fn() } catch { /* a move failure is reported by the mover itself */ }
     }
     // total_cost_usd is cumulative for THIS process, not per-turn — add the
     // cost of the processes before it (costBase) for a session total.

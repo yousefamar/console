@@ -1,9 +1,11 @@
 // forge instance lifecycle.
 //
-// Cost control is not optional here: left running, the box is ~$351/month
-// instead of ~$108 (m7i-flex.2xlarge, eu-west-2, $0.4429/hr on-demand). So the
-// hub starts it on the first remote dispatch and stops it once no remote
-// session has needed it for a while. A STOPPED instance bills only its EBS.
+// Cost control is not optional here: left running, the box is ~$680/month
+// instead of ~$170 (m7i.4xlarge, 16 vCPU / 64 GiB, eu-west-2, $0.9324/hr
+// on-demand — resized up from m7i-flex.2xlarge on 8 Oct 2026 so forks stop
+// queueing behind each other). The hub starts it on the first remote dispatch
+// and stops it once no remote session has needed it for a while. A STOPPED
+// instance bills only its EBS.
 //
 // We shell out to the `aws` CLI rather than take an SDK dependency: the server
 // has no AWS client today and adding one from a worktree is its own problem

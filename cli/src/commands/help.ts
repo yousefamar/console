@@ -655,6 +655,11 @@ Commands:
                 + mail.received listener on its session + one onboarding wake. Like al@ and ceo@, automated.
   inbox list    Agent mailboxes: local config ⋈ mxroute (usage, sent today), watched?, listeners
   inbox remove <name> [--keep-mailbox]   Undo create (mxroute mailbox deleted unless --keep-mailbox)
+  forge         The remote compute box for forks: status | up | down | run "<cmd>" | move
+  forge move <session> | --project <slug>
+                Move a RUNNING session onto forge — transcript, card worktree (uncommitted
+                changes included) and a forwarded dev port go across; it resumes there on its
+                next message. --project moves that project's In Progress card forks.
 
 Examples:
   con agent inbox create opsec --for opsec --from-name "OpSec"
@@ -666,6 +671,7 @@ Examples:
   con agent search "pruned transcript crons" --since 30d
   con agent read 27c3625f --grep "rekey"
   con agent chat --id <conv-id> --end
+  con agent forge move --project astera
 `.trim(),
 
   auth: `

@@ -376,22 +376,30 @@ export function buildBoardEnvelope(opts: {
     ]),
     ...(forge ? [
       '',
-      `REMOTE: you are running on \`${forge.host}\`, a dedicated 8-core/30 GiB box — NOT`,
-      'Yousef\'s desktop. This is deliberate: dev servers, Playwright and big builds',
-      'were starving his machine. Nothing about how you work changes — the paths are',
-      'identical (`~/proj/code/<repo>`, `~/sync/brain/root/projects/<slug>`), `autowt`',
-      'makes your worktree here, `con` reaches the hub as usual, and the vault is',
-      'mounted live off his machine. Two things to know:',
+      `REMOTE: you are running on \`${forge.host}\`, a dedicated 16-core/64 GiB cloud box`,
+      '— NOT Yousef\'s desktop. This is deliberate: dev servers, Playwright and big',
+      'builds were starving his machine. Nothing about how you work changes — the paths',
+      'are identical (`~/proj/code/<repo>`, `~/sync/brain/root/projects/<slug>`),',
+      '`autowt` makes your worktree here, `con` reaches the hub as usual, and the vault',
+      'is mounted live off his machine. What this buys you:',
+      '- YOU HAVE ROOM. The machine is yours. Run the full typecheck, the whole test',
+      '  suite, Playwright, a release build, several at once — in parallel, not',
+      '  serialised. Do NOT throttle yourself, do not route heavy steps through a',
+      '  serialising wrapper, and do not skip a verification step to spare the CPU.',
+      '  Nothing you run here can slow his desktop down.',
+      '- Keep your dev server UP for as long as you need it. It is not competing with',
+      '  anything, and nothing reaps it.',
       forge.devPort
         ? `- Run your dev server on PORT ${forge.devPort} (\`npm run dev -- --port ${forge.devPort}\`). It is already forwarded, so it appears to Yousef at http://localhost:${forge.devPort} — give him THAT url, and no other fork can collide with it.`
         : '- No dev port was forwarded for you; ask before starting a long-running server.',
-      '- Heavy steps are cheap here and do NOT contend with his desktop, so the LOAD',
-      '  note below (if present) is about his box, not yours.',
       '- Your commits land on this box. Merge into main as usual when you are done;',
       '  the hub fast-forwards his checkout. If it reports a divergence, say so on',
       '  the card rather than forcing anything.',
     ] : []),
-    ...(load && load.running > 1 ? [
+    // LOAD is about THIS machine's one disk and 8 cores — a remote fork shares
+    // neither, and telling it to serialise anyway is exactly the throttling the
+    // box exists to remove.
+    ...(load && load.running > 1 && !forge ? [
       '',
       `LOAD: ${load.running} of a maximum ${load.cap} cards are being worked right now, and every`,
       'worktree is on the SAME disk. Run heavy steps (typecheck, tests, lint,',

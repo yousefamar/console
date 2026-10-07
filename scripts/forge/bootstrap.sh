@@ -92,8 +92,8 @@ export GRADLE_USER_HOME=/srv/cache/gradle
 export CARGO_HOME=/srv/cache/cargo
 export UV_CACHE_DIR=/srv/cache/uv
 # Daemon off for the same reason as the desktop (a daemon held 3.6 GB there);
-# the heap can be bigger here because the box has 30 GiB and no browser.
-export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx4096m"
+# the heap can be bigger here because the box has 64 GiB and no browser.
+export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx8192m"
 EOF
 
 say "allow sshfs mounts for non-root (forge mounts the vault back off the desktop)"
