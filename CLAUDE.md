@@ -710,6 +710,25 @@ local SSD was tried first and did not help.
   string, so a remote Astera fork followed it into nothing. `ensureRepoOnForge`
   now symlinks the desktop's own path (and its `-worktrees` sibling) onto the
   mirror, so both spellings resolve on both machines.
+- **`origin` on the box is PER-REPO, and a static mirror is not a valid base**
+  (`githubOriginRepos` in `forge.json`; `isGithubOriginRepo`, `baseRemoteFor`).
+  Default is `origin` → the local bare mirror, which is right for Console: it is
+  trunk-based, does not always push, and its forks never talk to GitHub. For a
+  repo whose forks land their own PRs that default is wrong *silently* — astera's
+  `land.sh` merges `origin/staging` and takes its gate base from it, so against a
+  mirror it gates **green on a stale base**, and its "did staging move under the
+  gate?" re-check can never fire because the mirror never moves. Measured 8 Oct
+  2026: the mirror's staging was 25 commits / 9 merged PRs / ~6h47m behind
+  GitHub's in one working day, because the mirror only advances when a prepare
+  pushes the DESKTOP's remote-tracking refs. For a named repo: `origin` → GitHub
+  over **HTTPS** (the box has a token, not an SSH key — the URL is derived from
+  the desktop remote and converted, never configured, which is why a wrong guess
+  about the repo path cannot get baked in), mirror demotes to `mirror`, card
+  worktrees base on `mirror/<branch>` because that is where the desktop pushes
+  them, and fold-back pushes home not to GitHub. `refs/remotes/origin/*` are
+  purged when the URL changes — left in place they keep resolving, so a failed
+  GitHub fetch would leave `origin/staging` on the stale mirror commit instead of
+  missing.
 - **A prepare NEVER moves the primary checkout's HEAD** (`decidePrimaryCheckout`,
   tested): clone when absent, fast-forward only when already on the desktop's
   default branch and clean, otherwise fetch refs and leave it. It used to
