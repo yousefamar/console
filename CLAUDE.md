@@ -754,6 +754,14 @@ local SSD was tried first and did not help.
   through the sshfs mounts; and `! -type l`, because a symlink's own mode is a
   meaningless constant 0777 on Linux and including them reported 4237 false
   positives. Box is at zero real offenders.
+  The sweep fixes what provisioning left behind; **`umask 077` in
+  `/etc/profile.d/forge.sh` stops new files arriving the same way**, which is
+  the same instance-vs-class choice one layer earlier. Found by checking
+  Astera's deduction that a card worktree seeds its `.env` from the symlinked
+  main checkout: true, and the seeded file landed 0664 — all 33 lines of
+  credentials inside a checkout, readable by the box's second login, once per
+  card. Agent shells pick the umask up because `remoteCommandArgv` sources that
+  profile.
 - **`appEnv` gives the toolchain its `.env` without a secret entering a tree.**
   Repo basename → a file outside every checkout, symlinked to `<code>/.env` by
   the prepare. Without it the first remote fork GENERATED dev secrets inside the
