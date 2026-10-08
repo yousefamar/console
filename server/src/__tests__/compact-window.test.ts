@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest'
-import { resolveCompactWindow, DEFAULT_COMPACT_WINDOW, COMPACT_WINDOW_MIN, COMPACT_WINDOW_MAX } from '../agents/compact-window.js'
+import { describe, it, expect, beforeEach } from 'vitest'
+import {
+  resolveCompactWindow, DEFAULT_COMPACT_WINDOW, COMPACT_WINDOW_MIN, COMPACT_WINDOW_MAX,
+  isThrashing, liftCompactWindow, isCompactWindowLifted, clearLiftedCompactWindows,
+  THRASH_COMPACTIONS, THRASH_WINDOW_MS,
+} from '../agents/compact-window.js'
 
 describe('resolveCompactWindow', () => {
   it('caps throwaway forks at 400k and leaves generals / chat forks on the CLI default', () => {
@@ -22,5 +26,50 @@ describe('resolveCompactWindow', () => {
   it('ignores junk pref shapes', () => {
     expect(resolveCompactWindow('fork', 'big')).toEqual({ window: DEFAULT_COMPACT_WINDOW.fork, reason: 'default' })
     expect(resolveCompactWindow('fork', { fork: 'huge' })).toEqual({ window: 400_000, reason: 'default' })
+  })
+})
+
+describe('a window the session cannot work in is lifted', () => {
+  beforeEach(() => { clearLiftedCompactWindows() })
+
+  it('calls it thrashing only at THRASH_COMPACTIONS inside the window', () => {
+    const now = 1_000_000
+    const recent = (n: number) => Array.from({ length: n }, (_, i) => now - i * 1000)
+    expect(isThrashing(recent(THRASH_COMPACTIONS - 1), now)).toBe(false)
+    expect(isThrashing(recent(THRASH_COMPACTIONS), now)).toBe(true)
+    expect(isThrashing([], now)).toBe(false)
+  })
+
+  it('ignores compactions older than the window — a long session compacts normally', () => {
+    const now = 1_000_000
+    const old = Array.from({ length: 10 }, (_, i) => now - THRASH_WINDOW_MS - i * 1000)
+    expect(isThrashing(old, now)).toBe(false)
+    expect(isThrashing([...old, now, now - 1000], now)).toBe(false)
+  })
+
+  it('lifts by cwd, so the next fork in that directory never pays for it', () => {
+    const cwd = '/home/amar/proj/code/console/android'
+    expect(resolveCompactWindow('fork', undefined, cwd)).toEqual({ window: 400_000, reason: 'default' })
+    expect(liftCompactWindow(cwd)).toBe(true)
+    expect(isCompactWindowLifted(cwd)).toBe(true)
+    expect(resolveCompactWindow('fork', undefined, cwd)).toEqual({ window: null, reason: 'thrash' })
+    expect(resolveCompactWindow('cronFork', undefined, cwd)).toEqual({ window: null, reason: 'thrash' })
+    // Other directories keep the cap — only the thrashing bundle is exempt.
+    expect(resolveCompactWindow('fork', undefined, '/home/amar/sync/brain/root/projects/astera')).toEqual({ window: 400_000, reason: 'default' })
+    expect(resolveCompactWindow('fork', undefined)).toEqual({ window: 400_000, reason: 'default' })
+  })
+
+  it('beats an explicit pref too — a cap that thrashes costs more than it saves', () => {
+    const cwd = '/tmp/heavy'
+    liftCompactWindow(cwd)
+    expect(resolveCompactWindow('fork', { fork: 200_000 }, cwd)).toEqual({ window: null, reason: 'thrash' })
+  })
+
+  it('reports whether the lift was new, so it is logged once per cwd', () => {
+    expect(liftCompactWindow('/a')).toBe(true)
+    expect(liftCompactWindow('/a')).toBe(false)
+    expect(liftCompactWindow('')).toBe(false)
+    expect(isCompactWindowLifted(null)).toBe(false)
+    expect(isCompactWindowLifted(undefined)).toBe(false)
   })
 })

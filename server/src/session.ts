@@ -41,7 +41,7 @@ import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, usageLim
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
 import { resolveEffort, effortHooks, type Effort, type EffortReason, type SpawnKind } from './agents/effort.js'
-import { resolveCompactWindow, compactWindowHooks } from './agents/compact-window.js'
+import { resolveCompactWindow, compactWindowHooks, isThrashing, liftCompactWindow, THRASH_WINDOW_MS } from './agents/compact-window.js'
 
 let sessionCounter = 0
 
@@ -460,8 +460,9 @@ export class Session extends EventEmitter {
     effortHooks().onSpawn?.(effort, effortChoice.kind, effortChoice.reason, this.name ?? this.id)
     // Autocompact window per spawn KIND (agents/compact-window.ts): throwaway
     // forks cap at 400k, generals keep the CLI default.
-    const compactChoice = resolveCompactWindow(this.spawnKind, compactWindowHooks().policy())
+    const compactChoice = resolveCompactWindow(this.spawnKind, compactWindowHooks().policy(), this.cwd)
     this.compactWindow = compactChoice.window
+    this.compactStamps = []
     compactWindowHooks().onSpawn?.(compactChoice.window, this.spawnKind, compactChoice.reason, this.name ?? this.id)
     // Per-session pin wins; else resolved from ModelConfig (runtime-configurable
     // + fallback chain). Record what we spawned with so a model-unavailable
@@ -1133,6 +1134,8 @@ export class Session extends EventEmitter {
   effortReason: EffortReason | null = null
   /** CLAUDE_CODE_AUTO_COMPACT_WINDOW the current process got; null = CLI default. */
   compactWindow: number | null = null
+  /** compact_boundary times for the CURRENT process — see noteCompaction(). */
+  private compactStamps: number[] = []
   /** See SessionOptions.placement / devPort. */
   placement: 'local' | 'forge' = 'local'
   devPort: number | null = null
@@ -1900,6 +1903,7 @@ export class Session extends EventEmitter {
       // completion signal we care about arrives via task_notification, skip.
       case 'compact_boundary':
         this.emitHub({ type: 'status', sessionId: this.id, text: 'Context compacted' })
+        this.noteCompaction()
         break
       // CLI ≥2.1.263: the model refused a turn and the CLI retried it on a
       // FALLBACK model (`direction` retry|revert|sticky; `scope` 'session' =
@@ -1931,6 +1935,25 @@ export class Session extends EventEmitter {
 
   /** Process-wide, so a new CLI event is logged once per hub boot, not per session. */
   private static readonly unknownSystemSubtypes = new Set<string>()
+
+  /**
+   *  A capped session that compacts every other turn pays a full cold cache
+   *  write each time and makes no progress, which costs several times what the
+   *  cap saves (console/android, 8 Oct 2026: $62 for 27 compactions and
+   *  nothing done). Treat repeated compaction as the window being too small
+   *  for this directory's instruction bundle and hand the cwd back to the CLI
+   *  default — it applies at the next spawn, so the current process still
+   *  finishes its turn.
+   */
+  private noteCompaction() {
+    const now = Date.now()
+    this.compactStamps = [...this.compactStamps.filter((t) => now - t < THRASH_WINDOW_MS), now]
+    const window = this.compactWindow
+    if (!window || !isThrashing(this.compactStamps, now)) return
+    if (liftCompactWindow(this.cwd)) {
+      compactWindowHooks().onThrash?.(this.cwd, window, this.compactStamps.length, this.name ?? this.id)
+    }
+  }
 
   /** Mine the CLI's rich tool_use_result for Edit/Write structuredPatch — the
    *  same ready-made unified diff the terminal renders. */
