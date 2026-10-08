@@ -239,11 +239,17 @@ export class ModelConfig {
     return { changed: true, model: next, exhausted: false }
   }
 
-  /** Undo a bogus chain walk: go back to the model the burst started on and
-   *  refuse further fallback for the cooldown. */
+  /** Undo a bogus chain walk: go back to the configured primary and refuse
+   *  further fallback for the cooldown.
+   *
+   *  The primary, NOT wherever the walk had already reached. A burst means no
+   *  model is actually broken, so any fallback is the wrong resting place — and
+   *  a burst that begins partway down the chain (an earlier walk, or a stale
+   *  first report) used to revert to that fallback and hold there. On 8 Oct
+   *  2026 a pre-init spawn fault at 00:11 parked the fleet on fable-5-1, twice
+   *  opus-5's price, for three days at ~$1.1k/day. */
   private holdAfterBurst(now: number, reachedEnd: boolean): FallbackResult {
-    const origin = this.recentFailures[0]?.model
-    const revertTo = origin && this.state.chain.includes(origin) ? origin : this.state.chain[0]!
+    const revertTo = this.state.chain[0]!
     const count = this.recentFailures.length
     this.burstHoldUntil = now + BURST_COOLDOWN_MS
     this.recentFailures = []

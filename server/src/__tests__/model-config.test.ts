@@ -106,7 +106,7 @@ describe('ModelConfig fallback', () => {
 // 6 Oct 2026: a fleet-wide pre-init spawn fault walked all seven Bedrock
 // entries in 70 s and parked ~40 sessions on haiku, persisted across a restart.
 describe('ModelConfig burst guard', () => {
-  it('stops the walk once 3 distinct models fail in the window, reverting to the origin', () => {
+  it('stops the walk once 3 distinct models fail in the window, reverting to the primary', () => {
     const c = fresh()
     c.setChain(['a', 'b', 'c', 'd', 'haiku'])
     expect(c.reportFailure('a').model).toBe('b')
@@ -143,6 +143,22 @@ describe('ModelConfig burst guard', () => {
     c.setChain(['a', 'b', 'c', 'd'])
     c.reportFailure('a'); c.reportFailure('b'); c.reportFailure('c')
     expect(fresh().getModel()).toBe('a')
+  })
+
+  // 8 Oct 2026: a burst starting partway down the chain reverted to the
+  // fallback it had already walked to, parking the fleet on a 2x-priced model
+  // for three days. Every earlier test began its burst on the head, where the
+  // primary and the walk origin are the same model.
+  it('reverts to the primary even when the burst began partway down the chain', () => {
+    const c = fresh()
+    c.setChain(['a', 'b', 'c', 'd', 'haiku'])
+    c.setModel('b') // the fleet is already off the head, as it was at 00:11
+    expect(c.reportFailure('b').model).toBe('c')
+    expect(c.reportFailure('c').model).toBe('d')
+    const r = c.reportFailure('d')
+    expect(r.heldAfterBurst).toBe(true)
+    expect(r.model).toBe('a') // the primary, NOT 'b' where the burst began
+    expect(c.getModel()).toBe('a')
   })
 
   it('a single dead model still falls back normally', () => {
