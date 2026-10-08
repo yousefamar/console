@@ -661,7 +661,10 @@ local SSD was tried first and did not help.
   A move's verdict always lands somewhere: the deferred case runs long after the
   CLI call returned, so it logs and emits **`console.forge.moved`**
   (`{session, ok, reason, devPort, worktrees}`). Wait on that event rather than
-  assuming — `con listen expect --on console.forge.moved --within 10m`.
+  assuming — `con listen expect --on console.forge.moved --within 10m`. That
+  holds across a restart too: a deferred move is one in-memory callback, so
+  `shutdown()` drains the pending set and reports each as a failure rather than
+  letting it simply not happen.
 - **Path parity covers checkouts outside `~/proj/code` too.** Astera's is
   `/opt/code/astera-app` and the vault's `app` symlink stores that absolute
   string, so a remote Astera fork followed it into nothing. `ensureRepoOnForge`
