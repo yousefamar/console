@@ -658,6 +658,10 @@ local SSD was tried first and did not help.
   sessions move at turn end (`afterTurn`). `--project` takes In Progress card
   forks only: Under Review forks are waiting on Yousef and generals are his own
   conversations, and neither belongs on a box that stops when it goes idle.
+  A move's verdict always lands somewhere: the deferred case runs long after the
+  CLI call returned, so it logs and emits **`console.forge.moved`**
+  (`{session, ok, reason, devPort, worktrees}`). Wait on that event rather than
+  assuming — `con listen expect --on console.forge.moved --within 10m`.
 - **Path parity covers checkouts outside `~/proj/code` too.** Astera's is
   `/opt/code/astera-app` and the vault's `app` symlink stores that absolute
   string, so a remote Astera fork followed it into nothing. `ensureRepoOnForge`
