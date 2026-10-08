@@ -27,6 +27,7 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { aliasProfileEnv } from './bedrock-profiles.js'
 import { loginDirs } from './max-logins.js'
+import { BEDROCK_CHAIN, FIRST_PARTY_CHAIN } from './model-chains.js'
 
 export type AuthBackend = 'first_party' | 'bedrock'
 
@@ -80,7 +81,7 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     // back and re-tripped in 3 s. Hence: the preset is the fix, and Fable stays
     // out until credits are bought deliberately (`con agent model pin` per
     // session if a card warrants it).
-    chain: ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5-20251001'],
+    chain: FIRST_PARTY_CHAIN,
   },
   bedrock: {
     id: 'bedrock',
@@ -112,17 +113,7 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
     // case: CreateFoundationModelAgreement via the `default`/user-amar profile,
     // which holds aws-marketplace:Subscribe (what opus-5 needed, 2026-07-25).
     // opus-4-7 kept (served on Bedrock, not on the Max sub).
-    chain: [
-      'us.anthropic.claude-opus-5-5',
-      'us.anthropic.claude-opus-5',
-      'us.anthropic.claude-fable-5-1',
-      'us.anthropic.claude-fable-5',
-      'us.anthropic.claude-opus-4-8',
-      'us.anthropic.claude-opus-4-7',
-      'us.anthropic.claude-sonnet-5-5',
-      'us.anthropic.claude-sonnet-5',
-      'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-    ],
+    chain: BEDROCK_CHAIN,
   },
 }
 

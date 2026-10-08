@@ -2,33 +2,16 @@
 // switch, fallback notice. These are hub-level levers (not per-space), so
 // they live in a small gear popover in the rail header rather than a
 // persistent footer. Mirrors the retired Agents-tab footer semantics; the
-// model lists are deliberately hardcoded here (same ids, same reasoning:
-// the same model needs a different id per backend and the wrong form 400s).
+// model lists are hardcoded per backend (the same model needs a different id
+// per backend and the wrong form 400s) and live in `@/utils/fleet-models` so a
+// test can hold them in step with the hub's own presets.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Check, Loader2, Settings } from 'lucide-react'
 import clsx from 'clsx'
 import { useAgentStore } from '@/store/agent'
 import { displayModel } from '@/utils/model-label'
-
-const FIRST_PARTY_MODELS = [
-  'claude-opus-5',
-  'claude-fable-5-1',
-  'claude-fable-5',
-  'claude-opus-4-8',
-  'claude-sonnet-5',
-  'claude-haiku-4-5-20251001',
-] as const
-
-const BEDROCK_MODELS = [
-  'us.anthropic.claude-opus-5',
-  'us.anthropic.claude-fable-5-1',
-  'us.anthropic.claude-fable-5',
-  'us.anthropic.claude-opus-4-8',
-  'us.anthropic.claude-opus-4-7',
-  'us.anthropic.claude-sonnet-5',
-  'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-] as const
+import { BEDROCK_MODELS, FIRST_PARTY_MODELS } from '@/utils/fleet-models'
 
 export function SpacesFleetMenu() {
   const [open, setOpen] = useState(false)
