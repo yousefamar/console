@@ -143,4 +143,54 @@ export async function syncCliToken(cfg: ForgeConfig): Promise<AgentEnvResult> {
   return { ok: true, reason: 'cli bearer mirrored' }
 }
 
+/** Credential directories the box is allowed to hold, as an explicit
+ *  allow-list rather than "whatever is under ~/.config".
+ *
+ *  Yousef, 8 Oct 2026, on Astera forks that could not run anything needing a
+ *  database: *"Copy ~/.config/astera/*.env to the box. Treat the box as an
+ *  extension of my PC, tell console to make sure the security is hardened so
+ *  nobody gets in but us."* The glob is his and is honoured literally — the
+ *  same directory also holds `.json` and `.cookie` credentials that he did not
+ *  name, and they stay on the desktop.
+ *
+ *  This runs on every prepare rather than being a one-shot copy, because the
+ *  box is rebuilt from `provision.sh` whenever it is replaced and a silently
+ *  credential-less box fails forks at their first database step — the exact
+ *  class of failure that cost Astera a night already. `--delete` is scoped by
+ *  the same filters, so a credential REVOKED on the desktop stops existing on
+ *  the box too, while non-matching files there are protected.
+ *
+ *  The destination is outside every git checkout on purpose: Astera repo rules
+ *  6 and 163 forbid a secret entering a working tree, ignored scratch included. */
+const CREDENTIAL_MIRRORS = [
+  { localDir: join('.config', 'astera'), pattern: '*.env', remoteDir: '/home/amar/.config/astera' },
+] as const
+
+export async function syncProjectCredentials(cfg: ForgeConfig, log: (m: string) => void = () => {}): Promise<AgentEnvResult> {
+  for (const m of CREDENTIAL_MIRRORS) {
+    const local = join(homedir(), m.localDir)
+    if (!existsSync(local)) continue
+    const prep = await forgeExec(cfg, `mkdir -p ${m.remoteDir} && chmod 700 ${m.remoteDir}`)
+    if (prep.code !== 0) return { ok: false, reason: `could not create ${m.remoteDir} on forge: ${prep.stderr.trim()}` }
+    const ok = await execFileP('rsync', [
+      '-a', '--chmod=D700,F600', '--delete',
+      '--include', m.pattern, '--exclude', '*',
+      '-e', 'ssh -o BatchMode=yes',
+      `${local}/`, `${cfg.host}:${m.remoteDir}/`,
+    ], { env: sshEnvPath(), timeout: 600_000, maxBuffer: 8 * 1024 * 1024 }).then(() => true).catch(() => false)
+    if (!ok) return { ok: false, reason: `credentials for ${m.localDir} did not reach forge — a fork needing them will fail at its first database step` }
+    log(`[forge] credentials mirrored: ${m.localDir}/${m.pattern} → ${m.remoteDir} (0700/0600)`)
+  }
+
+  // The gh token deliberately does NOT auto-sync: it lives in the desktop's
+  // keyring, so pushing it on every prepare would re-install a token Yousef had
+  // revoked. Absent is fine; absent and SILENT is not, because a fork only
+  // discovers it when `gh pr merge` fails at the end of its work.
+  const gh = await forgeExec(cfg, 'test -s /home/amar/.config/gh/hosts.yml && echo present || echo missing')
+  if (gh.stdout.includes('missing')) {
+    log('[forge] NO gh token on the box — `gh pr merge` will fail for remote forks. Install with: gh auth token | ssh forge \'umask 077; mkdir -p ~/.config/gh; IFS= read -r T; printf "github.com:\\n    user: yousefamar\\n    oauth_token: %s\\n    git_protocol: https\\n" "$T" > ~/.config/gh/hosts.yml\'')
+  }
+  return { ok: true, reason: 'project credentials mirrored' }
+}
+
 export { dirname }

@@ -36,6 +36,49 @@ fi
 say "corepack (repos pin their package manager — astera is pnpm@10.6.2)"
 sudo corepack enable >/dev/null 2>&1 || true
 
+say "gh (remote forks merge their own PRs; the TOKEN is installed separately)"
+if ! command -v gh >/dev/null; then
+  sudo mkdir -p -m 755 /etc/apt/keyrings
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+    | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
+  sudo chmod 644 /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+    | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gh >/dev/null
+fi
+
+# The box holds credentials since 8 Oct 2026 (Yousef: "Treat the box as an
+# extension of my PC, tell console to make sure the security is hardened so
+# nobody gets in but us"), so a REBUILT box must come up hardened rather than
+# reverting to the cloud image's defaults.
+#
+# The socket unit is the load-bearing half and the easy one to get wrong:
+# Ubuntu 24.04 socket-activates sshd, so systemd owns the listening socket and
+# `ListenAddress` in sshd_config is silently ignored — `sshd -T` will report
+# loopback while `ss` still shows 0.0.0.0:22. Access arrives via SSM
+# AWS-StartSSHSession, which the agent dials as localhost:22, so there is no
+# reason for a public bind to exist. Recovery if this ever goes wrong is
+# `aws ssm send-command`, which runs as root without sshd in the path.
+say "ssh hardening (loopback-only bind, no root login)"
+sudo tee /etc/ssh/sshd_config.d/99-forge-hardening.conf >/dev/null <<'EOF'
+ListenAddress 127.0.0.1
+ListenAddress ::1
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+X11Forwarding no
+EOF
+sudo mkdir -p /etc/systemd/system/ssh.socket.d
+sudo tee /etc/systemd/system/ssh.socket.d/99-forge-loopback.conf >/dev/null <<'EOF'
+[Socket]
+ListenStream=
+ListenStream=127.0.0.1:22
+ListenStream=[::1]:22
+EOF
+sudo sshd -t && sudo systemctl daemon-reload && sudo systemctl restart ssh.socket
+
 say "claude code $CLAUDE_VERSION"
 sudo npm install -g --silent "@anthropic-ai/claude-code@$CLAUDE_VERSION" >/dev/null
 

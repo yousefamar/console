@@ -12,7 +12,7 @@ import { ensureForgeReady, stopIfIdle, instanceState, ssmPingStatus } from './in
 import { ensureMaster, forwardDevPort, cancelDevPort, forgeExec, remoteCommandArgv, spawnRemote, HUB_PORT } from './ssh.js'
 import { ensureSessionMounts, memoryDirFor, isMounted } from './mounts.js'
 import { ensureRepoOnForge, foldBackFromForge, ensureConCli, repoNameFor } from './repo.js'
-import { syncAgentEnv, syncCliToken } from './agent-env.js'
+import { syncAgentEnv, syncCliToken, syncProjectCredentials } from './agent-env.js'
 import { syncTranscript } from './transcripts.js'
 
 export * from './config.js'
@@ -172,6 +172,12 @@ export async function prepareRemoteSession(opts: {
 
   const tok = await syncCliToken(cfg)
   if (!tok.ok) return { ok: false, reason: tok.reason, cfg }
+
+  // Not fatal: a project whose credentials failed to mirror should still get a
+  // box for the typecheck/lint/audit work that needs none, and the log says
+  // which step refused. Failing every dispatch over it would be worse.
+  const creds = await syncProjectCredentials(cfg, log)
+  if (!creds.ok) log(`[forge] ${creds.reason}`)
 
   const mounts = await ensureSessionMounts(cfg, { cwd: opts.cwd, memoryDir: memoryDirFor(opts.cwd) }, log)
   if (!mounts.ok) return { ok: false, reason: mounts.reason, cfg }
