@@ -774,6 +774,14 @@ local SSD was tried first and did not help.
   writes through the link — a per-card value belongs in that worktree's own
   file. The credential rsync resets the mode to 0600 and runs *before* the repo
   prepare, so the 0400 is re-asserted every time rather than drifting.
+  **That read-only source stays updatable only because the mirror does not use
+  `--inplace`** — rsync's default temp-file-and-rename replaces a 0400
+  destination (only the directory need be writable), while `--inplace` writes
+  through the inode and would be refused. Verified end to end rather than
+  reasoned about: a 0400 file on the box took an edited desktop copy's bytes
+  and came back 0600. Locked as a test, because the hazard is a future
+  one-word edit — if it ever regresses, the owner's edits stop arriving while
+  every mode and log line still looks correct.
   **Generalise it: a symlink into a shared file is a WRITE hazard, not just a
   read convenience** — whenever you point many trees at one file, make the file
   refuse writes so the first offender fails loudly instead of corrupting it.
