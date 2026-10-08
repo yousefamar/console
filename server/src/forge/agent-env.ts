@@ -146,51 +146,52 @@ export async function syncCliToken(cfg: ForgeConfig): Promise<AgentEnvResult> {
 /** Credential directories the box is allowed to hold, as an explicit
  *  allow-list rather than "whatever is under ~/.config".
  *
- *  Yousef, 8 Oct 2026, on Astera forks that could not run anything needing a
- *  database: *"Copy ~/.config/astera/*.env to the box. Treat the box as an
- *  extension of my PC, tell console to make sure the security is hardened so
- *  nobody gets in but us."* The glob is his and is honoured literally — the
- *  same directory also holds `.json` and `.cookie` credentials that he did not
- *  name, and they stay on the desktop.
+ *  `files` is a NAMED ALLOW-LIST, so the box's copy of a credential directory is
+ *  exactly these files and a new credential on the desktop is private until it
+ *  is listed here. Yousef chose this on 8 Oct 2026, narrowing his own earlier
+ *  instruction (*"Copy ~/.config/astera/*.env to the box. Treat the box as an
+ *  extension of my PC…"*): the glob put 41 files on the shared box including
+ *  live Stripe, Xero, QuickBooks, Rippling payroll, Resend, D&B, PostHog,
+ *  OpenAI, Airtable and Google OAuth credentials, when only these two have any
+ *  box-side consumer at all.
+ *
+ *  What put the question on the table: `blob.env` held the REAL prod Vercel Blob
+ *  read-write token, and Astera's ^quick-bear fork read it ON THE BOX. Blob is
+ *  one bucket keyed by filename (Astera rule 143), so a fork uploading a fixed
+ *  name with that token overwrites a PROD object. `app.env` deliberately carries
+ *  a well-shaped FAKE blob token instead, which lets Payload's config load while
+ *  the default upload path falls back to local disk. A hash sweep of the
+ *  directory then found the same token duplicated into `front-sync.staging.env`,
+ *  so withholding the obvious filename would have been a false all-clear —
+ *  **a credential reaches the box by VALUE, not by filename.** An allow-list is
+ *  the only form of this that does not need that sweep repeated for every new
+ *  secret.
  *
  *  This runs on every prepare rather than being a one-shot copy, because the
  *  box is rebuilt from `provision.sh` whenever it is replaced and a silently
  *  credential-less box fails forks at their first database step — the exact
- *  class of failure that cost Astera a night already. `--delete` is scoped by
- *  the same filters, so a credential REVOKED on the desktop stops existing on
- *  the box too, while non-matching files there are protected.
+ *  class of failure that cost Astera a night already.
  *
  *  The destination is outside every git checkout on purpose: Astera repo rules
  *  6 and 163 forbid a secret entering a working tree, ignored scratch included.
  *
- *  `exclude` is the carve-out from his glob: a named file the glob WOULD carry
- *  but which has no box-side consumer and more reach than the box's purpose.
- *  Because rsync's `--delete` deliberately protects excluded files on the
- *  receiver, a name added here is also removed from the box explicitly below —
- *  otherwise excluding a credential would stop it being UPDATED while leaving
- *  the copy already there, which is the worst of both. */
+ *  **Nothing running ON the box may write into a mirrored directory**, because
+ *  `--delete-excluded` makes the next prepare remove anything not on the list.
+ *  True today: `worktree-db.sh` only READS neon.env and writes DATABASE_URL into
+ *  the worktree's own .env; the only writer into ~/.config/astera is
+ *  `demo/prepare.sh`, a desktop flow. A box-side script that needs to write a
+ *  credential needs its own directory, not this one. */
 const CREDENTIAL_MIRRORS = [
   {
     localDir: join('.config', 'astera'),
-    pattern: '*.env',
     remoteDir: '/home/amar/.config/astera',
-    // Both of these carry the REAL prod Vercel Blob read-write token. Astera
-    // general confirmed by sha256 that blob.env's value is byte-identical to
-    // the prod pull in .env.production.local; a hash sweep of the whole
-    // directory then found the SAME value duplicated into
-    // front-sync.staging.env, an operator bundle no code references by name.
-    // The box never needs either: app.env carries a well-shaped FAKE blob token
-    // so Payload's config loads while the default upload path falls back to
-    // local disk. Vercel Blob is one bucket keyed by filename (Astera rule
-    // 143), so a fork uploading a fixed name with the real token overwrites a
-    // PROD object. Found 8 Oct 2026 after Astera's ^quick-bear fork read
-    // blob.env ON THE BOX and used the token to make vercelBlobStorage register
-    // for type-gen — no prod write, but it reached.
-    //
-    // Which is the lesson for the next one of these: a credential is excluded
-    // by VALUE, not by filename. Sweep the directory by hash for the secret
-    // being withheld before believing a single name closes it.
-    exclude: ['blob.env', 'front-sync.staging.env'],
+    files: [
+      // Symlinked in as .env by every worktree the box prepares (repo.ts appEnv).
+      'app.env',
+      // NEON_API_KEY, read by the app's scripts/worktree-db.sh and local-gate.sh
+      // to fork a per-card database. This is the "first database step" above.
+      'neon.env',
+    ],
   },
 ] as const
 
@@ -209,16 +210,20 @@ const CREDENTIAL_MIRRORS = [
  *  than inferred, for exactly that reason: "if a future edit of mine silently
  *  never lands, the whole arrangement looks fine and is wrong." */
 export function credentialRsyncArgv(
-  mirror: { pattern: string; remoteDir: string; exclude?: readonly string[] },
+  mirror: { files: readonly string[]; remoteDir: string },
   local: string,
   host: string,
 ): string[] {
   return [
-    '-a', '--chmod=D700,F600', '--delete',
-    // rsync takes the FIRST matching rule, so the carve-outs have to precede
-    // the include that would otherwise sweep them up.
-    ...(mirror.exclude ?? []).flatMap((f) => ['--exclude', f]),
-    '--include', mirror.pattern, '--exclude', '*',
+    // --delete alone propagates a REVOCATION (a listed file deleted on the
+    // desktop stops existing on the box). --delete-excluded is what makes the
+    // allow-list retroactive: without it rsync deliberately PROTECTS files it
+    // was told to exclude, so dropping a name here would stop that credential
+    // being updated while leaving the copy already on the box — the worst of
+    // both. With it, the box's copy of the directory is exactly `files`.
+    '-a', '--chmod=D700,F600', '--delete', '--delete-excluded',
+    ...mirror.files.flatMap((f) => ['--include', f]),
+    '--exclude', '*',
     '-e', 'ssh -o BatchMode=yes',
     `${local}/`, `${host}:${mirror.remoteDir}/`,
   ]
@@ -230,18 +235,12 @@ export async function syncProjectCredentials(cfg: ForgeConfig, log: (m: string) 
     if (!existsSync(local)) continue
     const prep = await forgeExec(cfg, `mkdir -p ${m.remoteDir} && chmod 700 ${m.remoteDir}`)
     if (prep.code !== 0) return { ok: false, reason: `could not create ${m.remoteDir} on forge: ${prep.stderr.trim()}` }
-    // Every prepare, not once: an excluded credential that predates its own
-    // exclusion is exactly the case this has to clear, and the box is rebuilt
-    // from provision.sh often enough that a one-shot cleanup would rot.
-    if (m.exclude.length) {
-      const rm = await forgeExec(cfg, `rm -f ${m.exclude.map((f) => `'${m.remoteDir}/${f}'`).join(' ')}`)
-      if (rm.code !== 0) return { ok: false, reason: `could not remove excluded credentials from ${m.remoteDir}: ${rm.stderr.trim()}` }
-    }
     const ok = await execFileP('rsync', credentialRsyncArgv(m, local, cfg.host),
       { env: sshEnvPath(), timeout: 600_000, maxBuffer: 8 * 1024 * 1024 }).then(() => true).catch(() => false)
     if (!ok) return { ok: false, reason: `credentials for ${m.localDir} did not reach forge — a fork needing them will fail at its first database step` }
-    log(`[forge] credentials mirrored: ${m.localDir}/${m.pattern} → ${m.remoteDir} (0700/0600`
-      + `${m.exclude.length ? `, withheld: ${m.exclude.join(', ')}` : ''})`)
+    // Name them: the whole point of an allow-list is that reading the log tells
+    // you what is on the box, which a glob never did.
+    log(`[forge] credentials mirrored: ${m.files.join(', ')} → ${m.remoteDir} (0700/0600, nothing else kept there)`)
   }
 
   // The gh token deliberately does NOT auto-sync: it lives in the desktop's

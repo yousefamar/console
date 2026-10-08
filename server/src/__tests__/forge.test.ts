@@ -273,7 +273,7 @@ describe('appEnv — the path the app expects, with the bytes outside the tree',
 })
 
 describe('the credential mirror must keep replacing files, not writing into them', () => {
-  const m = { pattern: '*.env', remoteDir: '/home/amar/.config/astera', exclude: ['blob.env'] }
+  const m = { files: ['app.env', 'neon.env'], remoteDir: '/home/amar/.config/astera' }
 
   it('never uses --inplace, because the box\'s copy is deliberately read-only', () => {
     const argv = credentialRsyncArgv(m, '/home/amar/.config/astera', 'forge')
@@ -287,25 +287,32 @@ describe('the credential mirror must keep replacing files, not writing into them
     expect(argv).not.toContain('--append-verify')
   })
 
-  it('carries only the pattern, deletes strays, and pins 0700/0600', () => {
+  it('carries only the named files, deletes strays, and pins 0700/0600', () => {
     const argv = credentialRsyncArgv(m, '/home/amar/.config/astera', 'forge')
     expect(argv).toContain('--chmod=D700,F600')
     expect(argv).toContain('--delete')
-    expect(argv.join(' ')).toContain('--include *.env --exclude *')
+    expect(argv.join(' ')).toContain('--include app.env --include neon.env --exclude *')
     expect(argv.at(-1)).toBe('forge:/home/amar/.config/astera/')
   })
 
-  it('puts a carve-out BEFORE the include, because rsync takes the first matching rule', () => {
-    // Order is the whole fix: --include '*.env' ahead of --exclude blob.env
-    // would match first and ship the real prod blob token to a shared box.
+  it('carries NO glob — an unlisted credential must not reach a shared box', () => {
+    // The regression this exists for: `--include '*.env'` put 41 files on the
+    // box, two of which held the real prod Vercel Blob RW token. An allow-list
+    // makes a new desktop credential private by default; a glob made it public
+    // by default and needed a hash sweep to notice.
     const argv = credentialRsyncArgv(m, '/home/amar/.config/astera', 'forge')
-    expect(argv.join(' ')).toContain('--exclude blob.env --include *.env --exclude *')
-    expect(argv.indexOf('blob.env')).toBeLessThan(argv.indexOf('*.env'))
+    expect(argv.filter((a) => a === '--include')).toHaveLength(2)
+    expect(argv.some((a) => a.includes('*') && a !== '*')).toBe(false)
+    for (const unlisted of ['blob.env', 'front-sync.staging.env', 'stripe.env', 'xero.env']) {
+      expect(argv).not.toContain(unlisted)
+    }
   })
 
-  it('a mirror with no carve-outs is argv-identical to before', () => {
-    const plain = credentialRsyncArgv({ pattern: '*.env', remoteDir: '/x' }, '/l', 'forge')
-    expect(plain.join(' ')).toContain('--delete --include *.env --exclude *')
+  it('is retroactive: --delete-excluded, or dropping a name would strand the copy already there', () => {
+    // Plain --delete PROTECTS excluded files on the receiver. Without this flag,
+    // removing a credential from the list would stop it being updated while
+    // leaving the box's copy in place forever.
+    expect(credentialRsyncArgv(m, '/l', 'forge')).toContain('--delete-excluded')
   })
 })
 
