@@ -674,7 +674,17 @@ local SSD was tried first and did not help.
   6/163 — at 0700/0600, with `--delete` scoped by the same filters so a revoked
   credential stops existing there. The gh token is deliberately NOT auto-synced
   (it lives in the desktop keyring, so re-pushing it would reinstall a revoked
-  one); its absence is logged instead.
+  one); its absence is logged instead, and `scripts/forge/install-gh-token.sh`
+  installs one — prefer a fine-grained token on stdin over the keyring's, which
+  carries `admin:org`/`delete_repo` across every repo Yousef owns.
+  **"Credentials are ready" is NOT "remote dispatch is safe", and only the owner
+  of a project's fork tooling can make the second claim.** Console told Astera
+  general it could flip `remote: forge` on the strength of the credential sync
+  alone; its own gate — a `worktree-db.sh` that symlinked `node_modules` at a
+  desktop-only staging checkout, so every forge fork would have died at its
+  first pnpm step on a dangling link — happened to land ten minutes earlier.
+  That was luck. State what YOUR half guarantees and ask the tooling owner to
+  confirm theirs (Astera general, 8 Oct 2026).
   Two things to understand before touching the box's security:
   - **There is no public port to close.** The security group has zero inbound
     rules and access rides SSM. `ssm:SendCommand` gives **root** with sshd

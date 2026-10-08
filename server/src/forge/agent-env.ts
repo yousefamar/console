@@ -188,7 +188,7 @@ export async function syncProjectCredentials(cfg: ForgeConfig, log: (m: string) 
   // discovers it when `gh pr merge` fails at the end of its work.
   const gh = await forgeExec(cfg, 'test -s /home/amar/.config/gh/hosts.yml && echo present || echo missing')
   if (gh.stdout.includes('missing')) {
-    log('[forge] NO gh token on the box — `gh pr merge` will fail for remote forks. Install with: gh auth token | ssh forge \'umask 077; mkdir -p ~/.config/gh; IFS= read -r T; printf "github.com:\\n    user: yousefamar\\n    oauth_token: %s\\n    git_protocol: https\\n" "$T" > ~/.config/gh/hosts.yml\'')
+    log('[forge] NO gh token on the box — `gh pr merge` will fail for remote forks. Install it with scripts/forge/install-gh-token.sh')
   }
   return { ok: true, reason: 'project credentials mirrored' }
 }
