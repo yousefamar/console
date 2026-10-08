@@ -37,8 +37,13 @@
 // Three forks: 27 compactions in 70 min, $62, 195k written cold per cycle
 // against 28k read, no progress. Hence the thrash rung below — the cap is a
 // cost optimisation, so a session that thrashes under it must lose it rather
-// than keep paying.
+// than keep paying. The env is read once per process, so a lift only reaches
+// the NEXT spawn in that cwd: an in-flight thrasher has to be respawned
+// (`con agent reload <session>`, history preserved) to pick it up. Those three
+// ran on for another $194 before they were, so check for live ones.
 
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs'
+import { dirname } from 'node:path'
 import type { SpawnKind } from './effort.js'
 
 export const COMPACT_WINDOW_MIN = 100_000
@@ -66,19 +71,49 @@ export function isThrashing(stamps: number[], now: number): boolean {
   return stamps.filter((t) => now - t < THRASH_WINDOW_MS).length >= THRASH_COMPACTIONS
 }
 
-// Keyed by cwd, not by session: the cause is the instruction bundle that every
-// session in that directory loads, so one fork's $20 lesson protects the rest.
-// In memory only — a hub restart re-learns it for the price of 3 compactions,
-// which is cheaper than persisting a guess about a tree that keeps changing.
-const liftedCaps = new Set<string>()
+/** A lift is evidence about an instruction bundle that keeps changing, so it is
+ *  re-tested occasionally rather than believed forever: a diet that shrinks the
+ *  bundle should win the cap back without anyone remembering to ask for it. */
+export const LIFT_TTL_MS = 14 * 24 * 3_600_000
 
-export function liftCompactWindow(cwd: string): boolean {
+// Keyed by cwd (→ when it was learned), not by session: the cause is the
+// instruction bundle every session in that directory loads, so one fork's
+// lesson protects the rest. PERSISTED, because re-learning is not cheap — the
+// 07:41 restart on 8 Oct 2026 cleared this and the same three android forks
+// spent $45 in 15 minutes teaching the hub the same fact a second time.
+const liftedCaps = new Map<string, number>()
+let liftedPath: string | null = null
+
+/** Restore learned lifts at boot. Returns the cwds still in date. */
+export function loadLiftedCompactWindows(path: string, now = Date.now()): string[] {
+  liftedPath = path
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>
+    for (const [cwd, at] of Object.entries(raw)) {
+      if (typeof at === 'number' && now - at < LIFT_TTL_MS) liftedCaps.set(cwd, at)
+    }
+  } catch { /* no file yet, or unreadable — re-learning is the fallback */ }
+  return [...liftedCaps.keys()]
+}
+
+function saveLifted(): void {
+  if (!liftedPath) return
+  try {
+    mkdirSync(dirname(liftedPath), { recursive: true })
+    const tmp = `${liftedPath}.tmp`
+    writeFileSync(tmp, JSON.stringify(Object.fromEntries(liftedCaps), null, 2), 'utf8')
+    renameSync(tmp, liftedPath)
+  } catch { /* a lost lift costs 3 compactions, not correctness */ }
+}
+
+export function liftCompactWindow(cwd: string, now = Date.now()): boolean {
   if (!cwd || liftedCaps.has(cwd)) return false
-  liftedCaps.add(cwd)
+  liftedCaps.set(cwd, now)
+  saveLifted()
   return true
 }
 export function isCompactWindowLifted(cwd: string | null | undefined): boolean { return !!cwd && liftedCaps.has(cwd) }
-export function clearLiftedCompactWindows(): void { liftedCaps.clear() }
+export function clearLiftedCompactWindows(): void { liftedCaps.clear(); liftedPath = null }
 
 /** The window for a spawn, or null for "leave the CLI default". */
 export function resolveCompactWindow(kind: SpawnKind | null | undefined, policy: unknown, cwd?: string | null): { window: number | null; reason: CompactWindowReason } {

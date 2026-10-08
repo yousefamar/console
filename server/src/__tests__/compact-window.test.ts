@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest'
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   resolveCompactWindow, DEFAULT_COMPACT_WINDOW, COMPACT_WINDOW_MIN, COMPACT_WINDOW_MAX,
   isThrashing, liftCompactWindow, isCompactWindowLifted, clearLiftedCompactWindows,
-  THRASH_COMPACTIONS, THRASH_WINDOW_MS,
+  loadLiftedCompactWindows, THRASH_COMPACTIONS, THRASH_WINDOW_MS, LIFT_TTL_MS,
 } from '../agents/compact-window.js'
 
 describe('resolveCompactWindow', () => {
@@ -71,5 +74,47 @@ describe('a window the session cannot work in is lifted', () => {
     expect(liftCompactWindow('')).toBe(false)
     expect(isCompactWindowLifted(null)).toBe(false)
     expect(isCompactWindowLifted(undefined)).toBe(false)
+  })
+})
+
+// The 8 Oct 07:41 hub restart dropped a learned lift and the same three forks
+// paid $45 in 15 min to re-learn it. A lift is cheap to keep and dear to lose.
+describe('a learned lift survives a hub restart', () => {
+  let dir: string
+  let path: string
+  beforeEach(() => {
+    clearLiftedCompactWindows()
+    dir = mkdtempSync(join(tmpdir(), 'compact-lifted-'))
+    path = join(dir, 'compact-lifted.json')
+  })
+
+  it('is written when learned and restored on the next boot', () => {
+    loadLiftedCompactWindows(path)
+    expect(liftCompactWindow('/home/amar/proj/code/console/android')).toBe(true)
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toHaveProperty('/home/amar/proj/code/console/android')
+
+    clearLiftedCompactWindows() // the restart
+    expect(isCompactWindowLifted('/home/amar/proj/code/console/android')).toBe(false)
+    expect(loadLiftedCompactWindows(path)).toEqual(['/home/amar/proj/code/console/android'])
+    expect(resolveCompactWindow('fork', undefined, '/home/amar/proj/code/console/android')).toEqual({ window: null, reason: 'thrash' })
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('re-tests a lift older than the TTL, so a shrunken bundle wins the cap back', () => {
+    const now = Date.now()
+    writeFileSync(path, JSON.stringify({ '/stale': now - LIFT_TTL_MS - 1, '/fresh': now - 1000, '/junk': 'not-a-time' }), 'utf8')
+    expect(loadLiftedCompactWindows(path, now)).toEqual(['/fresh'])
+    expect(resolveCompactWindow('fork', undefined, '/stale')).toEqual({ window: 400_000, reason: 'default' })
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  it('treats a missing or corrupt file as nothing learned yet', () => {
+    expect(loadLiftedCompactWindows(join(dir, 'absent.json'))).toEqual([])
+    writeFileSync(path, '{ not json', 'utf8')
+    expect(loadLiftedCompactWindows(path)).toEqual([])
+    // Still writable afterwards — a corrupt file must not disable learning.
+    expect(liftCompactWindow('/x')).toBe(true)
+    expect(JSON.parse(readFileSync(path, 'utf-8'))).toHaveProperty('/x')
+    rmSync(dir, { recursive: true, force: true })
   })
 })

@@ -27,7 +27,7 @@ import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
 import { reapStaleProcesses, StaleProcessSweeper, waitForExit } from './agents/process-reaper.js'
 import { CacheTtlLedger, setCacheTtlHooks, DEFAULT_RECENT_MINUTES } from './agents/cache-ttl.js'
 import { setEffortHooks } from './agents/effort.js'
-import { setCompactWindowHooks, THRASH_WINDOW_MS } from './agents/compact-window.js'
+import { setCompactWindowHooks, loadLiftedCompactWindows, THRASH_WINDOW_MS } from './agents/compact-window.js'
 import { ContextProxy, ProxyConfigStore } from './agents/context-proxy.js'
 import { loadSessionHistory } from './history.js'
 import { discoverProjectDirs, listDirectories } from './projects.js'
@@ -309,8 +309,12 @@ setEffortHooks({
 setCompactWindowHooks({
   policy: () => prefsStore.getAll()['cache.autoCompactWindow'],
   onSpawn: (window, kind, reason, label) => { if (window) log(`[compact] ${label}: autocompact window ${window / 1000}k (${kind}, ${reason})`) },
-  onThrash: (cwd, window, compactions, label) => log(`[compact] ${label}: THRASHING — ${compactions} compactions in ${THRASH_WINDOW_MS / 60_000} min under a ${window / 1000}k window. Lifting the cap for ${cwd} (CLI default from the next spawn there); its instruction bundle is too big for a capped window.`),
+  onThrash: (cwd, window, compactions, label) => log(`[compact] ${label}: THRASHING — ${compactions} compactions in ${THRASH_WINDOW_MS / 60_000} min under a ${window / 1000}k window. Lifting the cap for ${cwd} (CLI default from the next spawn there); its instruction bundle is too big for a capped window. Respawn any live session there (\`con agent reload\`) to stop it paying.`),
 })
+{
+  const lifted = loadLiftedCompactWindows(join(feedsConfigDir, 'compact-lifted.json'))
+  if (lifted.length) log(`[compact] cap stays lifted for ${lifted.length} cwd(s) that thrashed before: ${lifted.join(', ')}`)
+}
 // Context proxy (^plum-fawn): opted-in sessions route Bedrock calls through a
 // loopback proxy that logs prompt composition and steers the API's
 // `clear_tool_uses` edit. Off unless ~/.config/console/context-proxy.json says
