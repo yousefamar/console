@@ -49,6 +49,12 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+_(nothing — v111 was cut 2026-10-08)_
+
+## Shipped
+
+### v111 (2026-10-08)
+
 - **Mail rows never show a raw Gmail label id** (^zany-fox's Android half;
   Yousef, 7 Oct: "Labels … are named incorrectly on Mail"). The SPA showed
   `Label_38` for every label made since its last hard reset; the APK had the
@@ -163,8 +169,6 @@ view-mode hub-sync (Room meta is fine on one device).
   `Icons.AutoMirrored.Filled.CallSplit`. Not verifiable here (no emulator
   or KVM on this box) — needs a `POST /debug/screenshot?target=apk` of the
   Spaces agent list once the release lands on the phone.
-
-## Shipped
 
 ### v110 (2026-10-07)
 
