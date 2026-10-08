@@ -140,6 +140,29 @@ view-mode hub-sync (Room meta is fine on one device).
   before the hub has it, and the id whose write just landed is excluded so the
   hub's now-authoritative copy wins — unless a LATER edit to it is still
   pending.
+- **The forge glyphs are single silhouettes, not stacks** (^jade-fox; SPA
+  1c26c864 + ca094d99 — Yousef redrew them twice in one night on the desktop,
+  so the stacked look was exactly what he rejected). Gap: v110 shipped
+  `BotCloud`/`BranchCloud` as a `Box` of two scaled material icons
+  (`SmartToy` + `Cloud`, `CallSplit` + `Cloud`), which crosses strokes and
+  turns to mud at the 11–18 dp the call sites actually use. Rebuilt
+  `ui/components/CloudGlyphs.kt` from lucide's own path data via
+  `ImageVector.Builder` (24x24 viewport, `fill = null`, 2 px round
+  stroke): both glyphs share the identical cloud path and the bot head /
+  branch trunk STOP on the cloud's top contour, so nothing crosses and the
+  mark still reads at 10 px. `ImageVector` bakes its brushes at build time,
+  so the vectors are built per composition in `remember(tint, cloudTint)`
+  with a per-path `SolidColor` and drawn with `Icon(tint =
+  Color.Unspecified)` — a specified tint would `ColorFilter` the whole
+  vector and flatten `cloudTint`. Public signatures (`tint`, `cloudTint`,
+  `size`) and the `FORGE_TOOLTIP` contentDescription are unchanged, so none
+  of the seven call sites (SpacesScreen ×4, CommandBar ×2, AgentStatusBar)
+  moved; `data/agents/Placement.kt` + `PlacementTest` untouched — which
+  glyph is chosen was already right, only the drawing was wrong. Side
+  benefit: the file no longer depends on the deprecated
+  `Icons.AutoMirrored.Filled.CallSplit`. Not verifiable here (no emulator
+  or KVM on this box) — needs a `POST /debug/screenshot?target=apk` of the
+  Spaces agent list once the release lands on the phone.
 
 ## Shipped
 
