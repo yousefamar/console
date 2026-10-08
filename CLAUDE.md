@@ -665,6 +665,36 @@ local SSD was tried first and did not help.
   holds across a restart too: a deferred move is one in-memory callback, so
   `shutdown()` drains the pending set and reports each as a failure rather than
   letting it simply not happen.
+- **The box holds credentials, and its perimeter is IAM, not a port** (8 Oct 2026,
+  Yousef: *"Copy ~/.config/astera/*.env to the box. Treat the box as an extension
+  of my PC, tell console to make sure the security is hardened so nobody gets in
+  but us, e.g. via tailscale."*). `syncProjectCredentials` mirrors an allow-list
+  of `<dir>/<glob>` pairs on every prepare (astera's `*.env` today) to
+  `~/.config/<project>/` on the box — outside every checkout, per astera rules
+  6/163 — at 0700/0600, with `--delete` scoped by the same filters so a revoked
+  credential stops existing there. The gh token is deliberately NOT auto-synced
+  (it lives in the desktop keyring, so re-pushing it would reinstall a revoked
+  one); its absence is logged instead.
+  Two things to understand before touching the box's security:
+  - **There is no public port to close.** The security group has zero inbound
+    rules and access rides SSM. `ssm:SendCommand` gives **root** with sshd
+    nowhere in the path, so whoever holds that IAM action is who can get in —
+    and it is also the recovery channel if you break sshd. An inline Deny,
+    `forge-box-restricted` on the Admin group, scopes shell/snapshot/SG-change
+    actions on this instance to Yousef's own `aws:userId`. Do NOT trust
+    `iam simulate-principal-policy` here: it does not populate `aws:userId`, so
+    it reports `explicitDeny` for Yousef too. Prove it with a real
+    `ssm send-command` instead.
+  - **`ListenAddress` in sshd_config does nothing on Ubuntu 24.04.** sshd is
+    socket-activated, so systemd owns the socket; `sshd -T` will happily report
+    loopback while `ss` shows `0.0.0.0:22`. The real control is a drop-in on
+    `ssh.socket` (both are in `bootstrap.sh` so a rebuilt box stays hardened).
+  Residual, known and not closed: the box mounts the desktop back as `amar`, and
+  that key is `restrict,command="internal-sftp"` so it gets no shell — but SFTP
+  is path-unrestricted, so box-root can read/write anything `amar` can. Scoping
+  it needs a root-owned `ChrootDirectory` with bind-mounts. Read-only mounts are
+  NOT the answer: remote forks write research docs and auto-memory by ordinary
+  file writes, deliberately.
 - **Path parity covers checkouts outside `~/proj/code` too.** Astera's is
   `/opt/code/astera-app` and the vault's `app` symlink stores that absolute
   string, so a remote Astera fork followed it into nothing. `ensureRepoOnForge`
