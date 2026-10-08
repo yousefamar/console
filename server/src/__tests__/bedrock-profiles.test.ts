@@ -79,18 +79,13 @@ describe('taggedModelId', () => {
     }
   })
 
-  it('translates the models the default Bedrock chain actually uses', () => {
-    // These are the ids in auth-backend.ts's bedrock preset. A miss here is the
-    // exact regression this module exists to prevent.
-    for (const id of [
-      'us.anthropic.claude-opus-5',
-      'us.anthropic.claude-fable-5-1',
-      'us.anthropic.claude-fable-5',
-      'us.anthropic.claude-opus-4-8',
-      'us.anthropic.claude-opus-4-7',
-      'us.anthropic.claude-sonnet-5',
-      'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-    ]) {
+  it('translates every model in the real Bedrock chain', async () => {
+    // Read from auth-backend's own preset rather than a copy of it: a chain
+    // entry with no profile bills UNTAGGED, and a hardcoded list here cannot
+    // catch the entry someone adds tomorrow. (It did not catch opus-5-5 /
+    // sonnet-5-5 on 2026-10-08, which is half of why this card existed.)
+    const { BACKEND_PRESETS } = await vi.importActual<typeof import('../auth-backend.js')>('../auth-backend.js')
+    for (const id of BACKEND_PRESETS.bedrock.chain) {
       expect(taggedModelId(id), id).toMatch(ARN_RE)
     }
   })
@@ -173,6 +168,19 @@ describe('aliasProfileEnv', () => {
     // No alias carries the 1M hint by default (see withContextHint); the
     // Haiku-backed ones never do.
     for (const key of Object.keys(env)) expect(env[key], key).not.toMatch(/\[1m\]$/)
+  })
+
+  it('points ANTHROPIC_MODEL/OPUS at the chain head and SONNET at the newest sonnet', async () => {
+    // The chain governs what a SESSION spawns with; these aliases govern what its
+    // subagents, compaction and `--model sonnet` callers get. When they disagree
+    // the fleet silently runs a generation behind itself — which is what happened
+    // between 6 and 8 Oct 2026, with the chain on opus-5 and 5.5 already served.
+    const { BACKEND_PRESETS } = await vi.importActual<typeof import('../auth-backend.js')>('../auth-backend.js')
+    const chain = BACKEND_PRESETS.bedrock.chain
+    const env = aliasProfileEnv()
+    expect(bare(env.ANTHROPIC_MODEL!)).toBe(bare(taggedModelId(chain[0]!)))
+    expect(bare(env.ANTHROPIC_DEFAULT_OPUS_MODEL!)).toBe(bare(taggedModelId(chain.find((m) => m.includes('opus'))!)))
+    expect(bare(env.ANTHROPIC_DEFAULT_SONNET_MODEL!)).toBe(bare(taggedModelId(chain.find((m) => m.includes('sonnet'))!)))
   })
 
   it('omits keys whose model has no profile rather than emitting a bad id', () => {

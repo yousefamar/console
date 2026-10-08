@@ -101,19 +101,25 @@ export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
       // BEFORE the boot-time AWS profile discovery, so a spread would freeze the
       // built-in table and miss anything discovered.
     },
-    // opus-5 leads — full-turn verified on this Bedrock deployment (2026-07-25;
-    // the bare + dated forms 400, only `us.anthropic.claude-opus-5` resolves).
-    // Required a one-time AWS Marketplace agreement acceptance
-    // (CreateFoundationModelAgreement for anthropic.claude-opus-5, done via the
-    // `default`/user-amar profile which holds aws-marketplace:Subscribe) — before
-    // that every turn 403'd "Model access is denied". opus-4-7 kept (served on
-    // Bedrock, not on the Max sub).
+    // opus-5-5 leads, sonnet-5-5 ahead of sonnet-5 — both spawn-verified on this
+    // deployment 2026-10-08, as the bare `us.` id AND as their new owner-tagged
+    // profile ARN. No marketplace agreement was needed this time: the 5-5
+    // foundation models already answered for `claude-code-amar`, and the ONLY
+    // thing missing was an `amar-cc-*` application inference profile — the fleet
+    // sat on opus-5 for two days after 5.5 landed because this chain is
+    // hand-maintained and nothing watches for a newer generation. If a model
+    // here ever 403s "Model access is denied", that IS the marketplace-agreement
+    // case: CreateFoundationModelAgreement via the `default`/user-amar profile,
+    // which holds aws-marketplace:Subscribe (what opus-5 needed, 2026-07-25).
+    // opus-4-7 kept (served on Bedrock, not on the Max sub).
     chain: [
+      'us.anthropic.claude-opus-5-5',
       'us.anthropic.claude-opus-5',
       'us.anthropic.claude-fable-5-1',
       'us.anthropic.claude-fable-5',
       'us.anthropic.claude-opus-4-8',
       'us.anthropic.claude-opus-4-7',
+      'us.anthropic.claude-sonnet-5-5',
       'us.anthropic.claude-sonnet-5',
       'us.anthropic.claude-haiku-4-5-20251001-v1:0',
     ],

@@ -56,8 +56,13 @@ function arn(id: string): string {
 /** Bare Bedrock model id → owner-tagged application-inference-profile ARN.
  *  Every entry spawn-verified end-to-end (`claude --model <arn> -p …` returned a
  *  real completion) on 2026-07-31 — a bad id 400s the whole fleet, so never add
- *  one from the console alone. Merged with `refreshFromAws()` at boot. */
+ *  one from the console alone. Merged with `refreshFromAws()` at boot.
+ *  The 5-5 pair was added 2026-10-08 (same spawn verification): the deployment
+ *  had served opus/sonnet 5.5 since 6 Oct but only `guest1-cc-*` profiles existed
+ *  for them, so the fleet was pinned a generation behind. */
 const STATIC_PROFILES: Record<string, string> = {
+  'us.anthropic.claude-opus-5-5': arn('agg8gr8aiyry'),
+  'us.anthropic.claude-sonnet-5-5': arn('nfudwpr12yve'),
   'us.anthropic.claude-opus-5': arn('oifqcw3zbemz'),
   'us.anthropic.claude-fable-5-1': arn('6cviuiy5tkry'),
   'us.anthropic.claude-fable-5': arn('3xne2d3e2z7v'),
@@ -157,10 +162,10 @@ export function aliasProfileEnv(): Record<string, string> {
   const pick = (id: string) => { const a = profiles[id]; return a ? withContextHint(a, id) : undefined }
   const env: Record<string, string> = {}
   const map: Array<[string, string]> = [
-    ['ANTHROPIC_MODEL', 'us.anthropic.claude-opus-5'],
-    ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'us.anthropic.claude-opus-5'],
+    ['ANTHROPIC_MODEL', 'us.anthropic.claude-opus-5-5'],
+    ['ANTHROPIC_DEFAULT_OPUS_MODEL', 'us.anthropic.claude-opus-5-5'],
     ['ANTHROPIC_DEFAULT_FABLE_MODEL', 'us.anthropic.claude-fable-5-1'],
-    ['ANTHROPIC_DEFAULT_SONNET_MODEL', 'us.anthropic.claude-sonnet-5'],
+    ['ANTHROPIC_DEFAULT_SONNET_MODEL', 'us.anthropic.claude-sonnet-5-5'],
     ['ANTHROPIC_DEFAULT_HAIKU_MODEL', 'us.anthropic.claude-haiku-4-5-20251001-v1:0'],
     ['ANTHROPIC_SMALL_FAST_MODEL', 'us.anthropic.claude-haiku-4-5-20251001-v1:0'],
   ]
