@@ -357,6 +357,20 @@ written. Launch them detached and poll the log:
 A `:app:testDebugUnitTest FROM-CACHE` line is a PASS, not a skip: the cache key
 is the inputs, so it restores the full `TEST-*.xml` set from a run with
 identical sources — check the counts and mtimes rather than re-running.
+**The forked test JVM's heap is pinned (`maxHeapSize = "3g"`, `forkEvery = 40`
+in `testOptions.unitTests.all`) — never unpin it.** Without it the ceiling is
+whatever the machine's default gives, so the same commit passed on forge
+(64 GiB) and died on the desktop (23 GiB) the moment the suite reached 987
+tests: eight `OutboxTest` cases failed with `OutOfMemoryError: Java heap space`
+inside unrelated okhttp/conscrypt TLS setup, which reads as a logic regression
+and is not one (8 Oct 2026 sweep — two forks had both reported green). Robolectric
+keeps a sandbox + classloader per SDK/config combo for the JVM's life, so the
+ceiling creeps up with every test class added; `forkEvery` is what caps the live
+set. **An OOM lands on whichever class is running when the heap runs out, not on
+the class that filled it** — a suddenly-failing cluster in a file nobody touched
+is this, so read the exception before the diff. Corollary for the nightly sweep:
+**a fork's green suite says nothing about the parent's** if they ran on different
+machines; step 4 on the folded state is the only run that counts.
 `SyncBusClientTest` (and `SyncEngineTest` "foreground call … never borrows",
 ^warm-kiwi) are known ordering flakes in the full run — re-run in isolation;
 green there = fine. Headless `autowt cleanup` needs `--mode merged|all`; it can

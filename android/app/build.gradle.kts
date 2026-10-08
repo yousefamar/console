@@ -17,7 +17,7 @@ android {
         // Keep the patch segment synced to versionCode so the user-visible
         // string directly reveals the integer version. If you bump one,
         // bump the other.
-        val vCode = 110
+        val vCode = 111
         versionCode = vCode
         versionName = "0.2.$vCode"
     }
@@ -78,6 +78,15 @@ android {
     testOptions {
         unitTests {
             isIncludeAndroidResources = true
+            // Pin the forked test JVM rather than inheriting a machine-dependent
+            // default: at 987 tests the suite OOM'd here (23 GiB desktop) while
+            // passing on forge (64 GiB), so a fork's green run said nothing about
+            // the parent's. Robolectric accumulates a sandbox + classloader per
+            // SDK/config combo, so forkEvery caps the live set as the suite grows.
+            all {
+                it.maxHeapSize = "3g"
+                it.forkEvery = 40
+            }
         }
     }
 
