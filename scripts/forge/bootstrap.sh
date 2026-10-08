@@ -33,6 +33,9 @@ if ! command -v node >/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" != "$N
   sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs >/dev/null
 fi
 
+say "corepack (repos pin their package manager — astera is pnpm@10.6.2)"
+sudo corepack enable >/dev/null 2>&1 || true
+
 say "claude code $CLAUDE_VERSION"
 sudo npm install -g --silent "@anthropic-ai/claude-code@$CLAUDE_VERSION" >/dev/null
 

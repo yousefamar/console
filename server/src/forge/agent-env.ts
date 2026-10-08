@@ -96,7 +96,26 @@ export async function syncAgentEnv(cfg: ForgeConfig, log: (m: string) => void = 
     if (!ok) return { ok: false, reason: 'rsync settings.json failed' }
   }
 
-  log('[forge] agent env mirrored (CLAUDE.md ancestry, skills, plugins, settings)')
+  // ~/exec is referenced by $HOME-relative path from settings.json hooks, so an
+  // EMPTY one on forge is not a missing convenience — it makes every Bash call
+  // return a hook error. Astera's PostToolUse hook runs
+  // `python3 $HOME/exec/astera-worktree-rules-hook.py`, which injects the app
+  // repo's CLAUDE.md and .claude/rules/* when a fork touches a worktree; with
+  // ~/exec empty that hook failed on every command AND the repo's rules were
+  // silently absent, so a remote fork was writing Astera code without them
+  // (^spry-boar, 8 Oct 2026). Scripts only: ~/exec also holds ~180 MB of
+  // vendored binaries (mitmproxy, cloud-sql-proxy) that forge has no use for,
+  // hence --max-size. No --delete: forge may have its own additions, and the
+  // cost of a stale script there is far below the cost of deleting a live one.
+  if (existsSync(join(home, 'exec'))) {
+    await forgeExec(cfg, 'mkdir -p /home/amar/exec')
+    const ok = await execFileP('rsync', ['-az', '--max-size=1m', '--exclude', '.git', '-e', 'ssh -o BatchMode=yes',
+      `${join(home, 'exec')}/`, `${cfg.host}:/home/amar/exec/`],
+      { env: sshEnvPath(), timeout: 600_000, maxBuffer: 8 * 1024 * 1024 }).then(() => true).catch(() => false)
+    if (!ok) log('[forge] ~/exec did not sync — hooks that call $HOME/exec/* will fail on every Bash call')
+  }
+
+  log('[forge] agent env mirrored (CLAUDE.md ancestry, skills, plugins, settings, ~/exec scripts)')
   return { ok: true, reason: 'agent env mirrored' }
 }
 

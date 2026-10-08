@@ -89,6 +89,8 @@ export async function ensureRepoOnForge(cfg: ForgeConfig, localRepoPath: string,
     return { ok: false, reason: `push to forge rejected (forge may be ahead — fold back first): ${push.stderr.trim()}`, branch }
   }
 
+  await pushBaseBranches(cfg, localRepoPath, branch, log)
+
   const checkout = await forgeExec(cfg, `set -e
     if [ ! -d ${code}/.git ]; then
       git clone --quiet ${bare} ${code}
@@ -104,6 +106,39 @@ export async function ensureRepoOnForge(cfg: ForgeConfig, localRepoPath: string,
   await mirrorDesktopPath(cfg, localRepoPath, log)
   log(`[forge] ${name}: synced ${branch} → ${code} @ ${checkout.stdout.trim()}`)
   return { ok: true, reason: `synced ${branch} @ ${checkout.stdout.trim()}`, branch }
+}
+
+/** The integration branches a fork might work FROM, beyond this repo's own
+ *  default.
+ *
+ *  The bare mirror used to hold exactly one head, because one branch is all the
+ *  desktop pushed — fatal for any project whose work does not happen on it.
+ *  Astera's forks branch from `origin/staging` and land onto it, so on forge
+ *  `git fetch origin main staging` died on an `origin` with no staging, the
+ *  nightly audit could not even resolve its own subject commit, and the card
+ *  got nowhere (^spry-boar, 8 Oct 2026). Pushing the desktop's
+ *  remote-tracking refs for these names as heads makes forge's `origin` look
+ *  like GitHub's, which is what every fork's instructions already assume.
+ *
+ *  A fixed candidate list rather than every `origin/*`: card branches are the
+ *  fork's own to create, and a repo like Astera has hundreds of them on the
+ *  remote. Per-branch failure is logged and tolerated — the default branch
+ *  above is the load-bearing push; these are what make a base resolvable. */
+const BASE_BRANCH_CANDIDATES = ['main', 'master', 'staging', 'develop', 'production']
+
+async function pushBaseBranches(cfg: ForgeConfig, localRepoPath: string, already: string, log: (m: string) => void): Promise<void> {
+  const refs = await git(['for-each-ref', '--format=%(refname:short)', 'refs/remotes/origin'], localRepoPath)
+  if (!refs.ok) return
+  const present = new Set(refs.stdout.split('\n').map((s) => s.trim().replace(/^origin\//, '')).filter(Boolean))
+  const wanted = BASE_BRANCH_CANDIDATES.filter((b) => b !== already && present.has(b))
+  if (!wanted.length) return
+  const pushed: string[] = []
+  for (const b of wanted) {
+    const r = await git(['push', 'forge', `refs/remotes/origin/${b}:refs/heads/${b}`], localRepoPath)
+    if (r.ok) pushed.push(b)
+    else log(`[forge] ${repoNameFor(localRepoPath)}: could not mirror ${b} (forge may be ahead on it): ${r.stderr.trim().split('\n')[0]}`)
+  }
+  if (pushed.length) log(`[forge] ${repoNameFor(localRepoPath)}: base branches mirrored — ${pushed.join(', ')}`)
 }
 
 /** Make the checkout answer to its DESKTOP path on forge as well.
