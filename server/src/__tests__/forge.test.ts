@@ -7,7 +7,8 @@ import { remoteCommandArgv } from '../forge/ssh.js'
 import { remoteSettings } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
 import { memoryDirFor } from '../forge/mounts.js'
-import { parseWorktreeList, decidePrimaryCheckout } from '../forge/repo.js'
+import { parseWorktreeList, decidePrimaryCheckout, githubHttpsUrl, baseRemoteFor } from '../forge/repo.js'
+import { isGithubOriginRepo } from '../forge/config.js'
 import { blockIdFromAgentKey, PendingMoves, type MoveResult } from '../forge/move.js'
 import { parseCardTokens, parseBoard, serializeBoard } from '../kanban/board.js'
 
@@ -15,6 +16,7 @@ const cfg = {
   instanceId: 'i-abc', region: 'eu-west-2', host: 'forge',
   sshKey: '/home/amar/.ssh/forge_ed25519', remoteUser: 'amar',
   idleStopMinutes: 20, codeDir: '/home/amar/proj/code', bareDir: '/srv/git',
+  githubOriginRepos: [],
 }
 
 describe('board frontmatter remote:', () => {
@@ -218,6 +220,35 @@ describe('a prepare never moves the primary checkout off the branch it is on', (
 
   it('clones when there is nothing there', () => {
     expect(decidePrimaryCheckout({ exists: false, branch: '', dirty: false }, 'main').action).toBe('clone')
+  })
+})
+
+describe('origin on the box is per-repo — a mirror is not a base', () => {
+  const gh = { ...cfg, githubOriginRepos: ['astera-app'] }
+
+  it('only the named repos get GitHub as origin', () => {
+    expect(isGithubOriginRepo(gh, 'astera-app')).toBe(true)
+    // Console is trunk-based and its forks never push to GitHub; pointing its
+    // origin there would invent a dependency it does not have.
+    expect(isGithubOriginRepo(gh, 'console')).toBe(false)
+    expect(isGithubOriginRepo(cfg, 'astera-app')).toBe(false)
+  })
+
+  it('bases a card worktree on the MIRROR for a GitHub-origin repo', () => {
+    // The card branch is pushed desktop → mirror, so it does not exist on
+    // GitHub yet; basing on origin/<branch> would fail to resolve.
+    expect(baseRemoteFor(gh, 'astera-app')).toBe('mirror')
+    expect(baseRemoteFor(gh, 'console')).toBe('origin')
+  })
+
+  it('converts the desktop SSH remote to HTTPS, because the box has a token not a key', () => {
+    expect(githubHttpsUrl('git@github.com:yousefamar/astera-app.git')).toBe('https://github.com/yousefamar/astera-app.git')
+    expect(githubHttpsUrl('https://github.com/yousefamar/astera-app')).toBe('https://github.com/yousefamar/astera-app.git')
+  })
+
+  it('refuses a non-GitHub remote rather than pointing origin somewhere surprising', () => {
+    expect(githubHttpsUrl('/srv/git/astera-app.git')).toBeNull()
+    expect(githubHttpsUrl('git@gitlab.com:x/y.git')).toBeNull()
   })
 })
 

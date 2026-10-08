@@ -21,7 +21,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { basename, dirname } from 'node:path'
 import { homedir } from 'node:os'
-import type { ForgeConfig } from './config.js'
+import { isGithubOriginRepo, type ForgeConfig } from './config.js'
 import { forgeExec } from './ssh.js'
 
 const execFileP = promisify(execFile)
@@ -56,6 +56,23 @@ export interface SyncResult {
   ok: boolean
   reason: string
   branch?: string
+}
+
+/** The desktop's GitHub remote, rewritten as HTTPS for the box.
+ *
+ *  The desktop pushes over SSH (`git@github.com:owner/repo.git`) with a key the
+ *  box does not have and must not be given. The box authenticates with the gh
+ *  token instead, which only works over HTTPS — so the URL has to be converted
+ *  rather than copied. Returns null for anything that is not GitHub, so a
+ *  misconfigured repo name fails loudly instead of pointing `origin` somewhere
+ *  surprising. */
+export function githubHttpsUrl(remoteUrl: string): string | null {
+  const u = remoteUrl.trim().replace(/\.git$/, '')
+  const ssh = u.match(/^(?:ssh:\/\/)?git@github\.com[:/](.+)$/)
+  if (ssh) return `https://github.com/${ssh[1]}.git`
+  const https = u.match(/^https:\/\/(?:[^@]*@)?github\.com\/(.+)$/)
+  if (https) return `https://github.com/${https[1]}.git`
+  return null
 }
 
 /** Create the bare mirror + primary checkout on forge and push the desktop's
@@ -93,6 +110,9 @@ export async function ensureRepoOnForge(cfg: ForgeConfig, localRepoPath: string,
 
   const checkout = await ensurePrimaryCheckout(cfg, { bare, code, branch }, log)
   if (!checkout.ok) return { ok: false, reason: checkout.reason, branch }
+
+  const remotes = await ensureBoxRemotes(cfg, localRepoPath, code, bare, log)
+  if (!remotes.ok) return { ok: false, reason: remotes.reason, branch }
 
   await mirrorDesktopPath(cfg, localRepoPath, log)
   log(`[forge] ${name}: ${checkout.reason}`)
@@ -175,6 +195,77 @@ async function ensurePrimaryCheckout(
     return { ok: true, reason: `${branch} on forge has DIVERGED from the mirror and was left at ${head} — fold back before relying on it` }
   }
   return { ok: true, reason: `${why} @ ${run.stdout.trim().split('\n').pop()}` }
+}
+
+/** Which remote on the box holds the branches a worktree is based on.
+ *
+ *  For a GitHub-origin repo, `origin` is GitHub and the CARD branch lives only
+ *  in the local mirror (the desktop pushes it there), so worktree creation has
+ *  to read `mirror`. For everything else there is one remote and it is
+ *  `origin`. */
+export function baseRemoteFor(cfg: ForgeConfig, repoName: string): string {
+  return isGithubOriginRepo(cfg, repoName) ? 'mirror' : 'origin'
+}
+
+/** Point the box's remotes where this repo actually needs them.
+ *
+ *  Default (Console): one remote, `origin` → the local bare mirror, which is
+ *  what `git clone` already set, so this is a no-op.
+ *
+ *  GitHub-origin (Astera): `origin` → GitHub over HTTPS, so every one of
+ *  `land.sh`'s eight references to `origin`/`origin/staging` means what it
+ *  assumes — current GitHub staging, a push that actually reaches GitHub, and a
+ *  mid-gate "did staging move?" check that can really fire. The mirror demotes
+ *  to `mirror`, used only for seeding and for card branches pushed from the
+ *  desktop. `gh auth setup-git` installs gh as git's credential helper so the
+ *  HTTPS push authenticates with the token at the moment it pushes, rather than
+ *  anything having to hold a credential across a 90-minute gate queue. */
+async function ensureBoxRemotes(
+  cfg: ForgeConfig,
+  localRepoPath: string,
+  code: string,
+  bare: string,
+  log: (m: string) => void,
+): Promise<SyncResult> {
+  const name = repoNameFor(localRepoPath)
+  if (!isGithubOriginRepo(cfg, name)) return { ok: true, reason: 'origin is the mirror (default)' }
+
+  const desktopOrigin = await git(['remote', 'get-url', 'origin'], localRepoPath)
+  if (!desktopOrigin.ok) return { ok: false, reason: `${name} is marked githubOriginRepos but the desktop has no origin remote` }
+  const url = githubHttpsUrl(desktopOrigin.stdout)
+  if (!url) {
+    return { ok: false, reason: `${name} is marked githubOriginRepos but its origin is not GitHub: ${desktopOrigin.stdout.trim()}` }
+  }
+
+  // Purging refs/remotes/origin/* when the URL changes is the difference
+  // between a loud failure and a silent one. The refs left over from the mirror
+  // era keep resolving after `set-url`, so a failed GitHub fetch would leave
+  // `origin/staging` pointing at the STALE mirror commit — and land.sh would
+  // gate green against it. Deleted first, a failed fetch leaves origin/staging
+  // MISSING, which every caller notices immediately.
+  const r = await forgeExec(cfg, `set -e
+    cur=$(git -C ${code} remote get-url origin 2>/dev/null || echo none)
+    if [ "$cur" != '${url}' ]; then
+      git -C ${code} for-each-ref --format='%(refname)' refs/remotes/origin \
+        | while read -r ref; do git -C ${code} update-ref -d "$ref"; done
+      git -C ${code} remote set-url origin '${url}'
+    fi
+    git -C ${code} remote get-url mirror >/dev/null 2>&1 \
+      && git -C ${code} remote set-url mirror ${bare} \
+      || git -C ${code} remote add mirror ${bare}
+    gh auth setup-git >/dev/null 2>&1 || echo "GH-SETUP-FAILED"
+    git -C ${code} fetch --quiet mirror || true
+    git -C ${code} fetch --quiet origin 2>&1 || echo "GITHUB-FETCH-FAILED"
+    git -C ${code} remote get-url origin`, { timeoutMs: 300_000 })
+  if (r.code !== 0) return { ok: false, reason: `could not point ${name}'s origin at GitHub on forge: ${r.stderr.trim()}` }
+  if (r.stdout.includes('GH-SETUP-FAILED')) {
+    return { ok: false, reason: `${name}: gh auth setup-git failed on forge, so an HTTPS push to GitHub cannot authenticate — install a token with scripts/forge/install-gh-token.sh` }
+  }
+  if (r.stdout.includes('GITHUB-FETCH-FAILED')) {
+    return { ok: false, reason: `${name}: forge could not fetch from GitHub, so a fork would gate against a stale base — refusing rather than landing green on the wrong commit` }
+  }
+  log(`[forge] ${name}: origin → GitHub (${url}), mirror → ${bare}`)
+  return { ok: true, reason: `origin is GitHub (${url})` }
 }
 
 /** The integration branches a fork might work FROM, beyond this repo's own
@@ -290,13 +381,16 @@ export async function ensureWorktreeOnForge(
 
   // -B resets forge's branch to what the desktop just pushed. Safe in this
   // direction only: the desktop is the source of truth until the fork lands.
+  // The card branch is pushed from the desktop into the bare mirror, so for a
+  // GitHub-origin repo it is `mirror/<branch>` here, not `origin/<branch>`.
+  const base = baseRemoteFor(cfg, name)
   const add = await forgeExec(cfg, `set -e
-    git -C ${q(code)} fetch --quiet origin
+    git -C ${q(code)} fetch --quiet ${q(base)}
     if [ -d ${q(wt)}/.git ] || [ -f ${q(wt)}/.git ]; then
-      git -C ${q(wt)} checkout --quiet -B ${q(br)} ${q(`origin/${br}`)}
+      git -C ${q(wt)} checkout --quiet -B ${q(br)} ${q(`${base}/${br}`)}
     else
       mkdir -p ${q(dirname(wt))}
-      git -C ${q(code)} worktree add --quiet -B ${q(br)} ${q(wt)} ${q(`origin/${br}`)}
+      git -C ${q(code)} worktree add --quiet -B ${q(br)} ${q(wt)} ${q(`${base}/${br}`)}
     fi
     git -C ${q(wt)} rev-parse --short HEAD`, { timeoutMs: 180_000 })
   if (add.code !== 0) return { ok: false, reason: `forge worktree ${wt} failed: ${add.stderr.trim()}`, branch: br }
@@ -327,10 +421,13 @@ export async function foldBackFromForge(cfg: ForgeConfig, localRepoPath: string,
   const code = `${cfg.codeDir}/${name}`
   const branch = await localMainBranch(localRepoPath)
 
-  // Push forge's primary checkout into the bare mirror the desktop fetches.
+  // Push forge's primary checkout into the bare mirror the desktop fetches —
+  // which for a GitHub-origin repo is `mirror`, NOT `origin`. Getting this
+  // wrong would push a fold-back straight to GitHub instead of home.
+  const home = baseRemoteFor(cfg, name)
   const up = await forgeExec(cfg, `set -e
     git -C ${code} checkout --quiet ${branch}
-    git -C ${code} push --quiet origin ${branch}:refs/heads/${branch}
+    git -C ${code} push --quiet ${home} ${branch}:refs/heads/${branch}
     git -C ${code} rev-parse HEAD`)
   if (up.code !== 0) return { ok: false, reason: `forge could not publish ${branch}: ${up.stderr.trim()}`, branch }
 

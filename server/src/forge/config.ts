@@ -38,6 +38,14 @@ export interface ForgeConfig {
   codeDir: string
   /** Bare push mirrors (nobody works in these), on the box's own disk. */
   bareDir: string
+  /** Repos whose forks talk to GitHub, by checkout basename.
+   *
+   *  For these the box's `origin` must be GITHUB, not the local bare mirror.
+   *  It is a policy, not something detectable: Console and Astera both have a
+   *  GitHub `origin` on the desktop, but Console is trunk-based and its forks
+   *  never push there, while every Astera fork pushes a card branch and merges
+   *  a PR on GitHub. See `isGithubOriginRepo`. */
+  githubOriginRepos: string[]
 }
 
 export const FORGE_CONFIG_FILE = process.env.FORGE_CRED_FILE || join(homedir(), '.config', 'console', 'forge.json')
@@ -67,6 +75,7 @@ export function forgeConfig(opts: { file?: string; ttlMs?: number } = {}): Forge
           idleStopMinutes: raw.idleStopMinutes ?? 20,
           codeDir: raw.codeDir || '/home/amar/proj/code',
           bareDir: raw.bareDir || '/srv/git',
+          githubOriginRepos: Array.isArray(raw.githubOriginRepos) ? raw.githubOriginRepos : [],
         }
       }
     }
@@ -79,6 +88,29 @@ export function forgeConfig(opts: { file?: string; ttlMs?: number } = {}): Forge
 
 export function forgeAvailable(opts: { file?: string } = {}): boolean {
   return forgeConfig(opts) !== null
+}
+
+/** Does this repo's box checkout need GITHUB as `origin`?
+ *
+ *  Why this exists, and why it is not a global flip. forge seeds repos by push
+ *  from the desktop into a local bare mirror, and the box's `origin` pointed at
+ *  that mirror — correct while the premise held that "forge needs no GitHub
+ *  credentials". For a repo whose forks land their own PRs it is badly wrong,
+ *  and wrong SILENTLY: Astera's `land.sh` merges `origin/staging` and takes its
+ *  gate base from it, so against a static mirror it gates a green build on a
+ *  stale base, and its "did staging move under the gate?" re-check can never
+ *  fire because the mirror never moves. Measured 8 Oct 2026: the mirror's
+ *  staging was 25 commits and 9 merged PRs (~6h47m) behind GitHub's on a single
+ *  working day, because the mirror only advances when a prepare pushes the
+ *  DESKTOP's remote-tracking refs — its freshness is bounded by the desktop's
+ *  last fetch, never by GitHub.
+ *
+ *  Console is the opposite shape and must keep the mirror: it is trunk-based,
+ *  commits to `main` locally, does not always push, and its forks never talk to
+ *  GitHub — so pointing its `origin` at GitHub would invent a dependency it
+ *  does not have. Hence per-repo config rather than a default either way. */
+export function isGithubOriginRepo(cfg: Pick<ForgeConfig, 'githubOriginRepos'>, repoName: string): boolean {
+  return cfg.githubOriginRepos.includes(repoName)
 }
 
 /** Clear the config cache (tests, and after a re-provision rewrites the file). */
