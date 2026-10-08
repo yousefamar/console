@@ -147,6 +147,14 @@ export UV_CACHE_DIR=/srv/cache/uv
 # Daemon off for the same reason as the desktop (a daemon held 3.6 GB there);
 # the heap can be bigger here because the box has 64 GiB and no browser.
 export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx8192m"
+# Anything a fork creates on the box is private by default. Ubuntu's 022 gives
+# 0644, and forks legitimately write files holding secrets: astera's
+# worktree-db.sh seeds each card worktree's own .env from the shared one, and
+# that landed at 0664 — credentials in a checkout, readable by the box's other
+# login. The home sweep above fixes what provisioning left behind; this stops
+# new files arriving the same way, which is the same instance-vs-class choice.
+# Agent shells get it because remoteCommandArgv sources this file.
+umask 077
 EOF
 
 say "mode parity with the desktop — no group- or world-writable paths in the home"
