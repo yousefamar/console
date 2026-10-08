@@ -91,21 +91,90 @@ export async function ensureRepoOnForge(cfg: ForgeConfig, localRepoPath: string,
 
   await pushBaseBranches(cfg, localRepoPath, branch, log)
 
-  const checkout = await forgeExec(cfg, `set -e
-    if [ ! -d ${code}/.git ]; then
-      git clone --quiet ${bare} ${code}
-      git -C ${code} checkout --quiet ${branch} 2>/dev/null || git -C ${code} checkout --quiet -b ${branch}
-    else
-      git -C ${code} fetch --quiet origin
-      git -C ${code} checkout --quiet ${branch}
-      git -C ${code} merge --quiet --ff-only origin/${branch}
-    fi
-    git -C ${code} rev-parse --short HEAD`)
-  if (checkout.code !== 0) return { ok: false, reason: `forge checkout of ${code} failed: ${checkout.stderr.trim()}`, branch }
+  const checkout = await ensurePrimaryCheckout(cfg, { bare, code, branch }, log)
+  if (!checkout.ok) return { ok: false, reason: checkout.reason, branch }
 
   await mirrorDesktopPath(cfg, localRepoPath, log)
-  log(`[forge] ${name}: synced ${branch} → ${code} @ ${checkout.stdout.trim()}`)
-  return { ok: true, reason: `synced ${branch} @ ${checkout.stdout.trim()}`, branch }
+  log(`[forge] ${name}: ${checkout.reason}`)
+  return { ok: true, reason: checkout.reason, branch }
+}
+
+/** What a prepare should do to forge's PRIMARY checkout, given what is there.
+ *
+ *  It must not move HEAD. A prepare is idempotent housekeeping that runs before
+ *  every remote dispatch, and it used to `checkout <desktop's default branch>`
+ *  unconditionally — so for any repo whose work does not happen on that branch
+ *  it would yank the checkout out from under whatever was using it. Astera is
+ *  exactly that shape: the desktop's astera-app sits on `main` because main is
+ *  production, while every fork bases on `staging`. A prepare would have put
+ *  /opt/code/astera-app back on main underneath a running fork, which keeps
+ *  building happily and lands against the wrong base — a quieter and worse
+ *  failure than the missing-branch one it replaced (raised by Astera general,
+ *  8 Oct 2026, before it could bite).
+ *
+ *  So: clone when absent, fast-forward only when the checkout is already on that
+ *  branch AND clean, and otherwise leave it entirely alone. Fetching refs is
+ *  always safe and is what worktree creation actually depends on. */
+export type PrimaryCheckoutAction = 'clone' | 'fast-forward' | 'leave'
+
+export function decidePrimaryCheckout(
+  state: { exists: boolean; branch: string; dirty: boolean },
+  targetBranch: string,
+): { action: PrimaryCheckoutAction; why: string } {
+  if (!state.exists) return { action: 'clone', why: `cloned on ${targetBranch}` }
+  if (state.branch !== targetBranch) {
+    return { action: 'leave', why: `left on ${state.branch} (refs fetched; a prepare never moves HEAD)` }
+  }
+  if (state.dirty) return { action: 'leave', why: `left on ${state.branch} with uncommitted changes (refs fetched)` }
+  return { action: 'fast-forward', why: `fast-forwarded ${targetBranch}` }
+}
+
+async function ensurePrimaryCheckout(
+  cfg: ForgeConfig,
+  paths: { bare: string; code: string; branch: string },
+  log: (m: string) => void,
+): Promise<{ ok: boolean; reason: string }> {
+  const { bare, code, branch } = paths
+  const probe = await forgeExec(cfg, `
+    if [ -d ${code}/.git ]; then
+      git -C ${code} fetch --quiet origin || true
+      echo "exists=1"
+      echo "branch=$(git -C ${code} rev-parse --abbrev-ref HEAD 2>/dev/null)"
+      echo "dirty=$(git -C ${code} status --porcelain 2>/dev/null | head -1 | wc -l)"
+    else
+      echo "exists=0"
+    fi`, { timeoutMs: 180_000 })
+  if (probe.code !== 0) return { ok: false, reason: `could not inspect ${code} on forge: ${probe.stderr.trim()}` }
+
+  const kv = new Map(probe.stdout.split('\n').map((l) => l.trim().split('=') as [string, string]))
+  const { action, why } = decidePrimaryCheckout({
+    exists: kv.get('exists') === '1',
+    branch: kv.get('branch') ?? '',
+    dirty: kv.get('dirty') === '1',
+  }, branch)
+
+  if (action === 'leave') {
+    log(`[forge] ${code}: ${why}`)
+    return { ok: true, reason: why }
+  }
+
+  const script = action === 'clone'
+    ? `set -e
+       git clone --quiet ${bare} ${code}
+       git -C ${code} checkout --quiet ${branch} 2>/dev/null || git -C ${code} checkout --quiet -b ${branch}
+       git -C ${code} rev-parse --short HEAD`
+    // Not fatal if it refuses: a divergence here means a fold-back is pending,
+    // which is a thing to say rather than a reason to fail every dispatch. The
+    // worktrees cards actually build in do not depend on this HEAD.
+    : `git -C ${code} merge --quiet --ff-only origin/${branch} 2>&1 || echo "NOT-FF"
+       git -C ${code} rev-parse --short HEAD`
+  const run = await forgeExec(cfg, script, { timeoutMs: 300_000 })
+  if (run.code !== 0) return { ok: false, reason: `forge checkout of ${code} failed: ${run.stderr.trim()}` }
+  if (run.stdout.includes('NOT-FF')) {
+    const head = run.stdout.trim().split('\n').pop() ?? ''
+    return { ok: true, reason: `${branch} on forge has DIVERGED from the mirror and was left at ${head} — fold back before relying on it` }
+  }
+  return { ok: true, reason: `${why} @ ${run.stdout.trim().split('\n').pop()}` }
 }
 
 /** The integration branches a fork might work FROM, beyond this repo's own

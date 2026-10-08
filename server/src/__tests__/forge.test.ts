@@ -7,7 +7,7 @@ import { remoteCommandArgv } from '../forge/ssh.js'
 import { remoteSettings } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
 import { memoryDirFor } from '../forge/mounts.js'
-import { parseWorktreeList } from '../forge/repo.js'
+import { parseWorktreeList, decidePrimaryCheckout } from '../forge/repo.js'
 import { blockIdFromAgentKey } from '../forge/move.js'
 import { parseCardTokens, parseBoard, serializeBoard } from '../kanban/board.js'
 
@@ -195,5 +195,28 @@ describe('forge move — picking what to carry across', () => {
     expect(blockIdFromAgentKey('console-general-pink-bat-fork')).toBe('pink-bat')
     expect(blockIdFromAgentKey('astera-general')).toBeNull()
     expect(blockIdFromAgentKey(undefined)).toBeNull()
+  })
+})
+
+describe('a prepare never moves the primary checkout off the branch it is on', () => {
+  it('leaves a checkout that is on a DIFFERENT branch alone', () => {
+    // Astera's shape: the desktop's astera-app sits on main because main is
+    // production, while forks base on staging. The old code checked main out
+    // underneath them, so a running fork kept building against the wrong base.
+    const d = decidePrimaryCheckout({ exists: true, branch: 'staging', dirty: false }, 'main')
+    expect(d.action).toBe('leave')
+    expect(d.why).toMatch(/staging/)
+  })
+
+  it('leaves a DIRTY checkout alone even on the right branch', () => {
+    expect(decidePrimaryCheckout({ exists: true, branch: 'main', dirty: true }, 'main').action).toBe('leave')
+  })
+
+  it('fast-forwards only when it is already on that branch and clean', () => {
+    expect(decidePrimaryCheckout({ exists: true, branch: 'main', dirty: false }, 'main').action).toBe('fast-forward')
+  })
+
+  it('clones when there is nothing there', () => {
+    expect(decidePrimaryCheckout({ exists: false, branch: '', dirty: false }, 'main').action).toBe('clone')
   })
 })
