@@ -21,13 +21,23 @@
 // astera $0.237 → $0.155 per request (−35%), console $0.217 → $0.130 (−40%) —
 // better than the −15% modelled. But `~/proj/code/console/android` went $0.292
 // → $0.943 (+223%), because a capped window can be exhausted by the session's
-// own INSTRUCTIONS: that cwd loads 114k tokens of CLAUDE.md chain + auto-memory
-// (90k of it the console repo's own CLAUDE.md) on top of ~29k of system prompt,
-// and the CLI compacts these sessions at ~230k. Post-compaction the bundle is
-// re-injected, two turns refill the window, and it compacts again — three forks
-// did 27 compactions in 70 min for $62, 99% of it cold cache writes, zero
-// progress. Hence the thrash rung below: the cap is a cost optimisation, so a
-// session that thrashes under it must lose it rather than keep paying.
+// own INSTRUCTIONS before it does any work:
+//
+//   - The EFFECTIVE ceiling is far below the number set here. With 400k, 29
+//     observed compactions fired at 168–244k of TOTAL request context (~0.55x),
+//     while sessions with no env compacted at 938k–1044k (~1.0x of the CLI's
+//     1M). The CLI's exact rule is not pinned down — budget ~0.55x and verify
+//     before trusting a cap to leave room.
+//   - Fixed overhead comes off that first: console/android loads 114k tokens of
+//     CLAUDE.md chain + auto-memory (90k of it the console repo's own CLAUDE.md)
+//     plus ~29k of system prompt, and the bundle is RE-ATTACHED after every
+//     compaction. So each cycle was 5–9k of summary + 114k of instructions +
+//     ~75k for one turn of work = 223k, and it compacted again.
+//
+// Three forks: 27 compactions in 70 min, $62, 195k written cold per cycle
+// against 28k read, no progress. Hence the thrash rung below — the cap is a
+// cost optimisation, so a session that thrashes under it must lose it rather
+// than keep paying.
 
 import type { SpawnKind } from './effort.js'
 
