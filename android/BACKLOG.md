@@ -12,12 +12,10 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
 
 - Money: editing parity — the read-only pane shipped (^quick-gull), the
   per-transaction override landed (^warm-wren), the manual-account balance
-  ledger landed (^loud-frog), Budgets landed (^busy-vole) and Categories +
-  rules CRUD landed (^busy-goat); still SPA-only: Scenarios
-  (`/finance/scenarios`, comparison chart), account CRUD itself (create /
-  rename / liquidity / archive — `POST/PATCH/DELETE /finance/accounts`; the
-  phone logs readings on the accounts the desktop defined), monthly spend
-  chart (`/finance/monthly`), shared-tab panel. Plan: account CRUD next;
+  ledger landed (^loud-frog), Budgets landed (^busy-vole), Categories + rules
+  CRUD landed (^busy-goat) and account CRUD landed (^brisk-deer); still
+  SPA-only: Scenarios (`/finance/scenarios`, comparison chart), monthly spend
+  chart (`/finance/monthly`), shared-tab panel. Plan: monthly chart next;
   scenarios last.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
@@ -87,6 +85,61 @@ view-mode hub-sync (Room meta is fine on one device).
   `InboxLogicTest` (order preserved, unnameable id dropped, duplicates
   collapsed, missing/malformed map and unlisted ids resolve to nothing, labels
   carried onto live AND snoozed rows, a label-less thread gets an empty list).
+- **Money accounts are created, renamed, re-classified and deleted on the
+  phone** (^brisk-deer; nightly parity sweep 2026-10-08, the named next slice of
+  Open "Money: editing parity" — SPA `NetWorthView.tsx`'s "Add account" +
+  account editor). Root cause of the gap: the phone could LOG a balance on an
+  account the desktop had defined (^loud-frog) but could not define one, so a
+  new ISA or a rename still needed the laptop. Now: tapping an account's name in
+  the Net worth list opens an editor sheet (name, emoji + a picker, liquidity
+  chips with what each means, held-externally, growth % a year, notes, Archived)
+  and an "Add account" row sits under the groups; Delete is behind a confirm
+  spelling out that the balance history goes and that streams paid from the
+  account keep running unlinked. The chevron still owns the ledger — tap the
+  name to edit, the chevron to expand, exactly the SPA's split — and the row
+  subtitle now carries the growth assumption. New outbox type `money:account`
+  (optimistic Room write → POST `/finance/accounts` or DELETE
+  `/finance/accounts/:id`, then the accounts list + projection + balances come
+  back), pure `data/money/MoneyAccounts.kt` on the `MoneyCategories` /
+  `MoneyLedger` precedent, `MoneyAccountsCrudTest` (24 cases) +
+  `MoneyRepositoryAccountTest` (19 cases, hub scripted BY PATH). Incidental fix
+  on the way: `Account` parsed neither `color`, `monzoAccountId` nor
+  `growthPctYoy` and `accountJson` wrote none of them, so the offline meta cache
+  silently dropped all three on every hydrate — a Monzo account restored from
+  cache had no link id and an ISA no growth rate until the next reconcile.
+  Four hub behaviours this had to respect, each one a silent-data-loss bug if
+  missed:
+  - The hub's `upsertAccount` honours a client-supplied id, so the phone mints
+    `acc_<8hex>` itself: the record's identity is final from the optimistic
+    write, there is no temp-id swap, and deleting a never-synced row cancels its
+    queued create (the DELETE still goes — a 404 for an id the hub never had
+    counts as done, which is also why no network probe is needed to tell the
+    cases apart offline).
+  - The upsert is `Object.assign(existing, input)`, so an EDIT sends the
+    now-empty optionals (`emoji`, `color`, `monzoAccountId`, `notes`,
+    `growthPctYoy`) as explicit `null`s and both booleans every time —
+    `MoneyJson.accountJson(…, nullsForCleared = true)`. Omitting them keeps the
+    old value, which is exactly the SPA's bug (its `undefined`s drop out of the
+    JSON), so clearing a growth rate there silently does nothing. Not ported.
+  - That same `Object.assign` means a `ledger` in a write body REPLACES the
+    server's balance history with whatever the phone had cached, so no write
+    body ever carries one (`includeLedger = false`); the readings stay owned by
+    `money:balance`. The local cache encoder and the outbox's `before` copy keep
+    the ledger, so a refused rename heals without losing readings.
+  - The hub's CREATE branch builds the record field by field and **omits**
+    `growthPctYoy` and `archived` — a first POST drops them. A create carrying
+    either now fires one follow-up PATCH (which goes through
+    `{...existing, ...patch}` and does apply them). Worth fixing hub-side one
+    day; the phone compensates for now.
+  Also: `type` and `monzoAccountId` are never rewritten from the phone (a
+  converted Monzo account would strand its mirror) and deleting a Monzo-linked
+  account is refused with "removed in the web app" — narrower than the SPA,
+  which lets you edit them freely. Reconcile overlays follow the
+  ^loud-frog/^busy-vole rule: a queued edit is laid back over the hub's list
+  (keeping the HUB's ledger), a queued delete stays gone, a queued create shows
+  before the hub has it, and the id whose write just landed is excluded so the
+  hub's now-authoritative copy wins — unless a LATER edit to it is still
+  pending.
 
 ## Shipped
 

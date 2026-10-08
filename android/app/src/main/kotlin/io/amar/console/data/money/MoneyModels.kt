@@ -87,11 +87,20 @@ data class Account(
     val liquidity: String,
     val currency: String = "GBP",
     val emoji: String? = null,
+    val color: String? = null,
+    /** Set when [type] is `monzo` — the Monzo account this mirrors. */
+    val monzoAccountId: String? = null,
     /** Held by someone else on his behalf — in net worth, not drawable. */
     val isExternal: Boolean = false,
     val sort: Int? = null,
     val notes: String? = null,
     val archived: Boolean = false,
+    /**
+     * Annual % growth for projections, compounded monthly. UNSET IS MEANINGFUL:
+     * liquid accounts then grow 0% and investment ones fall back to the global
+     * `investmentGrowthPct` setting — so clearing it must send `null`, never 0.
+     */
+    val growthPctYoy: Double? = null,
     /** Manual balance entries, oldest first (the hub sorts by date on write). */
     val ledger: List<BalanceEntry> = emptyList(),
 ) {
@@ -401,10 +410,13 @@ object MoneyJson {
             liquidity = o["liquidity"].str() ?: "liquid",
             currency = o["currency"].str() ?: "GBP",
             emoji = o["emoji"].str()?.takeIf { it.isNotBlank() },
+            color = o["color"].str()?.takeIf { it.isNotBlank() },
+            monzoAccountId = o["monzoAccountId"].str()?.takeIf { it.isNotBlank() },
             isExternal = o["isExternal"].bool(),
             sort = o["sort"].longOr(Long.MIN_VALUE).takeIf { it != Long.MIN_VALUE }?.toInt(),
             notes = o["notes"].str()?.takeIf { it.isNotBlank() },
             archived = o["archived"].bool(),
+            growthPctYoy = o["growthPctYoy"].doubleOrNullSafe(),
             ledger = parseLedger(o["ledger"]),
         )
     }
@@ -571,18 +583,40 @@ object MoneyJson {
         JsonArray(accounts.map(::accountJson)),
     )
 
-    fun accountJson(a: Account): JsonObject = kotlinx.serialization.json.buildJsonObject {
+    /**
+     * The hub's own wire shape — also the POST body of an upsert (see [MoneyAccounts.accountBody]).
+     *
+     * [nullsForCleared] is for an EDIT: the hub's upsert is `Object.assign(existing, input)`, so an
+     * omitted key keeps the old value and a cleared emoji / growth rate would silently survive (the
+     * SPA has exactly that bug — its `undefined`s drop out of the JSON).
+     *
+     * [includeLedger] must be false for a write body. Same `Object.assign`: any ledger we send
+     * REPLACES the server's balance history with whatever this phone happens to have cached, so an
+     * edit from a stale mirror would destroy readings it never saw. Only the local cache keeps it.
+     */
+    fun accountJson(
+        a: Account,
+        nullsForCleared: Boolean = false,
+        includeLedger: Boolean = true,
+    ): JsonObject = kotlinx.serialization.json.buildJsonObject {
+        fun opt(key: String, v: JsonElement?) {
+            if (v != null) put(key, v) else if (nullsForCleared) put(key, JsonNull)
+        }
         put("id", JsonPrimitive(a.id))
         put("name", JsonPrimitive(a.name))
         put("type", JsonPrimitive(a.type))
         put("liquidity", JsonPrimitive(a.liquidity))
         put("currency", JsonPrimitive(a.currency))
-        a.emoji?.let { put("emoji", JsonPrimitive(it)) }
-        if (a.isExternal) put("isExternal", JsonPrimitive(true))
+        opt("emoji", a.emoji?.let { JsonPrimitive(it) })
+        opt("color", a.color?.let { JsonPrimitive(it) })
+        opt("monzoAccountId", a.monzoAccountId?.let { JsonPrimitive(it) })
+        opt("notes", a.notes?.let { JsonPrimitive(it) })
+        opt("growthPctYoy", a.growthPctYoy?.let { JsonPrimitive(it) })
+        // Booleans are always sent: unticking "held externally" has to reach the hub as `false`.
+        put("isExternal", JsonPrimitive(a.isExternal))
+        put("archived", JsonPrimitive(a.archived))
         a.sort?.let { put("sort", JsonPrimitive(it)) }
-        a.notes?.let { put("notes", JsonPrimitive(it)) }
-        if (a.archived) put("archived", JsonPrimitive(true))
-        put("ledger", JsonArray(a.ledger.map(::balanceEntryJson)))
+        if (includeLedger) put("ledger", JsonArray(a.ledger.map(::balanceEntryJson)))
     }
 
     fun balanceEntryJson(e: BalanceEntry): JsonObject = kotlinx.serialization.json.buildJsonObject {
