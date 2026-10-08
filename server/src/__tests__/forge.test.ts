@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { boardRemote, resolvePlacement, forgeConfig } from '../forge/config.js'
 import { decidePlacement } from '../forge/index.js'
 import { remoteCommandArgv } from '../forge/ssh.js'
-import { remoteSettings } from '../forge/agent-env.js'
+import { remoteSettings, credentialRsyncArgv } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
 import { memoryDirFor } from '../forge/mounts.js'
 import { parseWorktreeList, decidePrimaryCheckout, githubHttpsUrl, baseRemoteFor } from '../forge/repo.js'
@@ -267,6 +267,30 @@ describe('appEnv — the path the app expects, with the bytes outside the tree',
     // linking .env at a guess is worse than leaving it absent.
     expect(forgeConfig({ file: f })!.appEnv).toEqual({})
     rmSync(f, { force: true })
+  })
+})
+
+describe('the credential mirror must keep replacing files, not writing into them', () => {
+  const m = { pattern: '*.env', remoteDir: '/home/amar/.config/astera' }
+
+  it('never uses --inplace, because the box\'s copy is deliberately read-only', () => {
+    const argv = credentialRsyncArgv(m, '/home/amar/.config/astera', 'forge')
+    // appEnv leaves the box's copy 0400 so nothing can append through the
+    // symlinks pointing at it. rsync's default temp-file-and-rename replaces a
+    // 0400 destination fine; --inplace writes through the inode and would be
+    // REFUSED — so the owner's edits would stop arriving while every mode and
+    // log line still looked right. Verified on the box before locking it here.
+    expect(argv).not.toContain('--inplace')
+    expect(argv).not.toContain('--append')
+    expect(argv).not.toContain('--append-verify')
+  })
+
+  it('carries only the pattern, deletes strays, and pins 0700/0600', () => {
+    const argv = credentialRsyncArgv(m, '/home/amar/.config/astera', 'forge')
+    expect(argv).toContain('--chmod=D700,F600')
+    expect(argv).toContain('--delete')
+    expect(argv.join(' ')).toContain('--include *.env --exclude *')
+    expect(argv.at(-1)).toBe('forge:/home/amar/.config/astera/')
   })
 })
 

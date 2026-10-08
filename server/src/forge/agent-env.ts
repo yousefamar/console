@@ -166,18 +166,37 @@ const CREDENTIAL_MIRRORS = [
   { localDir: join('.config', 'astera'), pattern: '*.env', remoteDir: '/home/amar/.config/astera' },
 ] as const
 
+/** The credential mirror's rsync argv.
+ *
+ *  Extracted only so the `--inplace` invariant below is testable.
+ *
+ *  **It must never gain `--inplace`.** `appEnv` leaves the box's copy of a
+ *  mirrored file READ-ONLY so nothing can append through the symlinks that
+ *  point at it, and rsync's default temp-file-and-rename happily replaces a
+ *  0400 destination (verified end to end on the box, 8 Oct 2026: a 0400 file
+ *  took an edited desktop copy's bytes and came back 0600). `--inplace` writes
+ *  through the existing inode instead, which a 0400 file refuses — so the
+ *  owner's edits would stop reaching the box while every mode and log line
+ *  still looked correct. Astera general asked for this to be observed rather
+ *  than inferred, for exactly that reason: "if a future edit of mine silently
+ *  never lands, the whole arrangement looks fine and is wrong." */
+export function credentialRsyncArgv(mirror: { pattern: string; remoteDir: string }, local: string, host: string): string[] {
+  return [
+    '-a', '--chmod=D700,F600', '--delete',
+    '--include', mirror.pattern, '--exclude', '*',
+    '-e', 'ssh -o BatchMode=yes',
+    `${local}/`, `${host}:${mirror.remoteDir}/`,
+  ]
+}
+
 export async function syncProjectCredentials(cfg: ForgeConfig, log: (m: string) => void = () => {}): Promise<AgentEnvResult> {
   for (const m of CREDENTIAL_MIRRORS) {
     const local = join(homedir(), m.localDir)
     if (!existsSync(local)) continue
     const prep = await forgeExec(cfg, `mkdir -p ${m.remoteDir} && chmod 700 ${m.remoteDir}`)
     if (prep.code !== 0) return { ok: false, reason: `could not create ${m.remoteDir} on forge: ${prep.stderr.trim()}` }
-    const ok = await execFileP('rsync', [
-      '-a', '--chmod=D700,F600', '--delete',
-      '--include', m.pattern, '--exclude', '*',
-      '-e', 'ssh -o BatchMode=yes',
-      `${local}/`, `${cfg.host}:${m.remoteDir}/`,
-    ], { env: sshEnvPath(), timeout: 600_000, maxBuffer: 8 * 1024 * 1024 }).then(() => true).catch(() => false)
+    const ok = await execFileP('rsync', credentialRsyncArgv(m, local, cfg.host),
+      { env: sshEnvPath(), timeout: 600_000, maxBuffer: 8 * 1024 * 1024 }).then(() => true).catch(() => false)
     if (!ok) return { ok: false, reason: `credentials for ${m.localDir} did not reach forge — a fork needing them will fail at its first database step` }
     log(`[forge] credentials mirrored: ${m.localDir}/${m.pattern} → ${m.remoteDir} (0700/0600)`)
   }
