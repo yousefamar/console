@@ -78,6 +78,7 @@ import io.amar.console.data.money.Account
 import io.amar.console.data.money.BalanceEntry
 import io.amar.console.data.money.LedgerEdit
 import io.amar.console.data.money.Budget
+import io.amar.console.data.money.MoneyAccounts
 import io.amar.console.data.money.MoneyBudgets
 import io.amar.console.data.money.MoneyCategories
 import io.amar.console.data.money.MoneyCategory
@@ -137,6 +138,9 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
     var taxonomySheet by remember { mutableStateOf<TaxonomySheet?>(null) }
     var confirmDeleteCategory by remember { mutableStateOf<MoneyCategory?>(null) }
     var confirmDeleteRule by remember { mutableStateOf<MoneyRule?>(null) }
+    // Account editor: keyed by id, so a reconcile under an open sheet re-renders it.
+    var accountSheet by remember { mutableStateOf<AccountSheet?>(null) }
+    var confirmDeleteAccount by remember { mutableStateOf<Account?>(null) }
 
     // Hydrate the cached blobs synchronously-ish, then refresh from the hub.
     LaunchedEffect(Unit) {
@@ -244,6 +248,8 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                     onToggle = { id -> openLedger = if (openLedger == id) null else id },
                     onLog = { acc -> balanceTarget = BalanceTarget(acc.id, null) },
                     onEditEntry = { acc, e -> balanceTarget = BalanceTarget(acc.id, e.id) },
+                    onEditAccount = { acc -> accountSheet = AccountSheet.Edit(acc.id) },
+                    onAddAccount = { accountSheet = AccountSheet.New },
                 )
             }
             item(key = "tx-head") {
@@ -364,6 +370,55 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                 }
             }
         }
+    }
+
+    accountSheet?.let { sheet ->
+        ModalBottomSheet(onDismissRequest = { accountSheet = null }) {
+            // The screen's scope, not the sheet's: the write must outlive the dismiss.
+            when (sheet) {
+                AccountSheet.New -> AccountEditorSheet(
+                    account = null,
+                    onSave = { a -> scope.launch { runCatching { repo.upsertAccount(a) } }; accountSheet = null },
+                    onDelete = null,
+                    onCancel = { accountSheet = null },
+                )
+                is AccountSheet.Edit -> {
+                    val acc = state.accountFor(sheet)
+                    if (acc == null) {
+                        Hint("That account is gone.")
+                        LaunchedEffect(sheet) { accountSheet = null }
+                    } else AccountEditorSheet(
+                        account = acc,
+                        onSave = { edited -> scope.launch { runCatching { repo.upsertAccount(edited) } }; accountSheet = null },
+                        onDelete = if (MoneyAccounts.canDelete(acc)) ({ confirmDeleteAccount = acc; accountSheet = null }) else null,
+                        onCancel = { accountSheet = null },
+                    )
+                }
+            }
+        }
+    }
+
+    confirmDeleteAccount?.let { acc ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteAccount = null },
+            title = { Text("Delete ${acc.name}?") },
+            text = {
+                Text(
+                    buildString {
+                        append("Its balance history is lost.")
+                        if (acc.ledger.isNotEmpty()) append(" ${acc.ledger.size} reading(s) go with it.")
+                        append(" Any stream paid from it keeps running, unlinked from an account.")
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { runCatching { repo.deleteAccount(acc) } }
+                    confirmDeleteAccount = null
+                }) { Text("Delete", color = RED) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteAccount = null }) { Text("Cancel") } },
+        )
     }
 
     confirmDeleteCategory?.let { c ->
@@ -687,16 +742,11 @@ private val BalanceTargetSaver = androidx.compose.runtime.saveable.listSaver<Bal
     restore = { l -> l.getOrNull(0)?.let { BalanceTarget(it, l.getOrNull(1)?.takeIf { e -> e.isNotEmpty() }) } },
 )
 
-private val LIQUIDITY_SECTIONS = listOf(
-    "liquid" to "Liquid",
-    "investment" to "Investments",
-    "illiquid" to "Illiquid / external",
-)
-
 /**
  * The accounts list under the chart. Only Monzo auto-syncs, so a manual
  * account expands to its balance ledger — the dated readings that ARE its
- * balance — with "Log balance" to add today's.
+ * balance — with "Log balance" to add today's. Tapping the name edits the
+ * account itself; the chevron is the ledger (SPA NetWorthView, same split).
  */
 @Composable
 private fun AccountsBlock(
@@ -705,15 +755,14 @@ private fun AccountsBlock(
     onToggle: (String) -> Unit,
     onLog: (Account) -> Unit,
     onEditEntry: (Account, BalanceEntry) -> Unit,
+    onEditAccount: (Account) -> Unit,
+    onAddAccount: () -> Unit,
 ) {
-    val groups = remember(state.accounts) {
-        LIQUIDITY_SECTIONS.map { (key, label) -> label to state.accountsByLiquidity(key) }.filter { it.second.isNotEmpty() }
-    }
-    if (groups.isEmpty()) {
-        Hint(if (state.loading) "Loading accounts…" else "No accounts yet — add one in the web app's Money tab.")
-        return
-    }
+    val groups = remember(state.accounts) { MoneyAccounts.grouped(state.accounts) }
     Column(Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        if (groups.isEmpty()) {
+            Hint(if (state.loading) "Loading accounts…" else "No accounts yet.")
+        }
         for ((label, rows) in groups) {
             Text(
                 label.uppercase(),
@@ -727,22 +776,31 @@ private fun AccountsBlock(
                     balance = state.balanceOf(acc),
                     expanded = openLedger == acc.id,
                     onToggle = { onToggle(acc.id) },
+                    onEdit = { onEditAccount(acc) },
                 )
                 if (openLedger == acc.id && acc.isManual) {
                     LedgerList(acc, onLog = { onLog(acc) }, onEditEntry = { e -> onEditEntry(acc, e) })
                 }
             }
         }
+        TextButton(onClick = onAddAccount, modifier = Modifier.padding(horizontal = 8.dp)) {
+            Icon(Icons.Filled.Add, null, Modifier.size(14.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("Add account", style = MaterialTheme.typography.labelMedium)
+        }
     }
 }
 
 @Composable
-private fun AccountRow(account: Account, balance: Long?, expanded: Boolean, onToggle: () -> Unit) {
+private fun AccountRow(
+    account: Account,
+    balance: Long?,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    onEdit: () -> Unit,
+) {
     Row(
-        Modifier
-            .fillMaxWidth()
-            .then(if (account.isManual) Modifier.clickable(onClick = onToggle) else Modifier)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -750,18 +808,19 @@ private fun AccountRow(account: Account, balance: Long?, expanded: Boolean, onTo
             Icon(
                 if (expanded) Icons.Filled.KeyboardArrowDown else Icons.Filled.KeyboardArrowRight,
                 if (expanded) "Collapse" else "Expand",
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(16.dp).clickable(onClick = onToggle),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
             Spacer(Modifier.width(16.dp))
         }
         Text(account.glyph, style = MaterialTheme.typography.bodyMedium)
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f).clickable(onClick = onEdit)) {
             Text(account.name, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             val sub = buildString {
                 if (account.type == "monzo") append("Monzo · auto") else append("manual")
                 if (account.isExternal) append(" · held externally")
+                account.growthPctYoy?.let { append(" · ${MoneyAccounts.formatGrowth(it)}%/yr") }
                 account.latestEntry?.let { if (account.isManual) append(" · last ${MoneyLedger.fmtDate(it.date)}") }
             }
             Text(sub, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)

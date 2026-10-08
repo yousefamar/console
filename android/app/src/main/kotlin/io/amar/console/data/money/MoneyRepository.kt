@@ -39,8 +39,10 @@ import kotlinx.coroutines.flow.StateFlow
  * [MoneyBudgets]); their monthly actuals come from
  * `/finance/budget-status?month=`. Categories and the auto-categorisation
  * rules ride `money:category` / `money:rule` (POST = upsert with a
- * phone-minted id, DELETE — see [MoneyCategories]). Scenarios and account CRUD
- * are still SPA-only (BACKLOG Open follow-ups).
+ * phone-minted id, DELETE — see [MoneyCategories]), and the accounts
+ * themselves ride `money:account` the same way (see [MoneyAccounts]), so a new
+ * ISA or a rename no longer needs the laptop. Scenarios are still SPA-only
+ * (BACKLOG Open follow-up).
  */
 class MoneyRepository(
     private val db: ConsoleDb,
@@ -54,6 +56,7 @@ class MoneyRepository(
         const val TYPE_BUDGET = "money:budget"
         const val TYPE_CATEGORY = "money:category"
         const val TYPE_RULE = "money:rule"
+        const val TYPE_ACCOUNT = "money:account"
         private const val META_OVERRIDES = "money:overrides"
         private const val META_RULES = "money:rules"
         private const val META_ACCOUNTS = "money:accounts"
@@ -218,7 +221,7 @@ class MoneyRepository(
                 if (cats.isNotEmpty()) storeCategories(cats)
                 if (ef != null) meta.put(MetaRow(META_EMERGENCY, MoneyJson.encodeEmergencyFund(ef)))
                 _state.value = _state.value.copy(emergencyFund = ef ?: _state.value.emergencyFund)
-                storeAccounts(withInFlightLedgers(MoneyJson.parseAccounts(body)))
+                storeAccounts(overlayAccounts(MoneyJson.parseAccounts(body)))
                 // Budgets + rules ride the same payload too (the SPA's fetchAll does the same).
                 val root = runCatching { MoneyJson.json.parseToJsonElement(body) }.getOrNull()
                 val obj = root as? kotlinx.serialization.json.JsonObject
@@ -313,6 +316,8 @@ class MoneyRepository(
         ob.register("$TYPE_CATEGORY:onFailed") { row, _ -> healCategory(row) }
         ob.register(TYPE_RULE) { row, _ -> handleRule(row) }
         ob.register("$TYPE_RULE:onFailed") { row, _ -> healRule(row) }
+        ob.register(TYPE_ACCOUNT) { row, _ -> handleAccount(row) }
+        ob.register("$TYPE_ACCOUNT:onFailed") { row, _ -> healAccount(row) }
     }
 
     // ---------------------------------------------------------------- //
@@ -528,6 +533,139 @@ class MoneyRepository(
         _state.value = _state.value.copy(accounts = accounts)
     }
 
+    // ---------------------------------------------------------------- //
+    // Account CRUD (the records the ledger and the streams hang off)
+
+    private suspend fun inFlightAccounts(): Set<String> =
+        if (outbox == null) emptySet() else db.outbox().inFlightEntityIds(TYPE_ACCOUNT).toSet()
+
+    /** Another account write for [accountId] still waiting (the in-flight one is `processing`). */
+    private suspend fun hasQueuedAccountEdit(accountId: String): Boolean =
+        db.outbox().pending().any { it.type == TYPE_ACCOUNT && it.entityId == accountId }
+
+    /**
+     * Every hub accounts list goes through here: the queued ledger entries AND
+     * the queued account edits are laid back over it, in that order, so an
+     * account overlay keeps whichever ledger won. [settledLedger] /
+     * [settledAccount] name the write that just landed — see
+     * [MoneyAccounts.withInFlightAccounts].
+     */
+    private suspend fun overlayAccounts(
+        hubAccounts: List<Account>,
+        settledLedger: String? = null,
+        settledAccount: String? = null,
+    ): List<Account> {
+        var inFlight = inFlightAccounts()
+        if (settledAccount != null && settledAccount in inFlight && !hasQueuedAccountEdit(settledAccount)) {
+            inFlight = inFlight - settledAccount
+        }
+        return MoneyAccounts.withInFlightAccounts(
+            withInFlightLedgers(hubAccounts, settled = settledLedger),
+            _state.value.accounts,
+            inFlight,
+        )
+    }
+
+    /**
+     * Create or edit an account. A create arrives with a phone-minted id
+     * ([MoneyAccounts.mintAccountId]) so its identity is final from the
+     * optimistic write on; the hub's POST upserts by that id. The write body
+     * carries no ledger and, on an edit, explicit nulls for the cleared
+     * optionals — both reasons in [MoneyAccounts].
+     */
+    suspend fun upsertAccount(account: Account) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        val before = _state.value.accounts.firstOrNull { it.id == account.id }
+        // Never let an edit rewrite the ledger or the Monzo link we hold.
+        val toStore = if (before == null) account else account.copy(
+            ledger = before.ledger,
+            type = before.type,
+            monzoAccountId = before.monzoAccountId,
+        )
+        storeAccounts(MoneyAccounts.upsertInto(_state.value.accounts, toStore))
+        val isEdit = before != null
+        ob.enqueue(
+            TYPE_ACCOUNT,
+            MoneyAccounts.encodeAccountAction(
+                MoneyAccounts.AccountAction(
+                    accountId = toStore.id,
+                    body = MoneyAccounts.accountBody(toStore, isEdit = isEdit),
+                    before = before,
+                    patch = if (MoneyAccounts.needsPatch(toStore, isEdit)) MoneyAccounts.patchBody(toStore) else null,
+                )
+            ),
+            entityId = toStore.id,
+        )
+    }
+
+    /**
+     * Delete an account. Any queued write for the same id is dropped first (a
+     * create the hub never saw, an edit that is now moot); the DELETE still
+     * goes — the id is the phone-minted real one, so a 404 for an account the
+     * hub never had counts as done and no network probe is needed to tell the
+     * two cases apart offline. The hub also clears the account off every stream
+     * pointing at it (the phone caches no streams, so there is nothing to
+     * mirror) and its balance history goes with it. Monzo accounts are refused:
+     * their link is the desktop's to remove.
+     */
+    suspend fun deleteAccount(account: Account) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        require(MoneyAccounts.canDelete(account)) { "Monzo accounts are removed in the web app" }
+        storeAccounts(_state.value.accounts.filterNot { it.id == account.id })
+        ob.cancel(account.id, TYPE_ACCOUNT)
+        ob.enqueue(
+            TYPE_ACCOUNT,
+            MoneyAccounts.encodeAccountAction(MoneyAccounts.AccountAction(account.id, null, account)),
+            entityId = account.id,
+        )
+    }
+
+    private suspend fun handleAccount(row: OutboxRow): Outbox.Result {
+        val a = MoneyAccounts.decodeAccountAction(row.payloadJson) ?: return Outbox.Result.Fail("bad payload")
+        return try {
+            if (a.body != null) {
+                hub.post("/finance/accounts", a.body)
+                // The hub's create branch drops growthPctYoy / archived; PATCH applies them.
+                a.patch?.let { hub.patch(MoneyAccounts.path(a.accountId), it) }
+            } else try {
+                hub.delete(MoneyAccounts.path(a.accountId))
+            } catch (e: HubClient.HttpException) {
+                if (e.code != 404) throw e else "" // already gone = the delete we wanted
+            }
+            runCatching { refreshAfterAccount(a.accountId) }
+            Outbox.Result.Done
+        } catch (e: HubClient.HttpException) {
+            if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+        } catch (e: Exception) {
+            Outbox.retryOrNotReady(e, "network")
+        }
+    }
+
+    /** Terminal failure: put back the record this write replaced (ledger and all), or drop a failed create. */
+    private suspend fun healAccount(row: OutboxRow): Outbox.Result {
+        val a = MoneyAccounts.decodeAccountAction(row.payloadJson) ?: return Outbox.Result.Done
+        storeAccounts(MoneyAccounts.healedAccounts(_state.value.accounts, a))
+        return Outbox.Result.Done
+    }
+
+    /** An account's liquidity and growth are projection inputs, so the runway and net worth move with it. */
+    private suspend fun refreshAfterAccount(settled: String) {
+        runCatching {
+            storeAccounts(overlayAccounts(MoneyJson.decodeAccounts(hub.get("/finance/accounts")), settledAccount = settled))
+        }
+        runCatching { MoneyJson.parseProjection(hub.get("/finance/projection"))?.let { p ->
+            db.meta().put(MetaRow(META_RUNWAY, MoneyJson.encodeRunway(p)))
+            _state.value = _state.value.copy(projection = p)
+        } }
+        runCatching {
+            val bals = MoneyJson.parseNetWorthBalances(hub.get("/finance/networth"))
+            if (bals.isNotEmpty()) {
+                db.meta().put(MetaRow(META_BALANCES, MoneyJson.encodeBalances(bals)))
+                _state.value = _state.value.copy(balances = bals)
+            }
+        }
+    }
+
     /**
      * Log / edit / delete one dated balance reading on a manual account: the
      * ledger changes now, the hub write rides the outbox (so it survives being
@@ -581,7 +719,7 @@ class MoneyRepository(
 
     /** The ledger IS the net-worth input, so the history + runway move with it. */
     private suspend fun refreshAfterBalance(settled: String) {
-        runCatching { storeAccounts(withInFlightLedgers(MoneyJson.decodeAccounts(hub.get("/finance/accounts")), settled = settled)) }
+        runCatching { storeAccounts(overlayAccounts(MoneyJson.decodeAccounts(hub.get("/finance/accounts")), settledLedger = settled)) }
         runCatching {
             val pts = MoneyJson.parseNetWorthHistory(hub.get("/finance/networth/history?months=12"))
             if (pts.isNotEmpty()) {
