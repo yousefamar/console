@@ -161,9 +161,37 @@ export async function syncCliToken(cfg: ForgeConfig): Promise<AgentEnvResult> {
  *  the box too, while non-matching files there are protected.
  *
  *  The destination is outside every git checkout on purpose: Astera repo rules
- *  6 and 163 forbid a secret entering a working tree, ignored scratch included. */
+ *  6 and 163 forbid a secret entering a working tree, ignored scratch included.
+ *
+ *  `exclude` is the carve-out from his glob: a named file the glob WOULD carry
+ *  but which has no box-side consumer and more reach than the box's purpose.
+ *  Because rsync's `--delete` deliberately protects excluded files on the
+ *  receiver, a name added here is also removed from the box explicitly below —
+ *  otherwise excluding a credential would stop it being UPDATED while leaving
+ *  the copy already there, which is the worst of both. */
 const CREDENTIAL_MIRRORS = [
-  { localDir: join('.config', 'astera'), pattern: '*.env', remoteDir: '/home/amar/.config/astera' },
+  {
+    localDir: join('.config', 'astera'),
+    pattern: '*.env',
+    remoteDir: '/home/amar/.config/astera',
+    // Both of these carry the REAL prod Vercel Blob read-write token. Astera
+    // general confirmed by sha256 that blob.env's value is byte-identical to
+    // the prod pull in .env.production.local; a hash sweep of the whole
+    // directory then found the SAME value duplicated into
+    // front-sync.staging.env, an operator bundle no code references by name.
+    // The box never needs either: app.env carries a well-shaped FAKE blob token
+    // so Payload's config loads while the default upload path falls back to
+    // local disk. Vercel Blob is one bucket keyed by filename (Astera rule
+    // 143), so a fork uploading a fixed name with the real token overwrites a
+    // PROD object. Found 8 Oct 2026 after Astera's ^quick-bear fork read
+    // blob.env ON THE BOX and used the token to make vercelBlobStorage register
+    // for type-gen — no prod write, but it reached.
+    //
+    // Which is the lesson for the next one of these: a credential is excluded
+    // by VALUE, not by filename. Sweep the directory by hash for the secret
+    // being withheld before believing a single name closes it.
+    exclude: ['blob.env', 'front-sync.staging.env'],
+  },
 ] as const
 
 /** The credential mirror's rsync argv.
@@ -180,9 +208,16 @@ const CREDENTIAL_MIRRORS = [
  *  still looked correct. Astera general asked for this to be observed rather
  *  than inferred, for exactly that reason: "if a future edit of mine silently
  *  never lands, the whole arrangement looks fine and is wrong." */
-export function credentialRsyncArgv(mirror: { pattern: string; remoteDir: string }, local: string, host: string): string[] {
+export function credentialRsyncArgv(
+  mirror: { pattern: string; remoteDir: string; exclude?: readonly string[] },
+  local: string,
+  host: string,
+): string[] {
   return [
     '-a', '--chmod=D700,F600', '--delete',
+    // rsync takes the FIRST matching rule, so the carve-outs have to precede
+    // the include that would otherwise sweep them up.
+    ...(mirror.exclude ?? []).flatMap((f) => ['--exclude', f]),
     '--include', mirror.pattern, '--exclude', '*',
     '-e', 'ssh -o BatchMode=yes',
     `${local}/`, `${host}:${mirror.remoteDir}/`,
@@ -195,10 +230,18 @@ export async function syncProjectCredentials(cfg: ForgeConfig, log: (m: string) 
     if (!existsSync(local)) continue
     const prep = await forgeExec(cfg, `mkdir -p ${m.remoteDir} && chmod 700 ${m.remoteDir}`)
     if (prep.code !== 0) return { ok: false, reason: `could not create ${m.remoteDir} on forge: ${prep.stderr.trim()}` }
+    // Every prepare, not once: an excluded credential that predates its own
+    // exclusion is exactly the case this has to clear, and the box is rebuilt
+    // from provision.sh often enough that a one-shot cleanup would rot.
+    if (m.exclude.length) {
+      const rm = await forgeExec(cfg, `rm -f ${m.exclude.map((f) => `'${m.remoteDir}/${f}'`).join(' ')}`)
+      if (rm.code !== 0) return { ok: false, reason: `could not remove excluded credentials from ${m.remoteDir}: ${rm.stderr.trim()}` }
+    }
     const ok = await execFileP('rsync', credentialRsyncArgv(m, local, cfg.host),
       { env: sshEnvPath(), timeout: 600_000, maxBuffer: 8 * 1024 * 1024 }).then(() => true).catch(() => false)
     if (!ok) return { ok: false, reason: `credentials for ${m.localDir} did not reach forge — a fork needing them will fail at its first database step` }
-    log(`[forge] credentials mirrored: ${m.localDir}/${m.pattern} → ${m.remoteDir} (0700/0600)`)
+    log(`[forge] credentials mirrored: ${m.localDir}/${m.pattern} → ${m.remoteDir} (0700/0600`
+      + `${m.exclude.length ? `, withheld: ${m.exclude.join(', ')}` : ''})`)
   }
 
   // The gh token deliberately does NOT auto-sync: it lives in the desktop's

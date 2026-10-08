@@ -273,7 +273,7 @@ describe('appEnv — the path the app expects, with the bytes outside the tree',
 })
 
 describe('the credential mirror must keep replacing files, not writing into them', () => {
-  const m = { pattern: '*.env', remoteDir: '/home/amar/.config/astera' }
+  const m = { pattern: '*.env', remoteDir: '/home/amar/.config/astera', exclude: ['blob.env'] }
 
   it('never uses --inplace, because the box\'s copy is deliberately read-only', () => {
     const argv = credentialRsyncArgv(m, '/home/amar/.config/astera', 'forge')
@@ -293,6 +293,19 @@ describe('the credential mirror must keep replacing files, not writing into them
     expect(argv).toContain('--delete')
     expect(argv.join(' ')).toContain('--include *.env --exclude *')
     expect(argv.at(-1)).toBe('forge:/home/amar/.config/astera/')
+  })
+
+  it('puts a carve-out BEFORE the include, because rsync takes the first matching rule', () => {
+    // Order is the whole fix: --include '*.env' ahead of --exclude blob.env
+    // would match first and ship the real prod blob token to a shared box.
+    const argv = credentialRsyncArgv(m, '/home/amar/.config/astera', 'forge')
+    expect(argv.join(' ')).toContain('--exclude blob.env --include *.env --exclude *')
+    expect(argv.indexOf('blob.env')).toBeLessThan(argv.indexOf('*.env'))
+  })
+
+  it('a mirror with no carve-outs is argv-identical to before', () => {
+    const plain = credentialRsyncArgv({ pattern: '*.env', remoteDir: '/x' }, '/l', 'forge')
+    expect(plain.join(' ')).toContain('--delete --include *.env --exclude *')
   })
 })
 
