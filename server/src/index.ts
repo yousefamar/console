@@ -2749,7 +2749,14 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
     preparedCwds: () => preparedCwdList(),
     resolveSession: (q) => resolveMoveTargets(q),
     workingForksOf: (project) => workingForksOf(project),
-    move: (s) => moveSessionToForge(s, (m) => log(m)),
+    move: (s) => moveSessionToForge(s, (m) => log(m), (r) => {
+      log(`[forge] deferred move of ${r.session}: ${r.ok ? 'done' : `FAILED — ${r.reason}`}`)
+      eventBus.emit({
+        topic: 'console.forge.moved', source: 'forge', key: `${s.id}:${r.ok}`,
+        data: { session: r.session, ok: r.ok, reason: r.reason, devPort: r.devPort ?? null, worktrees: r.worktrees ?? [] },
+        ref: 'con agent forge status',
+      })
+    }),
     log: (m) => log(m),
     readBody,
   })) return

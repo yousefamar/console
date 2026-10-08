@@ -40,6 +40,8 @@ export const BUILTIN_TOPICS: TopicDoc[] = [
     fields: { listenerId: 'listener id', expect: 'one-line rule', eventId: 'the satisfying event', deadlineAt: 'the tick it satisfied (absolute)', triggerEventIds: 'the --after events it disarmed (relative)' } },
   { topic: 'console.backend.failover', description: 'A Claude Max usage-limit rejection spilled the agent fleet onto Amazon Bedrock (backend-failover.ts). The fleet returns by itself once the window resets.',
     fields: { to: 'bedrock', rateLimitType: 'five_hour | seven_day | …', resetsAt: 'epoch ms the window resets (null when unknown)', returnAt: 'epoch ms the fleet is due back on the subscription', trippedBy: 'session that hit the limit' } },
+  { topic: 'console.forge.moved', description: 'A `con agent forge move` finished. Emitted for the DEFERRED case too (a session that was mid-turn moves at turn end, long after the CLI call returned) — which is the only way a failed move is visible at all.',
+    fields: { session: 'session name or id', ok: 'true when the session is now on forge', reason: 'what happened, or which step refused', devPort: 'forwarded dev port, when one was allocated', worktrees: 'worktree paths carried across' } },
   { topic: 'console.backend.restored', description: 'The subscription window reset and the fleet is back on Claude Max.',
     fields: { to: 'first_party', onBedrockMs: 'how long the spill lasted', rateLimitType: 'the window that had tripped' } },
   { topic: 'hub.started', description: 'The hub finished booting. Fires once per process — the hook for catch-up scripts after downtime.',

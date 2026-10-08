@@ -68,7 +68,14 @@ export async function worktreesForSession(localRepoPath: string, agentKey: strin
   return all.filter((w) => w.path.includes(blockId) || w.branch.includes(blockId))
 }
 
-export async function moveSessionToForge(target: MoveTarget, log: (m: string) => void = () => {}): Promise<MoveResult> {
+export async function moveSessionToForge(
+  target: MoveTarget,
+  log: (m: string) => void = () => {},
+  /** Where a DEFERRED move's eventual verdict goes. The CLI call has already
+   *  returned by then, so without this a mid-turn move that fails at turn end
+   *  is invisible and the mover believes the session is on forge. */
+  report: (r: MoveResult) => void = () => {},
+): Promise<MoveResult> {
   const label = target.name ?? target.id
   if (!forgeConfig()) return { session: label, ok: false, reason: 'forge is not configured' }
   if (target.placement === 'forge') return { session: label, ok: false, reason: 'already on forge' }
@@ -80,7 +87,11 @@ export async function moveSessionToForge(target: MoveTarget, log: (m: string) =>
     // Mid-turn: do none of the work now. Everything below reads state the turn
     // is actively changing (the transcript grows, the worktree churns), so the
     // only correct time is after the result message.
-    target.afterTurn(() => { void performMove(target, log) })
+    target.afterTurn(() => {
+      void performMove(target, log)
+        .then(report)
+        .catch((err: unknown) => report({ session: label, ok: false, reason: `deferred move threw: ${(err as Error).message}` }))
+    })
     return { session: label, ok: true, deferred: true, reason: 'mid-turn — the move applies when this turn ends' }
   }
   return performMove(target, log)
