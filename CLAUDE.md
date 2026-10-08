@@ -729,6 +729,31 @@ local SSD was tried first and did not help.
   purged when the URL changes — left in place they keep resolving, so a failed
   GitHub fetch would leave `origin/staging` on the stale mirror commit instead of
   missing.
+  `mirror` is DELIBERATE, not residue: it is the seeding remote AND the base
+  every card worktree resolves (`baseRemoteFor`) and the target fold-back pushes
+  to. Git worktrees share repo config, so it cannot exist on the primary and not
+  in a worktree; don't prune it.
+- **A box can land a PR and still be unable to show you anything.** The first
+  remote Astera card merged a PR and could not take one screenshot: `~/.cache`
+  was provisioned 0775 (the desktop's is 0700) and `@swc/core` refuses a group-
+  or world-writable directory in its native-binding cache chain without sticky
+  protection, so every Next dev server and Playwright run died on
+  `ERR_SWC_NATIVE_CACHE`. A/B proven. The message blames *"a parent"* even when
+  the cache root itself is the offender, which is what made it hard to place.
+  Pinned 0700 in `bootstrap.sh` and re-asserted on every prepare
+  (`ensureCacheDirPrivate`), because any tool with a lax umask can recreate the
+  directory and the failure is silent and total. **The general lesson: "a fork
+  can land work" and "a fork can verify work" are separate claims** — test the
+  visual path explicitly, it has its own dependencies.
+- **`appEnv` gives the toolchain its `.env` without a secret entering a tree.**
+  Repo basename → a file outside every checkout, symlinked to `<code>/.env` by
+  the prepare. Without it the first remote fork GENERATED dev secrets inside the
+  checkout to make the type generator run, which astera's rules 6/163 forbid and
+  which the next reader cannot tell from real ones. Inert with no mapping, and it
+  never clobbers a regular `.env` (it says so instead — so a stray real file
+  blocks the link until someone removes it, on purpose). A source under
+  `~/.config/<project>/*.env` is already carried by `syncProjectCredentials`, so
+  pointing at one needs no new authorisation.
 - **A prepare NEVER moves the primary checkout's HEAD** (`decidePrimaryCheckout`,
   tested): clone when absent, fast-forward only when already on the desktop's
   default branch and clean, otherwise fetch refs and leave it. It used to
