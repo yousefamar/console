@@ -554,6 +554,43 @@ private fun InboxRow(
                         modifier = Modifier.widthIn(max = 80.dp),
                     )
                 }
+                // Mail rows carry their Gmail user labels, styled exactly as
+                // the Mail app's ThreadRow chips (^wavy-lynx). The row is
+                // width-bounded, so the chips take their natural width and the
+                // SENDER ellipsizes around them — the timestamp never moves.
+                // Capped at two + "+N": a third chip in a bounded Row measures
+                // at ~0 width and renders as an empty box (the android
+                // CLAUDE.md sibling-Text trap), and a nested label carries its
+                // whole path ("Astera/Past meetings"), so one can be long.
+                if (entry.labels.isNotEmpty()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) {
+                        for (name in entry.labels.take(2)) {
+                            Box(
+                                Modifier.clip(RoundedCornerShape(3.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .padding(horizontal = 4.dp, vertical = 1.dp),
+                            ) {
+                                Text(
+                                    name,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 9.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 90.dp),
+                                )
+                            }
+                        }
+                        if (entry.labels.size > 2) {
+                            Text(
+                                "+${entry.labels.size - 2}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 9.sp,
+                            )
+                        }
+                    }
+                }
                 // Row markers (SPA HandbackGlyph): red ⊘ per agent stuck on a
                 // #blocked card, blue check for a card waiting for review.
                 if (blockedCards > 0) {

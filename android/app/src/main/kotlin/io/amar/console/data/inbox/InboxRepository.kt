@@ -88,13 +88,27 @@ class InboxRepository(
         db.feeds().observeReadIds(),
     ) { threads, rooms, items, feeds, readIds -> Sources(threads, rooms, items, feeds, readIds) }
 
+    /** The `mail:label…` meta key space as ONE live map: the id→name map
+     *  (`mail:labelMap`) plus every hydrated thread's id list
+     *  (`mail:labels:<threadId>`), both written by MailRepository's sync.
+     *  One query for the whole list — never a meta read per row rendered
+     *  (the Mail screen's per-thread LaunchedEffect loop is the shape NOT to
+     *  copy) — and live, so a label added on the desktop lands on the next
+     *  sync pass with no cache of ours to invalidate. */
+    private val mailLabelMeta: Flow<Map<String, String>> =
+        db.meta().observeByPrefix(io.amar.console.data.mail.MailRepository.LABEL_META_PATTERN)
+            .map { rows -> rows.associate { it.key to it.value } }
+            .catch { emit(emptyMap()) }
+
     val lists: StateFlow<InboxLists> = combine(
-        sources,
+        // Nested into one input: `combine` tops out at 5 arguments and the
+        // other four slots are taken.
+        combine(sources, mailLabelMeta) { s, m -> s to m },
         combine(sessionsFlow, spacesFlow) { s, sp -> s to sp },
         db.feeds().observeSnoozes(),
         rules,
         combine(xOnly, nowTick) { x, _ -> x },
-    ) { src, (sessions, spaces), snoozes, r, x ->
+    ) { (src, labelMeta), (sessions, spaces), snoozes, r, x ->
         val now = System.currentTimeMillis()
         composeInbox(
             threads = src.threads,
@@ -108,6 +122,7 @@ class InboxRepository(
             now = now,
             xOnly = x,
             spaces = spaces,
+            labelsByThread = labelsForThreads(src.threads.map { it.id }, labelMeta),
         )
     // WhileSubscribed(0) + catch, NOT Eagerly: an eager (or lingering) collector
     // observes Room past the screen's lifetime — under Robolectric (which boots

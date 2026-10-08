@@ -82,6 +82,12 @@ interface MetaDao {
 
     @Query("DELETE FROM meta WHERE `key` = :key")
     suspend fun delete(key: String)
+
+    /** Live view of one key space (`mail:label%` → the Inbox's Gmail labels).
+     *  Room invalidates it on any meta write, so labels refreshed by a sync
+     *  pass reach the list with no cache of our own to go stale. */
+    @Query("SELECT * FROM meta WHERE `key` LIKE :pattern")
+    fun observeByPrefix(pattern: String): Flow<List<MetaRow>>
 }
 
 @Dao
