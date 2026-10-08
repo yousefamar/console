@@ -149,6 +149,24 @@ export UV_CACHE_DIR=/srv/cache/uv
 export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx8192m"
 EOF
 
+say "mode parity with the desktop — no group- or world-writable paths in the home"
+# This is a BUG CLASS, not tidying. Provisioning steps that ran with a lax
+# umask left ~/.cache at 0775 and ~/.local/{share,state} at 0775 where the
+# desktop has 0700, and a group-writable cache root is silently fatal: @swc/core
+# refuses it, so every dev server and Playwright run on the box died
+# (ERR_SWC_NATIVE_CACHE, 8 Oct 2026). Anything else created the same way fails
+# the same silent-and-total way, which is why this sweeps rather than naming
+# the two directories that happened to bite.
+#   -xdev   never follow into the sshfs mounts of the desktop — those files are
+#           the DESKTOP'S and must not be re-moded from here.
+#   ! -type l  a symlink's own mode is a meaningless constant 0777 on Linux
+#           (the target governs), so including them makes the audit report
+#           thousands of false positives. Found exactly that way.
+sudo -u amar install -d -m 0700 "$AMAR_HOME/.local/share" "$AMAR_HOME/.local/state"
+sudo -u amar chmod 0700 "$AMAR_HOME/.local/share" "$AMAR_HOME/.local/state"
+sudo -u amar find "$AMAR_HOME" -xdev ! -type l \( -perm -0020 -o -perm -0002 \) \
+  -exec chmod g-w,o-w {} + || say "WARNING: some paths refused the mode fix — read the errors, do not assume ownership"
+
 say "allow sshfs mounts for non-root (forge mounts the vault back off the desktop)"
 sudo sed -i 's/^#user_allow_other/user_allow_other/' /etc/fuse.conf 2>/dev/null || true
 

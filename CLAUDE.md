@@ -745,6 +745,15 @@ local SSD was tried first and did not help.
   directory and the failure is silent and total. **The general lesson: "a fork
   can land work" and "a fork can verify work" are separate claims** — test the
   visual path explicitly, it has its own dependencies.
+  It is also a **mode-parity bug class, not an SWC one** (Astera general's
+  point): a provisioning step with a lax umask also left `~/.local/share` and
+  `~/.local/state` at 0775 where the desktop has 0700, plus five group-writable
+  caches. `bootstrap.sh` now sweeps the whole home instead of naming the
+  directory that happened to bite. Two things the audit itself must get right,
+  both learned the hard way: `-xdev`, or it re-modes the DESKTOP'S files
+  through the sshfs mounts; and `! -type l`, because a symlink's own mode is a
+  meaningless constant 0777 on Linux and including them reported 4237 false
+  positives. Box is at zero real offenders.
 - **`appEnv` gives the toolchain its `.env` without a secret entering a tree.**
   Repo basename → a file outside every checkout, symlinked to `<code>/.env` by
   the prepare. Without it the first remote fork GENERATED dev secrets inside the
