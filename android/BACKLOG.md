@@ -24,6 +24,15 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
   per-project "recent webhooks" list under the project sheet if one is ever
   wanted.
+- Fleet operations the hub grew in the 7–8 Oct window are CLI-only and have no
+  SPA surface either, so they are not parity gaps: `con agent forge move`
+  (relocate a live session onto the AWS box, `POST /forge/move`, 945f6e49) and
+  `con agent login` (a second Claude Max subscription, `GET/POST
+  /agents/logins`, 1ca5fee1 — a plan-wide spill now closes `closedBy:
+  'rotated'` with `rotatedTo`, which the phone's backend chip already renders
+  correctly as plain `Max`). If either ever gets a desktop surface, the APK
+  twins would be a "move to forge" item in the session long-press sheet and the
+  active login name in the fleet sheet.
 
 ## Desktop-only (considered, not gaps)
 
