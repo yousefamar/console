@@ -667,6 +667,15 @@ local SSD was tried first and did not help.
   string, so a remote Astera fork followed it into nothing. `ensureRepoOnForge`
   now symlinks the desktop's own path (and its `-worktrees` sibling) onto the
   mirror, so both spellings resolve on both machines.
+- **A prepare NEVER moves the primary checkout's HEAD** (`decidePrimaryCheckout`,
+  tested): clone when absent, fast-forward only when already on the desktop's
+  default branch and clean, otherwise fetch refs and leave it. It used to
+  `checkout <default branch>` unconditionally, which for any repo whose work
+  happens elsewhere is a silent base swap — astera's desktop checkout sits on
+  `main` (production) while every fork bases on `staging`, so a prepare would
+  have put `/opt/code/astera-app` back on main underneath a running fork, which
+  keeps building and lands against the wrong base. Fetching refs is what
+  worktree creation depends on; HEAD never was.
 - **A remote fork is told it has room, and the throttles agree.**
   `CONSOLE_PLACEMENT=forge` rides the session env; the REMOTE envelope stanza
   says run the typecheck, suite, Playwright and build in parallel and do not
