@@ -114,6 +114,9 @@ export async function ensureRepoOnForge(cfg: ForgeConfig, localRepoPath: string,
   const remotes = await ensureBoxRemotes(cfg, localRepoPath, code, bare, log)
   if (!remotes.ok) return { ok: false, reason: remotes.reason, branch }
 
+  await ensureAppEnvLink(cfg, name, code, log)
+  await ensureCacheDirPrivate(cfg, log)
+
   await mirrorDesktopPath(cfg, localRepoPath, log)
   log(`[forge] ${name}: ${checkout.reason}`)
   return { ok: true, reason: checkout.reason, branch }
@@ -195,6 +198,49 @@ async function ensurePrimaryCheckout(
     return { ok: true, reason: `${branch} on forge has DIVERGED from the mirror and was left at ${head} — fold back before relying on it` }
   }
   return { ok: true, reason: `${why} @ ${run.stdout.trim().split('\n').pop()}` }
+}
+
+/** Point the app's `.env` at a file outside the checkout, if one is configured.
+ *
+ *  Never clobbers a REGULAR `.env`: if something has written real bytes there,
+ *  replacing them silently could lose the only copy of a working config. Says
+ *  so instead. Inert until the source file exists on the box — which, for a
+ *  source under `~/.config/<project>/`, `syncProjectCredentials` already
+ *  mirrors, so nothing new has to be authorised to carry it. */
+async function ensureAppEnvLink(cfg: ForgeConfig, repoName: string, code: string, log: (m: string) => void): Promise<void> {
+  const src = cfg.appEnv[repoName]
+  if (!src) return
+  const r = await forgeExec(cfg, `
+    if [ ! -e '${src}' ]; then echo NO-SOURCE; exit 0; fi
+    if [ -e '${code}/.env' ] && [ ! -L '${code}/.env' ]; then echo REAL-ENV; exit 0; fi
+    ln -sfnT '${src}' '${code}/.env' && echo LINKED`)
+  if (r.stdout.includes('LINKED')) log(`[forge] ${repoName}: .env → ${src} (symlink; the bytes stay outside the checkout)`)
+  else if (r.stdout.includes('NO-SOURCE')) log(`[forge] ${repoName}: appEnv source ${src} is not on the box yet, so .env is unset — a fork may have to invent secrets to run the toolchain`)
+  else if (r.stdout.includes('REAL-ENV')) log(`[forge] ${repoName}: ${code}/.env is a REAL FILE, not a link — leaving it, but a secret inside a checkout is what appEnv exists to avoid`)
+}
+
+/** Keep `~/.cache` private, because SWC refuses to use it otherwise.
+ *
+ *  `@swc/core` validates its native-binding cache root and rejects any
+ *  directory in the chain that is group- or world-writable without a sticky
+ *  bit, with `ERR_SWC_NATIVE_CACHE`. The box was provisioned with `~/.cache` at
+ *  0775 (the desktop's is 0700), so **no Next dev server and no Playwright run
+ *  could start on it at all** — which silently removed every card whose
+ *  acceptance needs a screenshot from what the box could do (^quick-bear,
+ *  8 Oct 2026). A/B proven: 0775 fails, 0700 loads.
+ *
+ *  Re-asserted on every prepare rather than only at provision, because any tool
+ *  running with a lax umask can recreate the directory, and the failure is both
+ *  silent and total. The message blames "a parent" even though the offending
+ *  directory is the cache root itself, which is what makes it hard to place. */
+async function ensureCacheDirPrivate(cfg: ForgeConfig, log: (m: string) => void): Promise<void> {
+  const r = await forgeExec(cfg, `
+    mkdir -p ~/.cache
+    before=$(stat -c %a ~/.cache)
+    chmod 700 ~/.cache
+    echo "$before"`)
+  const before = r.stdout.trim().split('\n').pop() ?? ''
+  if (before && before !== '700') log(`[forge] ~/.cache was ${before}, tightened to 700 — SWC rejects a group-writable cache root (ERR_SWC_NATIVE_CACHE), which stops every dev server and Playwright run`)
 }
 
 /** Which remote on the box holds the branches a worktree is based on.

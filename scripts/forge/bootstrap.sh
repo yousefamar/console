@@ -117,6 +117,13 @@ sudo install -d -o amar -g amar \
   "$AMAR_HOME/.claude" "$AMAR_HOME/.claude/projects" \
   "$AMAR_HOME/.config" "$AMAR_HOME/.config/console" "$AMAR_HOME/.config/autowt" \
   "$AMAR_HOME/.local" "$AMAR_HOME/.local/bin"
+# 0700, not the umask default. @swc/core validates its native-binding cache
+# root and refuses any group- or world-writable directory in the chain without
+# a sticky bit (ERR_SWC_NATIVE_CACHE), so a 0775 ~/.cache stops EVERY Next dev
+# server and Playwright run on the box — found 8 Oct 2026, after a fork could
+# land a PR but not take a single screenshot. The desktop's is 0700.
+sudo install -d -m 0700 -o amar -g amar "$AMAR_HOME/.cache"
+
 # Bare mirrors + shared warm caches on the box's own fast disk — the reason
 # builds are quick here rather than merely elsewhere.
 sudo install -d -o amar -g amar /srv/git /srv/cache \

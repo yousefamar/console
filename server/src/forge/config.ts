@@ -46,6 +46,17 @@ export interface ForgeConfig {
    *  never push there, while every Astera fork pushes a card branch and merges
    *  a PR on GitHub. See `isGithubOriginRepo`. */
   githubOriginRepos: string[]
+  /** Repo basename → the file, OUTSIDE every checkout, that the app's own
+   *  `.env` should be a SYMLINK to on the box.
+   *
+   *  Astera's toolchain reads a `.env` at the checkout root, but its repo rules
+   *  6/163 forbid a secret entering a working tree — ignored scratch included,
+   *  and a generated dev secret counts, because the next reader cannot tell one
+   *  from a real one by looking. A symlink satisfies both: the path the app
+   *  expects exists, the bytes live outside the tree. Without it a fork has to
+   *  invent secrets to make the type generator run, which is what happened on
+   *  the first forge landing (^quick-bear, 8 Oct 2026). */
+  appEnv: Record<string, string>
 }
 
 export const FORGE_CONFIG_FILE = process.env.FORGE_CRED_FILE || join(homedir(), '.config', 'console', 'forge.json')
@@ -76,6 +87,7 @@ export function forgeConfig(opts: { file?: string; ttlMs?: number } = {}): Forge
           codeDir: raw.codeDir || '/home/amar/proj/code',
           bareDir: raw.bareDir || '/srv/git',
           githubOriginRepos: Array.isArray(raw.githubOriginRepos) ? raw.githubOriginRepos : [],
+          appEnv: (raw.appEnv && typeof raw.appEnv === 'object') ? raw.appEnv : {},
         }
       }
     }

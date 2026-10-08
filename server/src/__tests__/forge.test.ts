@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
-import { boardRemote, resolvePlacement } from '../forge/config.js'
+import { existsSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { boardRemote, resolvePlacement, forgeConfig } from '../forge/config.js'
 import { decidePlacement } from '../forge/index.js'
 import { remoteCommandArgv } from '../forge/ssh.js'
 import { remoteSettings } from '../forge/agent-env.js'
@@ -249,6 +251,22 @@ describe('origin on the box is per-repo — a mirror is not a base', () => {
   it('refuses a non-GitHub remote rather than pointing origin somewhere surprising', () => {
     expect(githubHttpsUrl('/srv/git/astera-app.git')).toBeNull()
     expect(githubHttpsUrl('git@gitlab.com:x/y.git')).toBeNull()
+  })
+})
+
+describe('appEnv — the path the app expects, with the bytes outside the tree', () => {
+  it('reads a repo → non-checkout source map, and defaults to nothing rather than guessing', () => {
+    const f = join(tmpdir(), `forge-cfg-${process.pid}.json`)
+    writeFileSync(f, JSON.stringify({
+      instanceId: 'i-abc', region: 'eu-west-2',
+      appEnv: { 'astera-app': '/home/amar/.config/astera/app.env' },
+    }))
+    expect(forgeConfig({ file: f })!.appEnv).toEqual({ 'astera-app': '/home/amar/.config/astera/app.env' })
+    writeFileSync(f, JSON.stringify({ instanceId: 'i-abc', region: 'eu-west-2' }))
+    // No entry = the step is inert. It must never invent a source path, because
+    // linking .env at a guess is worse than leaving it absent.
+    expect(forgeConfig({ file: f })!.appEnv).toEqual({})
+    rmSync(f, { force: true })
   })
 })
 
