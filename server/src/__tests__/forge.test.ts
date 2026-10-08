@@ -8,7 +8,7 @@ import { remoteSettings } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
 import { memoryDirFor } from '../forge/mounts.js'
 import { parseWorktreeList, decidePrimaryCheckout } from '../forge/repo.js'
-import { blockIdFromAgentKey } from '../forge/move.js'
+import { blockIdFromAgentKey, PendingMoves, type MoveResult } from '../forge/move.js'
 import { parseCardTokens, parseBoard, serializeBoard } from '../kanban/board.js'
 
 const cfg = {
@@ -218,5 +218,42 @@ describe('a prepare never moves the primary checkout off the branch it is on', (
 
   it('clones when there is nothing there', () => {
     expect(decidePrimaryCheckout({ exists: false, branch: '', dirty: false }, 'main').action).toBe('clone')
+  })
+})
+
+describe('a deferred move that never runs still reports', () => {
+  it('tells every waiting mover when the hub shuts down first', () => {
+    // The real case: a move accepted mid-turn is one in-memory callback, and
+    // the 08:46 restart on 8 Oct discarded it leaving the mover believing the
+    // session had moved.
+    const seen: MoveResult[] = []
+    const p = new PendingMoves()
+    p.add('session_1', 'Gray deer (fork)', (r) => seen.push(r))
+    p.add('session_2', 'Jade fox (fork)', (r) => seen.push(r))
+
+    const drained = p.drain('the hub shut down first')
+    expect(drained.map((r) => r.session)).toEqual(['Gray deer (fork)', 'Jade fox (fork)'])
+    expect(seen).toHaveLength(2)
+    expect(seen.every((r) => r.ok === false)).toBe(true)
+    // Drained means forgotten: a second drain must not re-report.
+    expect(p.drain('again')).toEqual([])
+  })
+
+  it('does not report a move that already ran', () => {
+    const seen: MoveResult[] = []
+    const p = new PendingMoves()
+    p.add('session_1', 'Gray deer (fork)', (r) => seen.push(r))
+    p.clear('session_1')
+    expect(p.drain('the hub shut down first')).toEqual([])
+    expect(seen).toEqual([])
+  })
+
+  it('one throwing reporter does not hide the others', () => {
+    const seen: string[] = []
+    const p = new PendingMoves()
+    p.add('a', 'A', () => { throw new Error('reporter exploded') })
+    p.add('b', 'B', (r) => seen.push(r.session))
+    expect(p.drain('shutdown')).toHaveLength(2)
+    expect(seen).toEqual(['B'])
   })
 })

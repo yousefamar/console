@@ -53,7 +53,7 @@ import { probeSilentWindDown, summaryFromCardLines } from './kanban/winddown.js'
 import {
   prepareRemoteSession, releaseRemoteSession, forgeAvailable, decidePlacement, prewarmCwd, boardRemote,
   allocateDevPort, forwardDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
-  stopForgeIfIdle, isCwdPrepared, preparedCwdList, moveSessionToForge, type MoveTarget,
+  stopForgeIfIdle, isCwdPrepared, preparedCwdList, moveSessionToForge, abandonPendingMoves, type MoveTarget,
 } from './forge/index.js'
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
@@ -3541,6 +3541,10 @@ function shutdown() {
     .filter((s) => s.status === 'running' || s.midTurn)
     .map((s) => `${s.name ?? s.id} (${s.claudeSessionId?.slice(0, 8) ?? 'no csid'})`)
   log(`\nShutting down — saving manifest (${midTurn.length} mid-turn${midTurn.length ? ': ' + midTurn.join(', ') : ''})...`)
+  // A deferred forge move is one in-memory callback waiting on a turn end that
+  // is never going to come now. Reported here, while the bus is still up, so it
+  // fails loudly rather than just not happening.
+  abandonPendingMoves('the hub shut down before this deferred move ran — re-issue `con agent forge move`')
   saveManifestSync(sessions)
   flushReadState()
   cronScheduler.flush()

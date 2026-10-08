@@ -87,7 +87,9 @@ export async function moveSessionToForge(
     // Mid-turn: do none of the work now. Everything below reads state the turn
     // is actively changing (the transcript grows, the worktree churns), so the
     // only correct time is after the result message.
+    pending.add(target.id, label, report)
     target.afterTurn(() => {
+      pending.clear(target.id)
       void performMove(target, log)
         .then(report)
         .catch((err: unknown) => report({ session: label, ok: false, reason: `deferred move threw: ${(err as Error).message}` }))
@@ -95,6 +97,47 @@ export async function moveSessionToForge(
     return { session: label, ok: true, deferred: true, reason: 'mid-turn — the move applies when this turn ends' }
   }
   return performMove(target, log)
+}
+
+/** Deferred moves accepted but not yet run.
+ *
+ *  A deferred move lives entirely in one in-memory `afterTurn` callback, so a
+ *  hub restart between the accept and the turn's end drops it with nothing
+ *  said — the same silent hole `report` closed for a failing move, reached
+ *  through a different door. Seen for real: a move accepted shortly before the
+ *  08:46 restart on 8 Oct 2026 was discarded, and `con agent forge status`
+ *  then showed the session local with no record that a move had been promised.
+ *  Shutdown drains this and reports each one as the failure it is. */
+export class PendingMoves {
+  private entries = new Map<string, { label: string; report: (r: MoveResult) => void }>()
+
+  add(id: string, label: string, report: (r: MoveResult) => void): void {
+    this.entries.set(id, { label, report })
+  }
+
+  clear(id: string): void {
+    this.entries.delete(id)
+  }
+
+  /** Tell every waiting mover the move is not going to happen, and forget them. */
+  drain(reason: string): MoveResult[] {
+    const out: MoveResult[] = []
+    for (const { label, report } of this.entries.values()) {
+      const r: MoveResult = { session: label, ok: false, reason }
+      out.push(r)
+      // Shutdown is best-effort and time-boxed; one throwing reporter must not
+      // stop the rest from being told.
+      try { report(r) } catch { /* nothing useful to do here */ }
+    }
+    this.entries.clear()
+    return out
+  }
+}
+
+const pending = new PendingMoves()
+
+export function abandonPendingMoves(reason: string): MoveResult[] {
+  return pending.drain(reason)
 }
 
 async function performMove(target: MoveTarget, log: (m: string) => void): Promise<MoveResult> {

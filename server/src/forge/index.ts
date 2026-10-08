@@ -20,7 +20,7 @@ export { ensureForgeReady, stopIfIdle, instanceState, ssmPingStatus } from './in
 export { forgeExec, remoteCommandArgv, spawnRemote, forwardDevPort, cancelDevPort, ensureMaster, HUB_PORT, sshEnv as forgeSshEnv } from './ssh.js'
 export { foldBackFromForge, ensureRepoOnForge } from './repo.js'
 export { syncTranscript, pushTranscript, transcriptPath } from './transcripts.js'
-export { moveSessionToForge, worktreesForSession } from './move.js'
+export { moveSessionToForge, worktreesForSession, abandonPendingMoves } from './move.js'
 export type { MoveTarget, MoveResult } from './move.js'
 export { memoryDirFor } from './mounts.js'
 
