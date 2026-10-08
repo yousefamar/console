@@ -762,6 +762,31 @@ local SSD was tried first and did not help.
   credentials inside a checkout, readable by the box's second login, once per
   card. Agent shells pick the umask up because `remoteCommandArgv` sources that
   profile.
+  **That profile covers ONLY the paths that source it, which is narrower than
+  it looks** (Homelab, 8 Oct): `/etc/profile.d` is read by LOGIN shells, and
+  `ssh forge <cmd>` is neither login nor interactive. `remoteCommandArgv` is
+  fine because it dot-sources the file explicitly — so the agent spawn path
+  always had 077 — but **`forgeExec` (plain `ssh host command`), `forgePut`
+  (scp), `forgeGet` (rsync) and any ad-hoc `ssh forge '…'` an agent types do
+  not**, and those are what create repos, worktrees and mounts. Measured:
+  `ssh forge 'bash -lc umask'` → 0077 while `ssh forge umask` → 0002, files
+  0664. The umask is therefore set in **PAM**, which covers every session type:
+  `pam_umask.so umask=077 nousergroups` in BOTH `/etc/pam.d/common-session` and
+  `common-session-noninteractive` (backups `*.bak-umask-20261008`). Two traps
+  here — an argumentless `pam_umask.so` silently defers to `login.defs`
+  (`UMASK 022`), and `umask=077` ALONE still yields 0007/mode 660, because
+  `USERGROUPS_ENAB yes` makes pam_umask copy the owner bits onto the group bits
+  for a user whose group is private; `nousergroups` is what pins it to 0077.
+  **Verify on a FRESH connection** (`-o ControlPath=none`) and with the
+  non-login form: a channel multiplexed over the existing ControlMaster
+  inherits the master's umask and never re-runs PAM, so live sessions keep the
+  old value until their master cycles — which is exactly what hid this.
+  No credential was actually exposed (the bearer, `settings.json` and every
+  `~/.config/astera/*.env` are 0600 — the transfers chmod explicitly) and
+  `/home/amar` is 0750, so a 0664 file was still gated at the home dir. The
+  general rule both boxes taught: **a secret's own mode is only the first line
+  of defence once the file sits outside a 0750 home** — which is why
+  `/opt/code` on the desktop was a real exposure and `~/proj/code` was not.
 - **`appEnv` gives the toolchain its `.env` without a secret entering a tree.**
   Repo basename → a file outside every checkout, symlinked to `<code>/.env` by
   the prepare. Without it the first remote fork GENERATED dev secrets inside the
