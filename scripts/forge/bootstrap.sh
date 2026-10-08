@@ -153,9 +153,39 @@ export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx8192m"
 # that landed at 0664 — credentials in a checkout, readable by the box's other
 # login. The home sweep above fixes what provisioning left behind; this stops
 # new files arriving the same way, which is the same instance-vs-class choice.
-# Agent shells get it because remoteCommandArgv sources this file.
+# Belt and braces only: this file is read by LOGIN shells, and the real control
+# is the PAM block below. Agent spawns do source it (remoteCommandArgv
+# dot-sources it explicitly), but they are not the only writers.
 umask 077
 EOF
+
+say "umask 077 for NON-login sessions too (the real control is PAM, not profile.d)"
+# /etc/profile.d is read by login shells only, so the profile.d line above left
+# every path that runs a bare `ssh host command` at Ubuntu's 0002 — which is
+# most of the writers that matter: forgeExec, forgePut (scp), forgeGet (rsync)
+# and any ad-hoc ssh an agent types. Those are what create repos, worktrees and
+# mounts. Measured on the box 8 Oct 2026: `ssh forge "bash -lc umask"` gave
+# 0077 while `ssh forge umask` gave 0002 and files came out 0664 (found by
+# Homelab). The agent spawn path itself was never exposed, but the class was.
+#
+# Two traps, both of which produce a wrong-but-plausible result:
+#   - `pam_umask.so` with NO arguments silently defers to login.defs UMASK,
+#     which is 022 — so the line looks present and does nothing.
+#   - `umask=077` ALONE still yields 0007 (mode 660), because
+#     USERGROUPS_ENAB yes makes pam_umask copy the owner bits onto the group
+#     bits for a user with a private group. `nousergroups` is what pins it.
+# Verify with `ssh -o ControlPath=none forge umask`: a channel multiplexed over
+# an existing master inherits that master's umask and never re-runs PAM, so a
+# check through a live ControlMaster reports the OLD value.
+for f in /etc/pam.d/common-session /etc/pam.d/common-session-noninteractive; do
+  want='session optional			pam_umask.so umask=077 nousergroups'
+  if grep -q '^session.*pam_umask\.so' "$f"; then
+    sudo cp -n "$f" "$f.bak-umask"
+    sudo sed -i "s|^session.*pam_umask\.so.*|$want|" "$f"
+  else
+    echo "$want" | sudo tee -a "$f" >/dev/null
+  fi
+done
 
 say "mode parity with the desktop — no group- or world-writable paths in the home"
 # This is a BUG CLASS, not tidying. Provisioning steps that ran with a lax
