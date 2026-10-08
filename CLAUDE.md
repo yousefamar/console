@@ -676,7 +676,19 @@ local SSD was tried first and did not help.
   (it lives in the desktop keyring, so re-pushing it would reinstall a revoked
   one); its absence is logged instead, and `scripts/forge/install-gh-token.sh`
   installs one — prefer a fine-grained token on stdin over the keyring's, which
-  carries `admin:org`/`delete_repo` across every repo Yousef owns.
+  carries `admin:org`/`delete_repo` across every repo Yousef owns. **The repo is
+  org-owned: `astera-platform/app`, NOT `yousefamar/astera-app`** — so the PAT's
+  resource owner must be `astera-platform` (and the org must have fine-grained
+  PATs enabled), access limited to `app`, permissions Contents + Pull requests
+  read/write and nothing else. A GitHub App would retire this residual rather
+  than shrink it (hub mints short-lived installation tokens, no long-lived
+  credential on the box) and installs on the org too; sequence the PAT first
+  anyway, because it cuts the blast radius today while the App is built. Minting
+  is browser-only — GitHub exposes no API for creating a PAT.
+  **There is no CloudTrail trail in this AWS account**, so there is no durable
+  audit log of the one path that grants root on the box (`ssm:SendCommand`) —
+  only the 90-day console event history, and IAM global events land in
+  `us-east-1` regardless of where the box is.
   **"Credentials are ready" is NOT "remote dispatch is safe", and only the owner
   of a project's fork tooling can make the second claim.** Console told Astera
   general it could flip `remote: forge` on the strength of the credential sync
