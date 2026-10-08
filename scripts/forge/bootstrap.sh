@@ -126,8 +126,18 @@ sudo install -d -m 0700 -o amar -g amar "$AMAR_HOME/.cache"
 
 # Bare mirrors + shared warm caches on the box's own fast disk — the reason
 # builds are quick here rather than merely elsewhere.
-sudo install -d -o amar -g amar /srv/git /srv/cache \
+#
+# 0750, explicitly. /srv is OUTSIDE $AMAR_HOME, so the home sweep below never
+# reaches it, and an `install -d` with no -m takes root's umask 022 — which left
+# /srv/git/astera-app.git world-readable and the `ubuntu` login able to read a
+# PRIVATE repo's full source (measured 8 Oct 2026: `sudo -u ubuntu cat
+# /srv/git/astera-app.git/HEAD` printed the ref). /home/amar was correctly 0750
+# the whole time; the mirror simply was not under it. Third instance of one bug
+# class in a day, after ~/.cache and the umask: a mode that is never stated is
+# whatever the umask happened to be.
+sudo install -d -m 0750 -o amar -g amar /srv/git /srv/cache \
   /srv/cache/npm /srv/cache/gradle /srv/cache/cargo /srv/cache/uv
+sudo chmod 0750 /srv/git /srv/cache
 
 say "sdk ownership + licences"
 sudo chown -R amar:amar "$ANDROID_SDK"
