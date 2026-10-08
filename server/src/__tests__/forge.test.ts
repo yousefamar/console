@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { boardRemote, resolvePlacement, forgeConfig } from '../forge/config.js'
+import { boardRemote, resolvePlacement, forgeConfig, type ForgeConfig } from '../forge/config.js'
 import { decidePlacement } from '../forge/index.js'
 import { remoteCommandArgv } from '../forge/ssh.js'
 import { remoteSettings, credentialRsyncArgv } from '../forge/agent-env.js'
@@ -14,11 +14,13 @@ import { isGithubOriginRepo } from '../forge/config.js'
 import { blockIdFromAgentKey, PendingMoves, type MoveResult } from '../forge/move.js'
 import { parseCardTokens, parseBoard, serializeBoard } from '../kanban/board.js'
 
-const cfg = {
+// Typed, so a new required ForgeConfig field fails HERE rather than at every
+// call site that passes this fixture.
+const cfg: ForgeConfig = {
   instanceId: 'i-abc', region: 'eu-west-2', host: 'forge',
   sshKey: '/home/amar/.ssh/forge_ed25519', remoteUser: 'amar',
   idleStopMinutes: 20, codeDir: '/home/amar/proj/code', bareDir: '/srv/git',
-  githubOriginRepos: [],
+  githubOriginRepos: [], appEnv: {},
 }
 
 describe('board frontmatter remote:', () => {

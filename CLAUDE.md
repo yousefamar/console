@@ -787,6 +787,16 @@ local SSD was tried first and did not help.
   general rule both boxes taught: **a secret's own mode is only the first line
   of defence once the file sits outside a 0750 home** — which is why
   `/opt/code` on the desktop was a real exposure and `~/proj/code` was not.
+  **The class, stated once: a mode that is never stated is whatever the umask
+  happened to be.** All three instances were provisioning lines that said
+  "create this" without saying "at this mode" — `~/.cache` 0775, the
+  profile.d-only umask, and `/srv/git` 0775, which let the box's `ubuntu` login
+  read a private repo's full source (`sudo -u ubuntu cat
+  /srv/git/astera-app.git/HEAD` printed the ref while the same user on
+  `/home/amar` got `Permission denied`). `/srv` is the one to remember: it is
+  OUTSIDE `$AMAR_HOME`, so the home sweep never walked it. When adding anything
+  to `bootstrap.sh`, grep it for directory creation with no explicit `-m` —
+  `install -d` and `mkdir` both inherit root's 022 there.
 - **`appEnv` gives the toolchain its `.env` without a secret entering a tree.**
   Repo basename → a file outside every checkout, symlinked to `<code>/.env` by
   the prepare. Without it the first remote fork GENERATED dev secrets inside the
