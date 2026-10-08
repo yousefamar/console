@@ -49,6 +49,9 @@ class MailRepository(
         const val LABEL_MAP_KEY = "mail:labelMap"
         const val CAL_PREFIX = "mail:cal:"        // per-message calendar invite JSON
         const val LABELS_PREFIX = "mail:labels:"  // per-thread user-label id list (JSON array)
+        /** LIKE pattern spanning both of the above — the Inbox observes this
+         *  one key space instead of reading a meta row per rendered row. */
+        const val LABEL_META_PATTERN = "mail:label%"
         const val DRAFT_PREFIX = "mail:draft:"    // per-context compose draft (JSON)
         const val INITIAL_LIMIT = 50
         const val BODY_KEEP = 50

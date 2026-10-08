@@ -58,6 +58,35 @@ view-mode hub-sync (Room meta is fine on one device).
   at first composition, so a map `reconcile()` refreshed never reached an open
   Mail screen. Now the map is re-read with every thread-list change, an id with
   no name draws no badge, and `syncAuxData` stores no `id → id` entries.
+- **Gmail labels show on Inbox mail rows too** (^wavy-lynx; Yousef, 7 Oct:
+  "Labels don't show properly in Inbox, and are named incorrectly on Mail" —
+  ^zany-fox fixed the SPA, the entry above is the Mail half). Before: the
+  phone's Inbox showed a mail row with no labels at all, whatever the Mail
+  list showed for the same thread. Now: pure
+  `labelsForThreads(threadIds, meta)` (`data/inbox/InboxLogic.kt`) resolves the
+  whole list in ONE pass from the meta key space MailRepository's sync already
+  writes (`mail:labelMap` + `mail:labels:<threadId>`, spanned by the new
+  `MailRepository.LABEL_META_PATTERN`); `InboxEntry.labels` carries the names,
+  `threadToEntry(t, rules, labels)` and `composeInbox(…, labelsByThread)` thread
+  them through (both params defaulted, so no caller churned) and the snoozed
+  view reuses the same map. The repository observes that key space live through
+  a new `MetaDao.observeByPrefix` nested into the existing 5-arg `combine` —
+  Room invalidates it on every meta write, so a label added on the desktop
+  lands on the next sync pass with no cache of ours to go stale, and no row
+  costs a meta read of its own (the Mail screen's per-thread `LaunchedEffect`
+  loop is the shape deliberately not copied). `ui/inbox/InboxScreen.kt` renders
+  the Mail app's own chip styling (3dp corners, `surfaceVariant`,
+  `labelSmall`/9sp `onSurfaceVariant`) in the header line, right of the sender
+  and left of the DRAFT/OVERDUE chips; the chips take their natural width so
+  the sender ellipsizes around them and the timestamp never moves, capped at
+  two + "+N" because a third chip in a bounded Row measures at ~0 width (the
+  sibling-`Text` trap) and a nested label carries its whole path
+  ("Astera/Past meetings"). Same "unknown id draws nothing" rule as the Mail
+  half, and no self-heal-on-unknown-id twin of the SPA's: the map is rewritten
+  every sync pass, so a miss is a label genuinely gone. Tests: six cases in
+  `InboxLogicTest` (order preserved, unnameable id dropped, duplicates
+  collapsed, missing/malformed map and unlisted ids resolve to nothing, labels
+  carried onto live AND snoozed rows, a label-less thread gets an empty list).
 
 ## Shipped
 

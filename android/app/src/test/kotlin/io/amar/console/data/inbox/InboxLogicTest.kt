@@ -189,6 +189,72 @@ class InboxLogicTest {
         assertEquals("Alice: hey", group.body)
     }
 
+    // Gmail user labels on mail rows (^wavy-lynx).
+    @Test
+    fun `labels resolve from the meta key space, in Gmail's order`() {
+        val meta = mapOf(
+            "mail:labelMap" to """{"Label_1":"Astera/Past meetings","Label_2":"Receipts"}""",
+            "mail:labels:t1" to """["Label_2","Label_1"]""",
+        )
+        assertEquals(
+            mapOf("t1" to listOf("Receipts", "Astera/Past meetings")),
+            labelsForThreads(listOf("t1"), meta),
+        )
+    }
+
+    @Test
+    fun `an unnameable label id is DROPPED, never rendered raw`() {
+        val meta = mapOf(
+            "mail:labelMap" to """{"Label_1":"Receipts"}""",
+            "mail:labels:t1" to """["Label_1","Label_gone"]""",
+            "mail:labels:t2" to """["Label_gone"]""",
+        )
+        val out = labelsForThreads(listOf("t1", "t2"), meta)
+        assertEquals(listOf("Receipts"), out["t1"])
+        // Nothing nameable → no entry at all, so the row renders no chip row.
+        assertNull(out["t2"])
+    }
+
+    @Test
+    fun `a label repeated for one thread appears once`() {
+        val meta = mapOf(
+            "mail:labelMap" to """{"Label_1":"Receipts","Label_2":"Receipts"}""",
+            "mail:labels:t1" to """["Label_1","Label_2"]""",
+        )
+        assertEquals(listOf("Receipts"), labelsForThreads(listOf("t1"), meta)["t1"])
+    }
+
+    @Test
+    fun `no label map, unlisted threads and malformed JSON all resolve to nothing`() {
+        assertTrue(labelsForThreads(listOf("t1"), mapOf("mail:labels:t1" to """["Label_1"]""")).isEmpty())
+        val meta = mapOf(
+            "mail:labelMap" to """{"Label_1":"Receipts"}""",
+            "mail:labels:t1" to "not json",
+            "mail:labels:t9" to """["Label_1"]""",
+        )
+        // Only the ids asked for are parsed, and a bad row is skipped, not fatal.
+        assertTrue(labelsForThreads(listOf("t1"), meta).isEmpty())
+        assertTrue(labelsForThreads(listOf("t1"), mapOf("mail:labelMap" to "not json")).isEmpty())
+    }
+
+    @Test
+    fun `compose carries labels onto live AND snoozed mail rows`() {
+        val labels = mapOf("t1" to listOf("Receipts"), "t2" to listOf("Astera/Past meetings"))
+        val lists = composeInbox(
+            threads = listOf(thread(id = "t1"), thread(id = "t2", snoozedUntil = NOW + HOUR)),
+            rooms = emptyList(), feedItems = emptyList(), feedsById = emptyMap(),
+            readIds = emptySet(), snoozedKeys = emptyMap(), sessions = emptyList(),
+            rules = InboxRules.DEFAULT, now = NOW, labelsByThread = labels,
+        )
+        assertEquals(listOf("Receipts"), lists.inbox.single { it.sourceId == "t1" }.labels)
+        assertEquals(listOf("Astera/Past meetings"), lists.snoozed.single().labels)
+    }
+
+    @Test
+    fun `a thread with no labels carries an empty list, not a null`() {
+        assertEquals(emptyList<String>(), threadToEntry(thread(), InboxRules.DEFAULT).labels)
+    }
+
     // Port of the ^fond-koi cases in src/__tests__/inbox-route.test.ts.
     @Test
     fun `mail carries read state - an opened-but-unarchived thread is unread=false`() {

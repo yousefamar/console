@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
@@ -167,6 +168,10 @@ data class InboxEntry(
     val icon: String? = null,
     /** Feed only: the item's thumbnail URL. */
     val image: String? = null,
+    /** Mail only: resolved Gmail user-label NAMES (an id the label map can't
+     *  name is DROPPED, never rendered raw). Nested labels carry their whole
+     *  path ("Astera/Past meetings"). */
+    val labels: List<String> = emptyList(),
 )
 
 /** Folders whose feeds never appear in the Feed list by default — port of
@@ -256,7 +261,43 @@ fun sessionIsLive(s: AgentSessionRow): Boolean {
 // Adapters: source rows → InboxEntry.
 // --------------------------------------------------------------------------
 
-fun threadToEntry(t: MailThreadRow, rules: InboxRules): InboxEntry = InboxEntry(
+/**
+ * Gmail user-label NAMES per thread, resolved in ONE pass from the `meta`
+ * rows MailRepository's sync writes: the id→name map at `mail:labelMap`, each
+ * thread's id list at `mail:labels:<threadId>` (SPA `userLabelNames`,
+ * a62a790f / ^zany-fox). [meta] is the whole `mail:label…` key space; only the
+ * listed [threadIds] are parsed, so a row never costs a meta read of its own
+ * (the Mail screen's per-thread LaunchedEffect loop is the shape NOT to copy).
+ *
+ * An id the map can't name draws NOTHING — never the raw `Label_…`, which is
+ * what made them read as "named incorrectly". The map is rewritten on every
+ * sync pass (syncAuxData runs before catchUp), so a miss is a label that is
+ * genuinely gone, not a stale cache needing the SPA's self-heal.
+ */
+fun labelsForThreads(threadIds: List<String>, meta: Map<String, String>): Map<String, List<String>> {
+    val rawMap = meta[io.amar.console.data.mail.MailRepository.LABEL_MAP_KEY] ?: return emptyMap()
+    val names = runCatching {
+        inboxJson.parseToJsonElement(rawMap).jsonObject.mapValues { it.value.jsonPrimitive.content }
+    }.getOrElse { return emptyMap() }
+    if (names.isEmpty()) return emptyMap()
+    val out = LinkedHashMap<String, List<String>>()
+    for (id in threadIds) {
+        val raw = meta["${io.amar.console.data.mail.MailRepository.LABELS_PREFIX}$id"] ?: continue
+        val resolved = runCatching {
+            inboxJson.parseToJsonElement(raw).jsonArray.mapNotNull { names[it.jsonPrimitive.content] }
+        }.getOrElse { emptyList() }.distinct()
+        if (resolved.isNotEmpty()) out[id] = resolved
+    }
+    return out
+}
+
+fun threadToEntry(
+    t: MailThreadRow,
+    rules: InboxRules,
+    /** Already-resolved label NAMES for this thread ([labelsForThreads]).
+     *  Defaulted so every existing caller stays valid. */
+    labels: List<String> = emptyList(),
+): InboxEntry = InboxEntry(
     key = "mail:${t.id}",
     source = InboxSource.MAIL,
     sourceId = t.id,
@@ -266,6 +307,7 @@ fun threadToEntry(t: MailThreadRow, rules: InboxRules): InboxEntry = InboxEntry(
     inInbox = rules.routeForSender(t.fromEmail) == "inbox",
     unread = t.isUnread,
     routeKey = t.fromEmail.lowercase(),
+    labels = labels,
 )
 
 fun roomToEntry(r: ChatRoomRow, rules: InboxRules, now: Long): InboxEntry {
@@ -486,6 +528,9 @@ data class InboxLists(
  * @param spaces the hub's spaces list — every agent-row join (review
  *   hand-backs, #blocked cards, owned-card headers, space titles) derives
  *   from it, so the Inbox never loads a board.
+ * @param labelsByThread thread id → Gmail user-label names
+ *   ([labelsForThreads]) — built once for the whole list, and reused by the
+ *   snoozed view so a snoozed thread shows the same chips.
  */
 fun composeInbox(
     threads: List<MailThreadRow>,
@@ -499,6 +544,7 @@ fun composeInbox(
     now: Long,
     xOnly: Boolean = false,
     spaces: List<io.amar.console.data.spaces.SpacesRepository.SpaceSummary> = emptyList(),
+    labelsByThread: Map<String, List<String>> = emptyMap(),
 ): InboxLists {
     val reviewKeys = spaces.flatMapTo(HashSet()) { it.reviewAgentKeys }
     val blockedKeys = blockedAgentKeys(spaces)
@@ -508,8 +554,9 @@ fun composeInbox(
     val snoozed = ArrayList<InboxEntry>()
     val all = buildList {
         for (t in threads) {
-            if (threadIsLive(t, now)) add(threadToEntry(t, rules))
-            else if (t.isInbox && t.snoozedUntil != null && t.snoozedUntil > now) snoozed += threadToEntry(t, rules).copy(snoozedUntil = t.snoozedUntil)
+            val labels = labelsByThread[t.id].orEmpty()
+            if (threadIsLive(t, now)) add(threadToEntry(t, rules, labels))
+            else if (t.isInbox && t.snoozedUntil != null && t.snoozedUntil > now) snoozed += threadToEntry(t, rules, labels).copy(snoozedUntil = t.snoozedUntil)
         }
         for (r in rooms) {
             if (roomIsLive(r, now)) add(roomToEntry(r, rules, now))
