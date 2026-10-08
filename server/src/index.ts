@@ -1004,7 +1004,14 @@ setInterval(() => {
   if (!((spilled && since > 3 * 3_600_000) || (ledgerDenied && since > 30 * 60_000))) return
   lastLoginCheckAt = Date.now()
   void checkMaxLogin().then((r) => {
-    if (r.ok) { log('[max-login] subscription login OK'); void subscriptionUsage.poll(); return }
+    // Re-poll whatever the verdict: the probe runs a real `claude`, which
+    // refreshes the OAuth token in place, so the usage endpoint may work again
+    // even when the answer was a rate-limit rejection. That is exactly when the
+    // ledger must not stay blind — its own sample is what proves a spill is
+    // genuine rather than the Fable credit wall (8 Oct 2026: a token expired
+    // mid-spill and the ledger went dark for 30 min while the login was fine).
+    void subscriptionUsage.poll()
+    if (r.ok) { log('[max-login] subscription login OK'); return }
     notifyMaxLoginDead(r.detail, r.auth)
   })
 }, 10 * 60_000).unref()
