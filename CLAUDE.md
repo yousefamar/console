@@ -754,6 +754,20 @@ local SSD was tried first and did not help.
   blocks the link until someone removes it, on purpose). A source under
   `~/.config/<project>/*.env` is already carried by `syncProjectCredentials`, so
   pointing at one needs no new authorisation.
+  **The source is left read-only (0400), and that is a safety property.** One
+  shared file reached through N symlinks means any write through a link mutates
+  every checkout at once, and an *appending* tool is the bad case: astera's
+  `worktree-db.sh:96` tops a worktree's `.env` up with
+  `grep -v '^DATABASE_URL' "$main_env" >> "$here/.env"`, and when both sides
+  resolve to the shared file that appends it INTO ITSELF, silently, once per
+  worktree. A/B on the box: at 0600 the file went 3 → 4 lines, at 0400 the
+  write fails `Permission denied` and the file is untouched. Nothing legitimate
+  writes through the link — a per-card value belongs in that worktree's own
+  file. The credential rsync resets the mode to 0600 and runs *before* the repo
+  prepare, so the 0400 is re-asserted every time rather than drifting.
+  **Generalise it: a symlink into a shared file is a WRITE hazard, not just a
+  read convenience** — whenever you point many trees at one file, make the file
+  refuse writes so the first offender fails loudly instead of corrupting it.
 - **A prepare NEVER moves the primary checkout's HEAD** (`decidePrimaryCheckout`,
   tested): clone when absent, fast-forward only when already on the desktop's
   default branch and clean, otherwise fetch refs and leave it. It used to

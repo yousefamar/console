@@ -206,12 +206,27 @@ async function ensurePrimaryCheckout(
  *  replacing them silently could lose the only copy of a working config. Says
  *  so instead. Inert until the source file exists on the box — which, for a
  *  source under `~/.config/<project>/`, `syncProjectCredentials` already
- *  mirrors, so nothing new has to be authorised to carry it. */
+ *  mirrors, so nothing new has to be authorised to carry it.
+ *
+ *  The source is left **read-only (0400)**, which is a safety property and not
+ *  tidiness. One shared file reached through N symlinks means any write through
+ *  a link mutates every checkout at once, and a tool that appends is the bad
+ *  case: astera's `worktree-db.sh:96` tops up a worktree's `.env` with
+ *  `grep -v '^DATABASE_URL' "$main_env" >> "$here/.env"`, and if both sides
+ *  resolve to this file that appends it INTO ITSELF, doubling it per worktree
+ *  with nothing said (found by Astera general reviewing this mechanism, 8 Oct
+ *  2026). At 0400 the same write fails with EACCES, naming the file, at the
+ *  moment it happens. Nothing legitimate writes through the link: a per-card
+ *  value belongs in that worktree's own file, and `worktree-db.sh` already
+ *  de-symlinks before `set_var` for exactly that reason. The rsync mirror
+ *  resets the mode to 0600 on every prepare and runs BEFORE this, so the 0400
+ *  is re-asserted rather than drifting. */
 async function ensureAppEnvLink(cfg: ForgeConfig, repoName: string, code: string, log: (m: string) => void): Promise<void> {
   const src = cfg.appEnv[repoName]
   if (!src) return
   const r = await forgeExec(cfg, `
     if [ ! -e '${src}' ]; then echo NO-SOURCE; exit 0; fi
+    chmod 400 '${src}'
     if [ -e '${code}/.env' ] && [ ! -L '${code}/.env' ]; then echo REAL-ENV; exit 0; fi
     ln -sfnT '${src}' '${code}/.env' && echo LINKED`)
   if (r.stdout.includes('LINKED')) log(`[forge] ${repoName}: .env → ${src} (symlink; the bytes stay outside the checkout)`)
