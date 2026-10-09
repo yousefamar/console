@@ -959,6 +959,23 @@ local SSD was tried first and did not help.
   records the old SHAs as ancestors with main's tree untouched (compare
   `git rev-parse HEAD^{tree}` before and after), push, `con agent forge up`.
   Never force the mirror.
+- **Path parity covers SIBLING checkouts too, and the prepare does not create
+  them yet.** On the desktop `/opt/code/astera-app-staging` is a git worktree
+  of `astera-app` on `staging`; astera's `worktree-db.sh` and
+  `ensure-node-modules.sh` borrow `node_modules` from `<main checkout>-staging`
+  and fall back to main's when it is absent. Forge had no such sibling, so every
+  forge worktree ran staging code on main's dependencies, and on 9 Oct 2026 one
+  new direct devDependency on staging turned tsc red in all 35 worktrees and
+  stopped every landing. Interim: `~/proj/code/astera-app-staging` was created
+  on the box BY HAND (worktree on `staging`, `pnpm install` through `heavy.sh`)
+  — a rebuilt box loses it and nothing refreshes it; the lasting fix is a
+  Backlog plan awaiting Yousef. **Never create `/opt/code/astera-app-staging`
+  on the box**, not even as a link: astera's `release.sh` guard checks that
+  absolute path and release must never run on forge. `/opt/code` there is a
+  real directory holding explicit per-repo links, which is why the `~/proj`
+  worktree does not show up under it. And a prepare never installs
+  dependencies or resets a tree; a DIRTY primary is left alone, which also
+  means it stops fast-forwarding until someone cleans it.
 - **Don't forget these two**, both easy to miss: a remote session's transcript
   lives on forge and is rsynced back at each turn end or `con agent search`
   goes blind to it; and the repo link is not always named `repo` (Astera uses
