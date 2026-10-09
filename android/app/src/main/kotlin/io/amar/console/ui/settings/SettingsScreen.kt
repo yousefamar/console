@@ -386,6 +386,18 @@ fun SettingsScreen(app: ConsoleApp, onGrid: () -> Unit = {}, onHardware: () -> U
             )
         }
         OutlinedButton(
+            onClick = {
+                scope.launch {
+                    // Nothing cached yet (first run, or offline since install): fetch once.
+                    if (io.amar.console.core.AppPrefs.changelog.value.isEmpty()) Updater.check()
+                    val notes = io.amar.console.core.AppPrefs.changelog.value
+                    if (notes.isEmpty()) status = "No release notes yet."
+                    else io.amar.console.ui.shell.WhatsNew.show(notes, install = Updater.available.value, markSeen = true)
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) { Text("What's new") }
+        OutlinedButton(
             onClick = { scope.launch { Updater.check(); status = "Checked for updates." } },
             modifier = Modifier.fillMaxWidth(),
         ) { Text("Check for updates") }

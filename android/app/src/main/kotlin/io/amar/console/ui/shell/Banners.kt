@@ -3,6 +3,7 @@ package io.amar.console.ui.shell
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -16,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -120,7 +122,7 @@ fun ReAuthBanner(onFix: () -> Unit) {
 }
 
 @Composable
-fun UpdateBanner(versionName: String, onInstall: () -> Unit, onDismiss: () -> Unit) {
+fun UpdateBanner(versionName: String, onWhatsNew: (() -> Unit)?, onInstall: () -> Unit, onDismiss: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -129,11 +131,17 @@ fun UpdateBanner(versionName: String, onInstall: () -> Unit, onDismiss: () -> Un
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            if (versionName.isNotEmpty()) "Update available ($versionName)" else "Update available",
+            if (versionName.isNotEmpty()) "Update $versionName" else "Update available",
             style = MaterialTheme.typography.labelMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        TextButton(onClick = onInstall) { Text("Install") }
-        TextButton(onClick = onDismiss) { Text("×") }
+        // Three buttons share one phone-width row with the label: tighter
+        // padding than TextButton's default keeps the version readable.
+        val compact = PaddingValues(horizontal = 8.dp)
+        if (onWhatsNew != null) TextButton(onClick = onWhatsNew, contentPadding = compact) { Text("What's new") }
+        TextButton(onClick = onInstall, contentPadding = compact) { Text("Install") }
+        TextButton(onClick = onDismiss, contentPadding = compact) { Text("×") }
     }
 }

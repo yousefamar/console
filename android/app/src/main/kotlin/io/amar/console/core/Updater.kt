@@ -40,6 +40,7 @@ object Updater {
             if (conn.responseCode != 200) return@withContext
             val body = BufferedReader(InputStreamReader(conn.inputStream)).use { it.readText() }
             val json = JSONObject(body)
+            AppPrefs.setChangelog(Changelog.parse(body))
             val remoteCode = json.optInt("versionCode", -1)
             val remoteUrl = json.optString("url", "")
             if (remoteCode > BuildConfig.VERSION_CODE && remoteUrl.isNotEmpty()) {

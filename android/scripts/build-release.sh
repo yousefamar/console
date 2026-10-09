@@ -29,6 +29,22 @@ if [ ! -f "${CONSOLE_KEYSTORE_PATH}" ]; then
 fi
 
 cd "${HERE}"
+
+# The in-app "What's new" list, derived from BACKLOG.md. Generated BEFORE the
+# build so a backlog it cannot read (or a forgotten vCode bump) fails in the
+# first second, not after gradle.
+V_CODE_SRC=$(sed -n 's/^[[:space:]]*val vCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -1)
+: "${V_CODE_SRC:?could not read vCode from app/build.gradle.kts}"
+CHANGELOG=$(python3 "${HERE}/scripts/changelog.py" --backlog "${HERE}/BACKLOG.md" --version-code "${V_CODE_SRC}")
+echo "What's new in v${V_CODE_SRC} (what the phone will show):"
+NOTES=$(jq -r --argjson v "${V_CODE_SRC}" '.[] | select(.versionCode == $v) | .items[] | "  - " + .' <<<"${CHANGELOG}")
+if [ -n "${NOTES}" ]; then
+  echo "${NOTES}"
+else
+  echo "  WARNING: no backlog entries for v${V_CODE_SRC}; the update will list nothing new." >&2
+fi
+echo
+
 ./gradlew assembleRelease
 
 APK_IN="${HERE}/app/build/outputs/apk/release/app-release.apk"
@@ -52,16 +68,23 @@ OUT_NAME="console-${V_CODE}.apk"
 OUT_PATH="${PUB_DIR}/${OUT_NAME}"
 cp "${APK_IN}" "${OUT_PATH}"
 
+if [ "${V_CODE}" != "${V_CODE_SRC}" ]; then
+  echo "Built APK is v${V_CODE} but build.gradle.kts said v${V_CODE_SRC}; refusing to publish a changelog for the wrong version." >&2
+  exit 1
+fi
+
 SHA=$(sha256sum "${OUT_PATH}" | awk '{print $1}')
-cat > "${PUB_DIR}/latest.json" <<EOF
-{
-  "versionCode": ${V_CODE},
-  "versionName": "${V_NAME}",
-  "url": "/apk/${OUT_NAME}",
-  "sha256": "${SHA}",
-  "publishedAt": "$(date -u +%FT%TZ)"
-}
-EOF
+# Written whole then renamed: the hub reads this file per request.
+jq -n \
+  --argjson versionCode "${V_CODE}" \
+  --arg versionName "${V_NAME}" \
+  --arg url "/apk/${OUT_NAME}" \
+  --arg sha256 "${SHA}" \
+  --arg publishedAt "$(date -u +%FT%TZ)" \
+  --argjson changelog "${CHANGELOG}" \
+  '{versionCode: $versionCode, versionName: $versionName, url: $url, sha256: $sha256, publishedAt: $publishedAt, changelog: $changelog}' \
+  > "${PUB_DIR}/latest.json.tmp"
+mv "${PUB_DIR}/latest.json.tmp" "${PUB_DIR}/latest.json"
 
 echo
 echo "Published:"

@@ -61,6 +61,19 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
     val update by io.amar.console.core.Updater.available.collectAsState()
     val authExpired by io.amar.console.core.AuthState.expired.collectAsState()
 
+    // "What's new": offered on the update banner, from Settings, and once by
+    // itself after an update (the notes were cached with the pre-update fetch,
+    // so this works on a first launch with no network).
+    val changelog by io.amar.console.core.AppPrefs.changelog.collectAsState()
+    val lastSeenVersion by io.amar.console.core.AppPrefs.lastSeenVersion.collectAsState()
+    val whatsNew by WhatsNew.request.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(changelog, lastSeenVersion) {
+        val unseen = io.amar.console.core.Changelog.unseen(
+            changelog, lastSeenVersion, io.amar.console.BuildConfig.VERSION_CODE,
+        )
+        if (unseen.isNotEmpty() && WhatsNew.request.value == null) WhatsNew.show(unseen, markSeen = true)
+    }
+
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route ?: GRID_ROUTE
     // Feed the RESOLVED route (args substituted) to AppLifecycle so
@@ -112,8 +125,12 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
             Modifier.fillMaxSize()
         ) {
             update?.let { u ->
+                val notes = io.amar.console.core.Changelog.between(
+                    changelog, io.amar.console.BuildConfig.VERSION_CODE, u.versionCode,
+                )
                 UpdateBanner(
                     versionName = u.versionName,
+                    onWhatsNew = if (notes.isEmpty()) null else ({ WhatsNew.show(notes, install = u) }),
                     onInstall = { io.amar.console.core.Updater.downloadAndInstall(app, u.url) },
                     onDismiss = { io.amar.console.core.Updater.dismiss() },
                 )
@@ -377,6 +394,13 @@ fun AppShell(app: ConsoleApp, navController: NavHostController) {
         // shell Box or its internal BottomCenter alignment is meaningless and
         // the snackbar renders as a full-width bar at the TOP.
         UndoHost(shellScope, Modifier.fillMaxSize().align(androidx.compose.ui.Alignment.BottomCenter))
+        whatsNew?.let { request ->
+            WhatsNewSheet(
+                request,
+                onInstall = { io.amar.console.core.Updater.downloadAndInstall(app, it.url) },
+                onDismiss = { WhatsNew.dismiss() },
+            )
+        }
         // Sync/offline status as a floating pill — an OVERLAY, so it never
         // shifts the layout underneath (the old in-flow banner nudged the
         // whole screen every time a sync started).

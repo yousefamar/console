@@ -49,7 +49,31 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
-_(nothing — v112 was cut 2026-10-09)_
+- **What's new: see the changelog before and after every update** (Yousef,
+  9 Oct: "whenever I install a new version (or even a button in the banner), I
+  can see a changelog"). Before: the banner said "Update available (0.2.N)"
+  with Install and ×, and nothing on the phone ever said what a version
+  changed; the only record was this file. Now three surfaces share one sheet
+  (`ui/shell/WhatsNewSheet.kt`, hosted by the shell): the update banner gains a
+  **What's new** button listing every version between the installed one and
+  the offer, with Install under the notes; the sheet opens by itself once on
+  the first launch after an update; and Settings → App → What's new shows the
+  last 20 versions. The text is not hand-written: `scripts/changelog.py` takes
+  each entry's lead-in from this file (the bold title, or for an unbolded entry
+  the text up to the first parenthesis or sentence end) and `build-release.sh`
+  embeds the result as `changelog` in `latest.json`, which the hub already
+  serves verbatim — no hub change. The phone caches the array in `AppPrefs` on
+  every update check, which is what makes the after-update sheet work offline:
+  the notes for the new version were fetched by the old one. `lastSeenVersion`
+  (device-local) records what has been shown; 0 means never, and shows the
+  installed version only rather than the whole history. Pure `core/Changelog.kt`
+  (parse, between, unseen); `ChangelogTest` (13) also runs the real generator
+  over this file, so a format drift fails the suite instead of shipping an
+  empty list. Release guard on the way: the generator runs before gradle and
+  refuses entries awaiting release under an already-shipped vCode (a forgotten
+  bump). The banner label is now "Update 0.2.N" so three buttons fit one row.
+  Not verifiable here (no emulator): banner fit, the sheet, and the first-launch
+  pop need the phone.
 
 ## Shipped
 

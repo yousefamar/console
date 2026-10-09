@@ -31,6 +31,17 @@ so regressions are felt within the hour.
   awaiting release" block under a new `### vN (date)` heading in `BACKLOG.md`,
   commit, push. Every entry explains root cause, not just the symptom — the
   backlog IS the engineering log.
+- **An entry's lead-in is what Yousef reads on his phone.** The in-app "What's
+  new" is derived, never hand-written: `scripts/changelog.py` takes each
+  top-level entry's bold title (or, unbolded, the text up to the first
+  parenthesis / sentence end) and `build-release.sh` embeds it in `latest.json`
+  as `changelog`. So open every entry with a short bold title that states the
+  change as he will see it ("Gmail labels show on Inbox mail rows"), not the
+  bug ("labels were missing") and not a file name; card ids and backticks are
+  stripped. The script prints the list before gradle starts — read it. Keep the
+  order bump → build → roll: the build reads the block while it is still under
+  "Built, awaiting release", and refuses if that block has entries but the
+  vCode is already under Shipped.
 - **Ship whole scope.** Items you list for a batch all land in that batch.
 - **`BACKLOG.md` is contended** — several sessions/forks edit it concurrently.
   Re-read before editing; anchored edits only; if your anchor fails, re-read (an
