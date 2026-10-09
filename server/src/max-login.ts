@@ -21,6 +21,7 @@
 
 import { spawn } from 'node:child_process'
 import { tmpdir } from 'node:os'
+import { activeLoginDir } from './max-logins.js'
 
 export type MaxLoginCheck =
   | { ok: true }
@@ -85,7 +86,11 @@ export function checkMaxLogin(opts: { timeoutMs?: number; configDir?: string } =
     let stderr = ''
     let settled = false
     const done = (r: MaxLoginCheck) => { if (!settled) { settled = true; clearTimeout(timer); resolve(r) } }
-    const proc = spawn('claude', maxLoginArgs(), { cwd: tmpdir(), env: maxLoginEnv(process.env, opts.configDir), stdio: ['ignore', 'pipe', 'pipe'] })
+    // No dir given = the login the fleet is ON. The bare default used to be the
+    // hub's own ~/.claude, so the 21:31 return probe on 9 Oct 2026 tested the
+    // spent `default` login and kept the fleet on Bedrock while `second` was fine.
+    const configDir = opts.configDir ?? activeLoginDir()
+    const proc = spawn('claude', maxLoginArgs(), { cwd: tmpdir(), env: maxLoginEnv(process.env, configDir), stdio: ['ignore', 'pipe', 'pipe'] })
     const timer = setTimeout(() => {
       proc.kill('SIGKILL')
       done({ ok: false, auth: false, detail: `no answer in ${Math.round(timeoutMs / 1000)} s` })

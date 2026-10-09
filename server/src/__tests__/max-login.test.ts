@@ -1,5 +1,17 @@
-import { describe, it, expect } from 'vitest'
-import { classifyMaxLogin, maxLoginArgs, maxLoginEnv, PROBE_MODEL } from '../max-login.js'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { EventEmitter } from 'node:events'
+import { classifyMaxLogin, checkMaxLogin, maxLoginArgs, maxLoginEnv, PROBE_MODEL } from '../max-login.js'
+import { setLoginRegistry, type MaxLoginRegistry } from '../max-logins.js'
+
+const spawned: Array<{ env: NodeJS.ProcessEnv }> = []
+vi.mock('node:child_process', () => ({
+  spawn: (_cmd: string, _args: string[], opts: { env: NodeJS.ProcessEnv }) => {
+    spawned.push({ env: opts.env })
+    const p = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: () => {} })
+    setImmediate(() => { p.stdout.emit('data', JSON.stringify({ is_error: false, result: 'OK' })); p.emit('close', 0) })
+    return p
+  },
+}))
 
 const ok = JSON.stringify({ type: 'result', is_error: false, result: 'OK' })
 
@@ -48,5 +60,21 @@ describe('the probe is first-party on the real login', () => {
     for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_CHILD_SESSION']) {
       expect(env[k]).toBeUndefined()
     }
+  })
+})
+
+describe('checkMaxLogin probes the login the fleet is on (9 Oct 2026)', () => {
+  afterEach(() => { setLoginRegistry(null); spawned.length = 0 })
+
+  it('with no dir given, it runs against the ACTIVE login, not ~/.claude', async () => {
+    setLoginRegistry({ activeDir: () => '/home/amar/.claude-logins/second' } as unknown as MaxLoginRegistry)
+    expect(await checkMaxLogin()).toEqual({ ok: true })
+    expect(spawned.at(-1)!.env.CLAUDE_CONFIG_DIR).toBe('/home/amar/.claude-logins/second')
+  })
+
+  it('an explicit dir still wins', async () => {
+    setLoginRegistry({ activeDir: () => '/home/amar/.claude-logins/second' } as unknown as MaxLoginRegistry)
+    await checkMaxLogin({ configDir: '/tmp/candidate' })
+    expect(spawned.at(-1)!.env.CLAUDE_CONFIG_DIR).toBe('/tmp/candidate')
   })
 })
