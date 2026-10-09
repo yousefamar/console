@@ -773,7 +773,8 @@ local SSD was tried first and did not help.
   `con agent list`, with the count of messages spent into the error — that is
   the re-send list) and the hub raises ONE alert per outage: a log line per
   session, a push, and **`agent.auth.failed`** on the bus. Belt, independent of
-  the running hub's code: cron `I2K_JQU` runs
+  the running hub's code: cron `g9ImVPw` (on Console general; find it by its
+  guard if the id has changed) runs
   `~/exec/console-auth-failure-guard.py` every 5 min and wakes Console general
   when any session's latest answer is a login error. NOT built: re-delivering
   the spent messages (needs the manifest, since the cure usually arrives by
