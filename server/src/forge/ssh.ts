@@ -108,6 +108,90 @@ export async function cancelDevPort(cfg: ForgeConfig, port: number): Promise<boo
   return setForward(cfg, 'L', `${port}:127.0.0.1:${port}`, 'cancel')
 }
 
+const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+
+/** bash, shared by the watchdog below and the reaper (forge/reaper.ts):
+ *  `forge_descendants <root> [spare]` prints every live descendant of <root>
+ *  by walking ppid, never through <spare>; `forge_kill_tree <root> [spare]
+ *  [grace-seconds]` SIGTERMs the root and that tree together, waits, then
+ *  SIGKILLs what is left (exit 1 if it had to).
+ *
+ *  The tree is enumerated BEFORE anything is signalled, because a child whose
+ *  parent just died reparents to init and can no longer be found. And it is a
+ *  ppid walk on purpose, not a process-group or environment match: it takes
+ *  what the agent is running right now (its tool calls, their test runners) and
+ *  spares what was deliberately daemonised earlier, such as a dev server left
+ *  up for review — the same line a local `kill` draws. */
+export const FORGE_TREE_FNS = [
+  'forge_descendants() {',
+  '  local root="$1" spare="${2:-0}" p pp q',
+  '  local -A par=()',
+  '  while read -r p pp; do par[$p]=$pp; done < <(ps -e -o pid= -o ppid=)',
+  '  for p in "${!par[@]}"; do',
+  '    q=$p',
+  '    while [[ -n ${par[$q]:-} && $q != "$root" && $q != "$spare" && $q -gt 1 ]]; do q=${par[$q]}; done',
+  '    [[ $q == "$root" && $p != "$root" ]] && echo "$p"',
+  '  done',
+  '  return 0',
+  '}',
+  // A zombie still answers `kill -0`. It has exited; only its parent has not
+  // collected it yet, and waiting out the grace for one would turn every clean
+  // SIGTERM into a reported SIGKILL.
+  'forge_alive() {',
+  '  local s',
+  '  read -r s 2>/dev/null < "/proc/$1/stat" || return 1',
+  '  [[ ${s##*) } != Z* ]]',
+  '}',
+  'forge_kill_tree() {',
+  '  local root="$1" spare="${2:-0}" grace="${3:-5}" all alive p i',
+  '  all="$root $(forge_descendants "$root" "$spare" | tr "\\n" " ")"',
+  '  kill -TERM $all 2>/dev/null',
+  '  for ((i = 0; i < grace * 10; i++)); do',
+  '    alive=""',
+  '    for p in $all; do forge_alive "$p" && alive="$alive $p"; done',
+  '    [[ -z $alive ]] && return 0',
+  '    sleep 0.1',
+  '  done',
+  '  kill -KILL $alive 2>/dev/null',
+  '  return 1',
+  '}',
+].join('\n')
+
+/** Seconds a remote agent's tree gets between SIGTERM and SIGKILL. */
+export const FORGE_KILL_GRACE_S = 5
+
+/** The process that makes a remote agent die with its connection.
+ *
+ *  Every way the hub stops an agent — interrupt, kill, hibernate, a model,
+ *  login or backend respawn, its own shutdown — is a signal to `this.process`,
+ *  and for a forge session that process is the local `ssh` client. Killing it
+ *  only closes the channel: with no pty sshd signals nothing, so the remote
+ *  `claude` just saw stdin reach EOF and, mid-turn, kept working with nobody
+ *  attached. Each respawn then added a live twin (9 Oct 2026: two restarts and
+ *  two switches in twelve minutes left 3-5 processes per session on the box,
+ *  one of which landed a PR; Astera general stopped 38 by hand).
+ *
+ *  So stdin reaches the agent THROUGH this process. It relays until the
+ *  channel closes, then ends the agent's tree. `$1` is the agent's pid — the
+ *  wrapper below execs the agent in place, so the watchdog is its child. If it
+ *  has been reparented by the time stdin closes, the agent exited by itself and
+ *  there is nothing to stop.
+ *
+ *  It must not print: its stdout IS the agent's stdin. */
+const FORGE_WATCHDOG = [
+  'cat',
+  'exec >/dev/null 2>&1',
+  '[[ "$(ps -o ppid= -p $$ | tr -d " ")" == "$1" ]] || exit 0',
+  FORGE_TREE_FNS,
+  `forge_kill_tree "$1" "$$" ${FORGE_KILL_GRACE_S}`,
+].join('\n')
+
+/** Exec the agent with its stdin fed by the watchdog. The watchdog re-execs
+ *  under a short argv (`… forge-watchdog <pid>`) so that nothing but the agent
+ *  itself carries the agent's command line: anything that finds agents with
+ *  `pgrep -f` — the reaper, Astera's own — must see ONE process per session. */
+const FORGE_AGENT_WRAPPER = `exec "$@" < <(exec 2>/dev/null; exec bash -c ${shq(FORGE_WATCHDOG)} forge-watchdog "$$")`
+
 /** The argv that runs a command on forge as if it were local, with env ferried
  *  explicitly. SSH does not forward env (SendEnv needs server-side AcceptEnv),
  *  so every variable the hub sets for a session is passed as an `env K=V`
@@ -115,23 +199,31 @@ export async function cancelDevPort(cfg: ForgeConfig, port: number): Promise<boo
  *
  *  stdin/stdout are clean pipes under `-T`, which is what makes a remote agent
  *  possible at all: the hub speaks stream-json over them and cannot tell the
- *  difference. */
+ *  difference.
+ *
+ *  `dieWithConnection` is for a long-lived process the hub talks to over stdin
+ *  (an agent). Never set it for a command whose stdin is closed up front: EOF
+ *  is the signal, so that command would be stopped the moment it started. */
 export function remoteCommandArgv(cfg: ForgeConfig, opts: {
   cwd: string
   env?: Record<string, string>
   command: string
   args?: string[]
+  dieWithConnection?: boolean
 }): string[] {
-  const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+  const q = shq
   const envPairs = Object.entries(opts.env ?? {})
     .filter(([, v]) => v !== undefined && v !== null)
     .map(([k, v]) => `${k}=${q(String(v))}`)
+  const run = [q(opts.command), ...(opts.args ?? []).map(q)]
   const inner = [
     'cd', q(opts.cwd), '&&',
     // Login-ish env: /etc/profile.d/forge.sh carries the shared warm caches
     // (npm/gradle/cargo/uv on local disk) and the Android SDK paths.
     '.', '/etc/profile.d/forge.sh', '>/dev/null', '2>&1', ';',
-    'exec', 'env', ...envPairs, q(opts.command), ...(opts.args ?? []).map(q),
+    'exec', 'env', ...envPairs,
+    ...(opts.dieWithConnection ? ['bash', '-c', q(FORGE_AGENT_WRAPPER), 'forge-agent'] : []),
+    ...run,
   ].join(' ')
   return ['-T', '-o', 'BatchMode=yes', cfg.host, inner]
 }

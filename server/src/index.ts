@@ -54,6 +54,7 @@ import {
   prepareRemoteSession, releaseRemoteSession, forgeAvailable, decidePlacement, prewarmCwd, boardRemote,
   allocateDevPort, forwardDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
   stopForgeIfIdle, isCwdPrepared, preparedCwdList, moveSessionToForge, abandonPendingMoves, type MoveTarget,
+  reapForgeStale, describeForgeReaped, masterAlive,
 } from './forge/index.js'
 import { loadSkillIndex, skillsForCard } from './kanban/skill-hints.js'
 import { buildParentDigest } from './kanban/fork-digest.js'
@@ -3240,6 +3241,9 @@ httpServer.listen(port, host, () => {
     } catch (err) {
       log(`[reaper] boot reap failed: ${(err as Error).message}`)
     }
+    // Same again on forge, and for the same reason it comes before the restore
+    // loop: every remote agent the previous hub started is still on the box.
+    await reapForgeTwins('boot')
     if (manifest.length > 0) {
       log(`Restoring ${manifest.length} session(s) from manifest...`)
 
@@ -3504,6 +3508,8 @@ httpServer.listen(port, host, () => {
       }
     })()
     staleSweeper.start()
+    forgeSweepTimer = setInterval(() => void reapForgeTwins('sweep'), FORGE_SWEEP_MS)
+    forgeSweepTimer.unref?.()
   })()
 
   log('')
@@ -3525,6 +3531,35 @@ const staleSweeper = new StaleProcessSweeper({
   },
   log,
 })
+
+// The same reaper for forge (forge/reaper.ts). The local one cannot see the
+// box, so until 9 Oct 2026 nothing ended a remote agent that outlived its
+// connection. `boot` ends everything a previous hub started; `sweep` also ends
+// a copy of a session that a newer copy from THIS hub has superseded — the net
+// under the watchdog that normally makes that impossible.
+//
+// Only ever over a master that is already up: a stopped box runs nothing, and
+// a reaper must not be the thing that wakes it or holds it awake.
+const FORGE_SWEEP_MS = 120_000
+let forgeSweepTimer: ReturnType<typeof setInterval> | null = null
+let forgeReapBusy = false
+async function reapForgeTwins(when: 'boot' | 'sweep'): Promise<void> {
+  const cfg = forgeConfig()
+  if (!cfg || forgeReapBusy) return
+  forgeReapBusy = true
+  try {
+    if (!(await masterAlive(cfg))) return
+    const r = await reapForgeStale(cfg, { ownPid: process.pid, ...(when === 'sweep' ? { supersededMinAgeMs: 90_000 } : {}) })
+    for (const x of r.reaped) log(`[reaper] ${describeForgeReaped(x)}`)
+    if (r.reaped.length) log(`[reaper] forge ${when}: ${r.reaped.length} stale agent(s) ended, ${r.live} live`)
+    else if (when === 'boot') log(`[reaper] forge boot: nothing stale on the box (${r.live} agent(s) running)`)
+    if (!r.ok || r.reason) log(`[reaper] forge ${when}: ${r.reason ?? 'incomplete'}`)
+  } catch (err) {
+    log(`[reaper] forge ${when} reap failed: ${(err as Error).message}`)
+  } finally {
+    forgeReapBusy = false
+  }
+}
 
 // Graceful shutdown — save manifest synchronously, then end every claude
 // child BEFORE exiting. Children are SIGTERMed without touching session state
@@ -3557,6 +3592,7 @@ function shutdown() {
   listenerEngine.stop()
   eventBus.stop()
   staleSweeper.stop()
+  if (forgeSweepTimer) clearInterval(forgeSweepTimer)
   locationWatcher.stop()
   void imapWatcher.stop()
   recallIndex?.stop()

@@ -584,7 +584,10 @@ export class Session extends EventEmitter {
         // on the box, read as a pruned transcript, and respawn with no context
         // (9 Oct 2026, 15 forks). Same path string as before multi-login.
         const remoteEnv = { ...sessionEnv, CLAUDE_CONFIG_DIR: canonicalDir() }
-        const argv = remoteCommandArgv(cfg, { cwd, env: remoteEnv, command: 'claude', args })
+        // dieWithConnection: every kill() below signals `proc`, which here is
+        // only the ssh client. Without it the remote claude outlives each one
+        // of them as a twin still working its turn (forge/ssh.ts, watchdog).
+        const argv = remoteCommandArgv(cfg, { cwd, env: remoteEnv, command: 'claude', args, dieWithConnection: true })
         proc = spawn('ssh', argv, { stdio: ['pipe', 'pipe', 'pipe'], env: forgeSshEnv() })
         this.remoteHost = cfg.host
         noteForgeUse()
