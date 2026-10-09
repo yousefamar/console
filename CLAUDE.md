@@ -668,11 +668,33 @@ local SSD was tried first and did not help.
 - **The box holds credentials, and its perimeter is IAM, not a port** (8 Oct 2026,
   Yousef: *"Copy ~/.config/astera/*.env to the box. Treat the box as an extension
   of my PC, tell console to make sure the security is hardened so nobody gets in
-  but us, e.g. via tailscale."*). `syncProjectCredentials` mirrors an allow-list
-  of `<dir>/<glob>` pairs on every prepare (astera's `*.env` today) to
+  but us, e.g. via tailscale."*). `syncProjectCredentials` mirrors a **NAMED
+  allow-list of files** on every prepare (`CREDENTIAL_MIRRORS[].files` in
+  `forge/agent-env.ts`; for astera exactly `app.env` + `neon.env`) to
   `~/.config/<project>/` on the box — outside every checkout, per astera rules
-  6/163 — at 0700/0600, with `--delete` scoped by the same filters so a revoked
-  credential stops existing there. The gh token is deliberately NOT auto-synced
+  6/163 — at 0700/0600. **It was his glob until 8 Oct 2026, and he narrowed it
+  himself** once the inventory was in front of him: `*.env` had put 41 files on
+  the shared box (live Stripe, Xero, QuickBooks, Rippling payroll, Resend, D&B,
+  OpenAI, Airtable, Google OAuth), when only two have any box-side consumer —
+  `app.env` is every worktree's `.env` (`appEnv`), `neon.env` is read by astera's
+  `worktree-db.sh` / `local-gate.sh`, and `land-gate.sh` reads nothing. What
+  forced the question: `blob.env` held the REAL prod Vercel Blob write token and
+  an Astera fork read it on the box. Three rules that cost something to learn:
+  **(1) a credential reaches the box by VALUE, not by filename** — a hash sweep
+  of the directory found the same token duplicated in `front-sync.staging.env`,
+  so withholding the obvious name would have been a false all-clear; sweep by
+  hash (`grep '^KEY=' f | cut -d= -f2- | sha256sum`, never print the value)
+  before calling one closed. **(2) `--delete-excluded` is what makes the list
+  retroactive** — plain `--delete` deliberately PROTECTS excluded files on the
+  receiver, so dropping a name would stop that credential being updated while
+  leaving the box's copy in place; with it the box's directory is exactly the
+  list, which means **nothing running ON the box may write into a mirrored
+  directory** (the next prepare removes it). **(3) A fix on `main` that no
+  running process has loaded is not a fix** — the old-code hub re-copied all 41
+  files on the next prepare and undid a hand-applied removal within three hours;
+  remediation was only real after `con hub restart`. To give the box another
+  file: add its name to `files`, restart the hub, `con agent forge up`. The gh
+  token is deliberately NOT auto-synced
   (it lives in the desktop keyring, so re-pushing it would reinstall a revoked
   one); its absence is logged instead, and `scripts/forge/install-gh-token.sh`
   installs one — prefer a fine-grained token on stdin over the keyring's, which
@@ -815,9 +837,10 @@ local SSD was tried first and did not help.
   checkout to make the type generator run, which astera's rules 6/163 forbid and
   which the next reader cannot tell from real ones. Inert with no mapping, and it
   never clobbers a regular `.env` (it says so instead — so a stray real file
-  blocks the link until someone removes it, on purpose). A source under
-  `~/.config/<project>/*.env` is already carried by `syncProjectCredentials`, so
-  pointing at one needs no new authorisation.
+  blocks the link until someone removes it, on purpose). The source must ALSO be
+  named in `CREDENTIAL_MIRRORS[].files`, or it never reaches the box and the
+  prepare logs `appEnv source … is not on the box yet` — the mirror is a named
+  allow-list now, not a glob that would have carried it for free.
   **The source is left read-only (0400), and that is a safety property.** One
   shared file reached through N symlinks means any write through a link mutates
   every checkout at once, and an *appending* tool is the bad case: astera's
@@ -861,12 +884,30 @@ local SSD was tried first and did not help.
 - **Merge-back is fast-forward ONLY.** A remote fork merges on forge; the hub
   fast-forwards this checkout. On divergence it REFUSES and notes the card —
   never auto-merge, never silently strand commits on a cloud box.
+  **Never bring forge commits home with `git cherry-pick`** — it lands the code
+  under NEW SHAs and leaves the mirror's originals unmerged, so the two mains
+  have diverged while holding identical content, and EVERY later prepare for
+  that repo is rejected non-fast-forward (three Android commits picked at 09:30
+  on 8 Oct blocked Console's forge for 17 h; ^brisk-lark and ^trim-duck fell
+  back to local). Fetch and fast-forward (`git fetch forge && git merge
+  --ff-only forge/main`) instead. If it has already happened: `git fetch forge`,
+  then `git cherry main forge/main` — every line `-` means each forge commit has
+  a patch-equivalent on main and nothing is stranded (a `+` is real unmerged
+  work: stop and merge it properly). All `-` → `git merge -s ours forge/main`
+  records the old SHAs as ancestors with main's tree untouched (compare
+  `git rev-parse HEAD^{tree}` before and after), push, `con agent forge up`.
+  Never force the mirror.
 - **Don't forget these two**, both easy to miss: a remote session's transcript
   lives on forge and is rsynced back at each turn end or `con agent search`
   goes blind to it; and the repo link is not always named `repo` (Astera uses
   `app`) — use `resolveCheckout()`, never a hardcoded name.
 - forge holds **no copy of the vault** — it sshfs-mounts the project dir off
-  this machine. `settings.json` is rewritten there to drop `AWS_PROFILE` so it
+  this machine. **The mount is PER-PROJECT (`projects/<slug>/**`), not the whole
+  vault**, so `~/sync/brain/assets/` on the box is a plain box-local directory:
+  a file a remote fork wants back on the desktop (a screenshot, a clip) must be
+  written under the project dir, never under `assets/`, where it would sit on
+  the box and vanish with it (found by Astera's ^kind-crab, 8 Oct 2026).
+  `settings.json` is rewritten there to drop `AWS_PROFILE` so it
   uses its instance role; cost attribution survives because the owner tag rides
   the inference-profile ARN, not the caller.
 - Ops: `con agent forge status|up|down|move|run`, `scripts/forge/provision.sh`
