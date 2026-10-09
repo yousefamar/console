@@ -69,6 +69,7 @@ class MoneyRepository(
         private const val META_CATEGORIES = "money:categories"
         private const val META_EMERGENCY = "money:emergencyFund"
         private const val META_LAST_SYNC = "money:lastReconcileAt"
+        private const val META_MONTHLY = "money:monthly"
     }
 
     data class State(
@@ -91,6 +92,8 @@ class MoneyRepository(
         val budgetStatus: List<BudgetStatus> = emptyList(),
         /** `YYYY-MM` the status rows describe. */
         val budgetMonth: String? = null,
+        /** `/finance/monthly` → per-category spend per month, ascending (cached for offline). */
+        val monthly: List<MonthlySpend> = emptyList(),
         val status: MoneyStatus? = null,
         /** Epoch ms of the last successful reconcile (persisted). */
         val lastReconcileAt: Long? = null,
@@ -143,6 +146,7 @@ class MoneyRepository(
         val buds = meta.get(META_BUDGETS)?.let { MoneyJson.parseBudgets(it) }
         val budStatus = meta.get(META_BUDGET_STATUS)?.let { MoneyJson.parseBudgetStatus(it) }
         val rules = meta.get(META_RULES)?.let { MoneyJson.decodeRules(it) }
+        val monthly = meta.get(META_MONTHLY)?.let { MoneyMonthly.parse(it) } ?: emptyList()
         _state.value = _state.value.copy(
             rules = rules ?: _state.value.rules,
             overrides = ovs ?: _state.value.overrides,
@@ -151,6 +155,7 @@ class MoneyRepository(
             budgets = buds ?: _state.value.budgets,
             budgetStatus = budStatus ?: _state.value.budgetStatus,
             budgetMonth = meta.get(META_BUDGET_MONTH) ?: _state.value.budgetMonth,
+            monthly = if (monthly.isNotEmpty()) monthly else _state.value.monthly,
             projection = projection ?: _state.value.projection,
             netWorthHistory = if (history.isNotEmpty()) history else _state.value.netWorthHistory,
             categories = if (cats.isNotEmpty()) cats else _state.value.categories,
@@ -184,6 +189,7 @@ class MoneyRepository(
             val balD = async { runCatching { hub.get("/finance/networth") } }
             val month = MoneyBudgets.currentMonth()
             val bsD = async { runCatching { hub.get("/finance/budget-status?month=$month") } }
+            val monthlyD = async { runCatching { hub.get("/finance/monthly") } }
 
             val txBody = txD.await().onFailure(::noteError).getOrNull()
             val classes = clsD.await().onFailure(::noteError).getOrNull()
@@ -240,6 +246,15 @@ class MoneyRepository(
                 meta.put(MetaRow(META_BUDGET_STATUS, MoneyJson.encodeBudgetStatus(rows)))
                 meta.put(MetaRow(META_BUDGET_MONTH, month))
                 _state.value = _state.value.copy(budgetStatus = rows, budgetMonth = month)
+            }
+            monthlyD.await().getOrNull()?.let { body ->
+                val rows = MoneyMonthly.parse(body)
+                // An empty reply is "no history" only if the hub says so with `[]`; a
+                // non-array body (proxy error page) must not blank the cached chart.
+                if (rows.isNotEmpty() || body.trim() == "[]") {
+                    meta.put(MetaRow(META_MONTHLY, MoneyMonthly.encode(rows)))
+                    _state.value = _state.value.copy(monthly = rows)
+                }
             }
             ovD.await().getOrNull()?.let { body -> storeOverrides(withInFlight(MoneyOverrides.parseOverrides(body))) }
             statusD.await().getOrNull()?.let { body ->

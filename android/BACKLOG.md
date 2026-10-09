@@ -13,10 +13,10 @@ Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
 - Money: editing parity — the read-only pane shipped (^quick-gull), the
   per-transaction override landed (^warm-wren), the manual-account balance
   ledger landed (^loud-frog), Budgets landed (^busy-vole), Categories + rules
-  CRUD landed (^busy-goat) and account CRUD landed (^brisk-deer); still
-  SPA-only: Scenarios (`/finance/scenarios`, comparison chart), monthly spend
-  chart (`/finance/monthly`), shared-tab panel. Plan: monthly chart next;
-  scenarios last.
+  CRUD landed (^busy-goat), account CRUD landed (^brisk-deer) and the monthly
+  spend chart landed (^soft-boar); still SPA-only: Scenarios
+  (`/finance/scenarios`, comparison chart), shared-tab panel. Plan: scenarios
+  last.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
@@ -49,7 +49,24 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
-_(nothing — v111 was cut 2026-10-08)_
+- Money: monthly spend chart (^soft-boar, closes the next item of Open "Money:
+  editing parity" — SPA `MonthlySpendChart.tsx` on the Cashflow tab). Before,
+  the phone had no answer to "where does my money go each month": the SPA
+  stacks `/finance/monthly` by the user's own categories, the app never fetched
+  it. Now a "Monthly spend" section sits under Budgets: stacked bars per month
+  by category (Compose Canvas), £ or % of the month, a 6/12/24/36-month window
+  like the SPA's selects, tap a bar for that month's per-category breakdown
+  (defaults to the newest month; the breakdown doubles as the legend), then the
+  trailing 3-month average the projection's variable-spend forecast uses (the
+  SPA's ForecastPanel). Bars rather than the SPA's stacked area: a thumb picks
+  a bar, it cannot hover an area. Pure `data/money/MoneyMonthly.kt` ports the
+  SPA's grouping verbatim (window = last N months, categories with any outflow
+  in the window ordered by window total, stable on ties, inflows clamped to 0)
+  and the hub's `trailingCategoryAverage`, so the phone needs no second fetch
+  of `/finance/variable-forecast`. Read-only, no outbox; the reply is cached in
+  the meta table (`money:monthly`, no Room change) so the chart opens offline,
+  and a non-array reply (proxy error page) never blanks the cache.
+  `MoneyMonthlyTest` (10) + `MoneyRepositoryMonthlyTest` (2).
 
 ## Shipped
 
