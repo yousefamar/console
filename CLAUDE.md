@@ -638,7 +638,15 @@ local SSD was tried first and did not help.
   a project in, a `#local` card tag opts one card out, `#forge` opts one in.
   **Local is also the FALLBACK** — unreachable box, non-fast-forwardable repo,
   refused tunnel all run locally with the reason logged. The board must never
-  stall on a sleeping cloud box.
+  stall on a sleeping cloud box. The card detail's cloud pill sets the tag
+  (board default / local / forge); CLI: `con board <project> local|forge|here "<card>"`.
+- **A Console fork on forge has nothing to borrow `node_modules` from.** The
+  box's primary clone carries only `cli/node_modules` (`ensureConCli`, for
+  `con`); root, `server/` and `src/` have none, so the desktop's "symlink all
+  four from main" trick does not exist there. Install what the suite needs in
+  your worktree (`npm install` in root, `server/`, `cli/`) before trusting a
+  full run: without it 8-9 server tests fail on import or spawn, identically on
+  unchanged main, and read as pre-existing breakage (^keen-eel, 9 Oct 2026).
 - **Readiness is prepared AHEAD of dispatch** (`prewarmCwd`), because the board
   watcher stamps the card before the *synchronous* dispatch callback runs. A
   cold box used to mean "runs locally this once" — which was EVERY time (five
