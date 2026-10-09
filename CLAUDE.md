@@ -665,12 +665,50 @@ local SSD was tried first and did not help.
   holds across a restart too: a deferred move is one in-memory callback, so
   `shutdown()` drains the pending set and reports each as a failure rather than
   letting it simply not happen.
+- **A remote agent must die with its connection, because every hub-side stop
+  is only a signal to the local `ssh` client.** `interrupt()`, `kill()`,
+  hibernation, a model / login / backend respawn and shutdown all call
+  `this.process.kill(…)`, and for a forge session `this.process` is `ssh`.
+  Killing it closes the channel; with no pty sshd signals nothing, so the remote
+  `claude` only saw stdin reach EOF and, mid-turn, went on working with nobody
+  attached while the hub respawned a second copy. 9 Oct 2026: two restarts, a
+  login switch and a backend switch in twelve minutes left 3-5 live copies of
+  each session on the box; stale ones re-sent messages, wrote duplicate card
+  notes, one landed a PR, and Astera general stopped 38 by hand. Even the stop
+  button left a twin. Three defences now, the same three the local side has
+  had since 4 Sept (`agents/process-reaper.ts`):
+  **(1) the watchdog** (`forge/ssh.ts`, `dieWithConnection`): the agent's stdin
+  reaches it THROUGH a small relay process; when the channel closes, the relay
+  SIGTERMs the agent and what it is running, and SIGKILLs after 5 s. Measured on
+  the box: the tree is gone ~0.4 s after the ssh client dies by KILL, TERM or
+  INT; without it, it survives indefinitely. Never set `dieWithConnection` on a
+  command whose stdin is closed up front — EOF is the signal.
+  **(2) the boot reap** and **(3) the 2-min sweep** (`forge/reaper.ts`,
+  `reapForgeTwins` in `index.ts`): list the box's agents over ssh, judge them
+  with the local reaper's rules, end the stale trees. Stale = `CONSOLE_HUB_PID`
+  names a hub that is not this one; the sweep also ends an OLDER copy of a
+  session this hub started twice. An unmarked process on the box is never
+  judged. Both run only over a master that is already up — a reaper must not
+  wake the box or hold it awake.
+  The kill is a **ppid walk, enumerated before anything is signalled** (a child
+  whose parent just died reparents to init and cannot be found afterwards). It
+  takes the agent's live tool calls and background tasks and SPARES anything
+  daemonised earlier, so a `run_in_background` dev server dies with its agent
+  and a double-forked one does not. Nothing but the agent carries the agent's
+  argv (the relay re-execs as `… forge-watchdog <pid>`), so `pgrep -f` still
+  sees ONE process per session. To check the box by hand:
+  `pgrep -u amar -fa '[c]laude --output-format'` and compare each one's
+  `CONSOLE_HUB_PID` (`tr '\0' '\n' </proc/<pid>/environ`) with the hub's node
+  pid — and bracket the first letter of any pattern you count over ssh, or the
+  counting shell counts itself.
 - **The box holds credentials, and its perimeter is IAM, not a port** (8 Oct 2026,
   Yousef: *"Copy ~/.config/astera/*.env to the box. Treat the box as an extension
   of my PC, tell console to make sure the security is hardened so nobody gets in
   but us, e.g. via tailscale."*). `syncProjectCredentials` mirrors a **NAMED
   allow-list of files** on every prepare (`CREDENTIAL_MIRRORS[].files` in
-  `forge/agent-env.ts`; for astera exactly `app.env` + `neon.env`) to
+  `forge/agent-env.ts`; for astera `app.env`, `neon.env`, and since 9 Oct
+  `stripe-test.env` — one line, the `sk_test_` key only, split out of
+  `stripe.env` precisely so the live key and webhook secrets stay home) to
   `~/.config/<project>/` on the box — outside every checkout, per astera rules
   6/163 — at 0700/0600. **It was his glob until 8 Oct 2026, and he narrowed it
   himself** once the inventory was in front of him: `*.env` had put 41 files on

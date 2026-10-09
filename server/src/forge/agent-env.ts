@@ -191,6 +191,15 @@ const CREDENTIAL_MIRRORS = [
       // NEON_API_KEY, read by the app's scripts/worktree-db.sh and local-gate.sh
       // to fork a per-card database. This is the "first database step" above.
       'neon.env',
+      // One line: STRIPE_SECRET_KEY holding the sk_test_ key, so a remote fork
+      // can create Stripe TEST-mode objects for hand-back screenshots (asked by
+      // Astera general, 9 Oct 2026, for ^pale-deer's promo codes page). A
+      // test-mode key cannot move money. It is a separate file on purpose:
+      // stripe.env also holds the sk_live_ key and the webhook secrets and
+      // stays off the box. Checked before listing, by shape not by trust —
+      // 0600, one key, sk_test_ prefix, no live or whsec_ string. Re-check
+      // that if the file ever grows a second line.
+      'stripe-test.env',
     ],
   },
 ] as const
