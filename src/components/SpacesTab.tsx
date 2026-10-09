@@ -10,7 +10,7 @@
 // and Done/Blocked transitions all round-trip through the vault file.
 
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { ExternalLink, Bot, Camera, Cpu, Eye, EyeOff, Feather, FileText, FolderKanban, FolderX, GitBranch, ImagePlus, Kanban, Clock, ListTodo, Loader2, Mic, Moon, Play, Plus, Radio, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
+import { ExternalLink, Bot, Camera, Cloud, Cpu, Eye, EyeOff, Feather, FileText, FolderKanban, FolderX, Gauge, GitBranch, ImagePlus, Kanban, Clock, ListTodo, Loader2, Mic, Moon, Play, Plus, Radio, Tag, Terminal, Trash2, UserPlus, X } from 'lucide-react'
 import clsx from 'clsx'
 import { useSpacesStore, type SpaceSummary } from '@/store/spaces'
 import { usePref } from '@/prefs'
@@ -36,7 +36,7 @@ import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
-import { splitTrailingTags, cardUrls, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
+import { splitTrailingTags, cardUrls, boardRemote, EFFORT_LEVELS, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl, isVideoAsset, prepareCardMedia } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
@@ -1201,6 +1201,8 @@ function BoardView() {
   const toggleNofork = useSpacesStore((s) => s.toggleNofork)
   const toggleInherit = useSpacesStore((s) => s.toggleInherit)
   const setCardModel = useSpacesStore((s) => s.setCardModel)
+  const setCardEffort = useSpacesStore((s) => s.setCardEffort)
+  const setCardRemote = useSpacesStore((s) => s.setCardRemote)
   const editCard = useSpacesStore((s) => s.editCard)
   const deleteCard = useSpacesStore((s) => s.deleteCard)
   const sessions = useAgentStore((s) => s.sessions)
@@ -1472,6 +1474,9 @@ function BoardView() {
           onToggleNoforkNow={() => void toggleNofork(detailTarget.ref)}
           onToggleInheritNow={() => void toggleInherit(detailTarget.ref)}
           onSetModel={(m) => void setCardModel(detailTarget.ref, m)}
+          onSetEffort={(e) => void setCardEffort(detailTarget.ref, e)}
+          boardRemote={boardRemote(board.header.join('\n'))}
+          onSetRemote={(r) => void setCardRemote(detailTarget.ref, r)}
           onMoveColumn={(to) => {
             const { ref } = detailTarget
             // moveCard appends to the destination column — track the new ref
@@ -1532,7 +1537,7 @@ function BoardView() {
  *  properties (column, assignee, #blocked) are pills that apply INSTANTLY;
  *  title + description are borderless editors that autosave on blur/close.
  *  Esc / backdrop / X close (committing any pending text). */
-export function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onEditContent, onAssignKey, onToggleBlockedNow, onToggleNoforkNow, onToggleInheritNow, onSetModel, onMoveColumn, onDelete }: {
+export function CardDetailModal({ card, columnTitles, currentColumn, assignable, onClose, onEditContent, onAssignKey, onToggleBlockedNow, onToggleNoforkNow, onToggleInheritNow, onSetModel, onSetEffort, boardRemote: boardPlacement, onSetRemote, onMoveColumn, onDelete }: {
   card: BoardCard
   columnTitles: string[]
   currentColumn: string
@@ -1545,6 +1550,10 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
   onToggleNoforkNow: () => void
   onToggleInheritNow: () => void
   onSetModel: (model: string | null) => void
+  onSetEffort: (effort: string | null) => void
+  /** The board's `remote:` frontmatter — what an untagged card follows. */
+  boardRemote: 'forge' | 'local' | null
+  onSetRemote: (remote: 'forge' | 'local' | null) => void
   /** Moves the card; parent updates the tracked ref. */
   onMoveColumn: (to: string) => void
   onDelete: () => void
@@ -1567,6 +1576,8 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
   const [nofork, setNofork] = useState(card.nofork)
   const [inherit, setInherit] = useState(card.inherit)
   const [model, setModel] = useState(card.model)
+  const [effort, setEffort] = useState(card.effort)
+  const [remote, setRemote] = useState(card.remote)
   const [column, setColumn] = useState(currentColumn)
   const bodyRef = useRef(body)
   bodyRef.current = body
@@ -1639,7 +1650,7 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
     >
       <div className="mx-4 flex h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-border bg-surface-0 shadow-2xl">
         {/* Property pills — instant apply, Linear-style header row */}
-        <div className="flex flex-wrap items-center gap-1.5 px-5 pt-4">
+        <div className="relative flex flex-wrap items-center gap-1.5 pl-5 pr-16 pt-4">
           {/* Column pill (status) — styled picker, not the native select */}
           <PillPicker
             icon={<Kanban size={10} className="text-text-tertiary" />}
@@ -1707,6 +1718,32 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
             onPick={(v) => { setModel(v); onSetModel(v) }}
             title="Fork model — the ticket-fork spawns pinned to this"
           />
+          {/* Effort pill — pins the ticket-fork's --effort at dispatch (#effort/… token). */}
+          <PillPicker
+            icon={<Gauge size={10} className={effort ? 'text-amber-400' : 'text-text-tertiary'} />}
+            value={effort}
+            valueLabel={effort ?? 'effort'}
+            options={[
+              { value: null, label: 'Policy effort (default)' },
+              ...EFFORT_LEVELS.map((l) => ({ value: l as string | null, label: l })),
+            ]}
+            onPick={(v) => { setEffort(v); onSetEffort(v) }}
+            title="Fork effort — the ticket-fork spawns pinned to this"
+          />
+          {/* Placement pill — where the ticket-fork runs (#forge / #local token);
+              unpinned follows the board's `remote:` frontmatter. */}
+          <PillPicker
+            icon={<Cloud size={10} className={remote ? 'text-teal-400' : 'text-text-tertiary'} />}
+            value={remote}
+            valueLabel={remote ?? boardPlacement ?? 'local'}
+            options={[
+              { value: null, label: `Board default (${boardPlacement ?? 'local'})` },
+              { value: 'local', label: 'local — this machine' },
+              { value: 'forge', label: 'forge — remote box' },
+            ]}
+            onPick={(v) => { const r = v as 'forge' | 'local' | null; setRemote(r); onSetRemote(r) }}
+            title={remote ? 'Where the ticket-fork runs — pinned on this card' : 'Where the ticket-fork runs — board default'}
+          />
           {splitTrailingTags(card.text).tags.map((t) => (
             <span key={t} className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-400">{t}</span>
           ))}
@@ -1715,17 +1752,19 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
               ^{card.blockId}
             </span>
           )}
-          <span className="flex-1" />
-          <button
-            onClick={() => { void showConfirm('Delete this card?', { title: 'Delete card', confirmLabel: 'Delete' }).then((ok) => { if (ok) { dictation.stop(); onDelete() } }) }}
-            className="text-text-tertiary hover:text-destructive"
-            title="Delete card"
-          >
-            <Trash2 size={13} />
-          </button>
-          <button onClick={close} className="text-text-tertiary hover:text-text-primary" title="Close">
-            <X size={14} />
-          </button>
+          {/* Pinned top-right: the pills wrap among themselves, never push these down. */}
+          <div className="absolute right-5 top-4 flex h-[22px] items-center gap-1.5">
+            <button
+              onClick={() => { void showConfirm('Delete this card?', { title: 'Delete card', confirmLabel: 'Delete' }).then((ok) => { if (ok) { dictation.stop(); onDelete() } }) }}
+              className="text-text-tertiary hover:text-destructive"
+              title="Delete card"
+            >
+              <Trash2 size={13} />
+            </button>
+            <button onClick={close} className="text-text-tertiary hover:text-text-primary" title="Close">
+              <X size={14} />
+            </button>
+          </div>
         </div>
 
         {/* One buffer, git-commit style: bold first line = title, rest = detail. */}
@@ -2122,6 +2161,8 @@ function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpe
         {card.nofork && <span className="rounded-sm bg-violet-500/15 px-1 py-px text-[9px] text-violet-400" title="Dispatch wakes the role directly — no fork">nofork</span>}
         {card.inherit && <span className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400" title="Ticket-fork inherits the parent's whole transcript">inherit</span>}
         {card.model && <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9px] text-amber-400" title="Ticket-fork spawns pinned to this model">{card.model}</span>}
+        {card.effort && <span className="rounded-sm bg-amber-500/15 px-1 py-px text-[9px] text-amber-400" title="Ticket-fork spawns pinned to this effort">{card.effort}</span>}
+        {card.remote && <span className="rounded-sm bg-teal-500/15 px-1 py-px text-[9px] text-teal-400" title={card.remote === 'forge' ? 'Ticket-fork runs on the remote box' : 'Ticket-fork runs on this machine'}>{card.remote}</span>}
         {tags.map((t) => (
           <span key={t} className="rounded-sm bg-sky-500/15 px-1 py-px text-[9px] text-sky-400">{t}</span>
         ))}

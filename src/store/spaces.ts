@@ -93,6 +93,10 @@ interface SpacesState {
   /** Flip the `#nofork` tag — dispatch wakes the role directly, no fork. */
   toggleNofork: (ref: CardRef) => Promise<void>
   setCardModel: (ref: CardRef, model: string | null) => Promise<void>
+  setCardEffort: (ref: CardRef, effort: string | null) => Promise<void>
+  /** Pin where the card's fork runs (`#forge` / `#local`); null clears the tag
+   *  so the card follows the board's `remote:` frontmatter. */
+  setCardRemote: (ref: CardRef, remote: 'forge' | 'local' | null) => Promise<void>
   /** Set/clear a PROJECT board's `default_owner:` frontmatter (the agent that
    *  unassigned In-Progress cards auto-assign to). Takes a slug, not the active
    *  space — the session context menu reaches sessions from any rail. */
@@ -488,6 +492,33 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     refreshCardLine(card)
     set({ board: { ...board } })
     if (q) await get().boardApi('model', { card: q, model })
+  },
+
+  setCardEffort: async (ref, effort) => {
+    const { board } = get()
+    if (!board) return
+    const col = board.columns.find((c) => c.title === ref.column)
+    const card = col?.cards[ref.index]
+    if (!card) return
+    const q = cardQuery(board, ref)
+    card.effort = effort
+    refreshCardLine(card)
+    set({ board: { ...board } })
+    if (q) await get().boardApi('effort', { card: q, effort })
+  },
+
+  setCardRemote: async (ref, remote) => {
+    const { board } = get()
+    if (!board) return
+    const col = board.columns.find((c) => c.title === ref.column)
+    const card = col?.cards[ref.index]
+    if (!card) return
+    const q = cardQuery(board, ref)
+    card.remote = remote
+    refreshCardLine(card)
+    set({ board: { ...board } })
+    // The verb IS the target; clearing rides on `local` with `remote: null`.
+    if (q) await get().boardApi(remote ?? 'local', { card: q, ...(remote === null ? { remote: null } : {}) })
   },
 
 }))

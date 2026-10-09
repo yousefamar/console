@@ -34,6 +34,10 @@ export interface BoardCard {
   /** `#inherit` tag present — the ticket-fork inherits the parent's whole
    *  transcript (default is a fresh-context fork + digest; ^tall-colt). */
   inherit: boolean
+  /** `#forge` / `#local` tag — WHERE this card's fork runs. `#local` opts one
+   *  card out of a board that set `remote: forge`; `#forge` opts one in. null
+   *  = follow the board. */
+  remote: 'forge' | 'local' | null
   /** `#model/<alias-or-id>` tag, or the bare alias shorthand `#sonnet` /
    *  `#opus` / `#haiku` / `#fable` — the ticket-fork spawns pinned to this
    *  model (e.g. `#haiku` for a fast fix). */
@@ -90,6 +94,15 @@ export function boardDefaultOwner(content: string): string | null {
   return m ? m[1]! : null
 }
 
+/** Board-level frontmatter: `remote: forge` — every ticket-fork on this board
+ *  runs on the remote box unless its card says `#local`. Keep in sync with
+ *  server/src/forge/config.ts (anything but a known target reads as unset). */
+export function boardRemote(content: string): 'forge' | 'local' | null {
+  const fence = content.match(/^---\n([\s\S]*?)\n---/)
+  const m = (fence?.[1] ?? '').match(/^remote:\s*(\S+)\s*$/m)
+  return m?.[1] === 'forge' ? 'forge' : m?.[1] === 'local' ? 'local' : null
+}
+
 /** The CLI's model aliases (`ANTHROPIC_DEFAULT_<ALIAS>_MODEL`) — keep in sync
  *  with server/src/kanban/board.ts. A bare `#<alias>` card tag is shorthand
  *  for `#model/<alias>`; other hashtags never pin a model. */
@@ -107,17 +120,18 @@ export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const EFFORT_RE = new RegExp(`^(.*?)\\s+#effort[/:](${EFFORT_LEVELS.join('|')})$`)
 
 /** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
-export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean; inherit: boolean; model: string | null; effort: string | null } {
+export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean; inherit: boolean; remote: 'forge' | 'local' | null; model: string | null; effort: string | null } {
   let text = rawText.trimEnd()
   let agentKey: string | null = null
   let blockId: string | null = null
   let blocked = false
   let nofork = false
   let inherit = false
+  let remote: 'forge' | 'local' | null = null
   let model: string | null = null
   let effort: string | null = null
   // Up to one of each, trailing, any order.
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 8; i++) {
     const block = text.match(/^(.*?)\s+\^([A-Za-z0-9-]+)$/)
     if (block && blockId === null) {
       text = block[1]!.trimEnd()
@@ -148,6 +162,12 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
       inherit = true
       continue
     }
+    const rem = text.match(/^(.*?)\s+#(forge|local)$/)
+    if (rem && remote === null) {
+      text = rem[1]!.trimEnd()
+      remote = rem[2]! as 'forge' | 'local'
+      continue
+    }
     const mdl = text.match(/^(.*?)\s+#model\/([\w.:-]+)$/) ?? text.match(MODEL_ALIAS_RE)
     if (mdl && model === null) {
       text = mdl[1]!.trimEnd()
@@ -162,7 +182,7 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
     }
     break
   }
-  return { text, agentKey, blockId, blocked, nofork, inherit, model, effort }
+  return { text, agentKey, blockId, blocked, nofork, inherit, remote, model, effort }
 }
 
 /** Trailing `#tag` run on a card's (token-stripped) text — display-layer
@@ -216,8 +236,8 @@ export function parseBoard(content: string): KanbanBoard {
     if (!col) { header.push(line); continue }
     const card = line.match(CARD_RE)
     if (card) {
-      const { text, agentKey, blockId, blocked, nofork, inherit, model, effort } = parseCardTokens(card[2]!)
-      col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, blocked, nofork, inherit, model, effort, lines: [line] })
+      const { text, agentKey, blockId, blocked, nofork, inherit, remote, model, effort } = parseCardTokens(card[2]!)
+      col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, blocked, nofork, inherit, remote, model, effort, lines: [line] })
       inCard = true
       continue
     }
@@ -268,7 +288,7 @@ export function sanitizeCardText(text: string): string {
   let t = text
   // Repeat: "foo @a #blocked" collides twice.
   for (;;) {
-    const m = t.match(new RegExp(`(\\s)(#blocked|#nofork|#inherit|#model\\/[\\w.:-]+|#(?:${MODEL_ALIASES.join('|')})|#effort[/:](?:${EFFORT_LEVELS.join('|')})|@[a-z0-9][a-z0-9-]*|\\^[A-Za-z0-9-]+)$`))
+    const m = t.match(new RegExp(`(\\s)(#blocked|#nofork|#inherit|#forge|#local|#model\\/[\\w.:-]+|#(?:${MODEL_ALIASES.join('|')})|#effort[/:](?:${EFFORT_LEVELS.join('|')})|@[a-z0-9][a-z0-9-]*|\\^[A-Za-z0-9-]+)$`))
     if (!m) return t
     t = `${t.slice(0, m.index! + m[1]!.length)}\`${m[2]!}\``
   }
@@ -279,6 +299,7 @@ function cardFirstLine(card: BoardCard): string {
   const tokens = [card.text]
   if (card.model) tokens.push(modelToken(card.model))
   if (card.effort) tokens.push(`#effort/${card.effort}`)
+  if (card.remote) tokens.push(`#${card.remote}`)
   if (card.nofork) tokens.push('#nofork')
   if (card.inherit) tokens.push('#inherit')
   if (card.blocked) tokens.push('#blocked')
@@ -424,6 +445,7 @@ export function addCard(board: KanbanBoard, columnTitle: string, text: string, o
     blocked: false,
     nofork: false,
     inherit: false,
+    remote: null,
     model: null,
     effort: null,
     lines: [''],

@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { hubFetch } from '@/hub'
 import { showAlert } from '@/dialog'
-import { findCardByQuery, parseBoard, type BoardCard, type CardRef, type KanbanBoard } from '@/kanban/board'
+import { boardRemote, findCardByQuery, parseBoard, type BoardCard, type CardRef, type KanbanBoard } from '@/kanban/board'
 import { useSpacesStore } from '@/store/spaces'
 import { useAgentStore } from '@/store/agent'
 import { hubErrorText } from '@/inbox/approve'
@@ -92,6 +92,9 @@ export function InboxCardModal({ slug, query, onClose }: Props) {
       onToggleNoforkNow={() => void post('nofork', { nofork: !card.nofork })}
       onToggleInheritNow={() => void post('inherit', { inherit: !card.inherit })}
       onSetModel={(m) => void post('model', { model: m })}
+      onSetEffort={(e) => void post('effort', { effort: e })}
+      boardRemote={boardRemote(board.header.join('\n'))}
+      onSetRemote={(r) => void post(r ?? 'local', r === null ? { remote: null } : {})}
       onMoveColumn={(to) => void post('move', { to })}
       onDelete={() => { onClose(); void post('remove', {}) }}
     />
