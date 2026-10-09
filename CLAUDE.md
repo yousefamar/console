@@ -701,6 +701,30 @@ local SSD was tried first and did not help.
   `CONSOLE_HUB_PID` (`tr '\0' '\n' </proc/<pid>/environ`) with the hub's node
   pid — and bracket the first letter of any pattern you count over ssh, or the
   counting shell counts itself.
+- **forge runs on Bedrock whatever the fleet is on, and a restart is what
+  proves it.** The box has no Max login and must never be given a copied one;
+  its identity is the instance role. Until 9 Oct 2026 its Bedrock wiring only
+  existed as a MIRROR of the desktop's `settings.json`, so when the fleet moved
+  to Max and the next restart re-mirrored, all 21 forge forks answered "Not
+  logged in" for 43 minutes. Since 30bb8700 a forge spawn sets the Bedrock env
+  and a Bedrock `--model` itself. Two things that incident taught about ANY
+  restart: it re-runs every prepare and respawns every session on the CURRENT
+  backend, so it surfaces whatever changed since the last one — never only your
+  own diff; and its check is a liveness probe (a forge fork and a local one
+  each ANSWER), not a process count, scheduled before you restart because the
+  hub may not nudge you afterwards (`con listen add --once --on hub.started`).
+- **"Not logged in" is a failed spawn, not an answer** (`agents/auth-failure.ts`,
+  4bc031e8). The CLI reports it as a synthetic assistant message with
+  `error: "authentication_failed"`; the session flags itself (`authFailure` in
+  `con agent list`, with the count of messages spent into the error — that is
+  the re-send list) and the hub raises ONE alert per outage: a log line per
+  session, a push, and **`agent.auth.failed`** on the bus. Belt, independent of
+  the running hub's code: cron `I2K_JQU` runs
+  `~/exec/console-auth-failure-guard.py` every 5 min and wakes Console general
+  when any session's latest answer is a login error. NOT built: re-delivering
+  the spent messages (needs the manifest, since the cure usually arrives by
+  restart). A forge transcript on the desktop is only as fresh as that fork's
+  last finished turn, so a fork mid-turn can still LOOK like it is failing.
 - **The box holds credentials, and its perimeter is IAM, not a port** (8 Oct 2026,
   Yousef: *"Copy ~/.config/astera/*.env to the box. Treat the box as an extension
   of my PC, tell console to make sure the security is hardened so nobody gets in

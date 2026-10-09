@@ -30,6 +30,8 @@ export const BUILTIN_TOPICS: TopicDoc[] = [
     fields: { project: 'board project', boardPath: 'vault-relative board path', cardId: '^id', text: 'card text', agentKey: 'worker agentKey', column: 'column' } },
   { topic: 'agent.session.ended', description: 'A hub agent session ended.',
     fields: { agentKey: 'agentKey', csid: 'claudeSessionId', name: 'session name' } },
+  { topic: 'agent.auth.failed', description: 'Agents answered with the CLI\'s login error ("Not logged in · Please run /login") instead of the model answering (agents/auth-failure.ts). ONE event per outage, not per session; each named session spent its last message into the error. `con agent list` shows `authFailure` on a session until it answers for real.',
+    fields: { count: 'sessions in this alert', forge: 'of those, on forge', local: 'of those, local', failingNow: 'every session failing right now, incl. ones alerted earlier', backends: 'what they were started on (bedrock | first_party)', detail: 'the CLI\'s own words', sessions: 'session names' } },
   { topic: 'listener.fired', description: 'A listener\'s action ran (meta — lets one rule watch another).',
     fields: { listenerId: 'listener id', action: 'action type', events: 'event ids coalesced into this action' } },
   { topic: 'listener.paused', description: 'A listener exceeded its per-hour ceiling and paused itself.',
