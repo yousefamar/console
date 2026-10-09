@@ -1001,6 +1001,21 @@ local SSD was tried first and did not help.
 - **Merge-back is fast-forward ONLY.** A remote fork merges on forge; the hub
   fast-forwards this checkout. On divergence it REFUSES and notes the card —
   never auto-merge, never silently strand commits on a cloud box.
+  **A forge fork's "committed on main" means FORGE's main, and it stays there
+  until its card is APPROVED** — fold-back runs only at wind-down
+  (`index.ts`, the one `foldBackFromForge` call). Console is trunk-based with
+  many committers, so in the meantime the desktop's main moves, the two
+  diverge, and from that moment every Console dispatch to forge is rejected
+  ("forge may be ahead") and runs locally, with a log line and nothing else.
+  9 Oct 2026: ^keen-eel's fix to this very path sat on the box for 3.5 h while
+  its card said "restart the hub to load it"; three restarts did not, and a
+  second card (^rare-ibis) silently ran locally. So: a hand-back from a forge
+  fork is not on the desktop until `git cherry -v main forge/main` is empty;
+  cron `OelejMc` (`~/exec/console-forge-stranded-guard.sh`, every 10 min, only
+  when the ssh master is already up) wakes Console general when forge holds
+  commits the desktop lacks. Not built (Backlog plan): the hub fast-forwarding
+  by itself when forge is strictly ahead, and waking the project owner on a
+  divergence instead of logging it.
   **Never bring forge commits home with `git cherry-pick`** — it lands the code
   under NEW SHAs and leaves the mirror's originals unmerged, so the two mains
   have diverged while holding identical content, and EVERY later prepare for
