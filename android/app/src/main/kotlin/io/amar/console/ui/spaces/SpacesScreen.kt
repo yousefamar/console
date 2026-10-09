@@ -1620,6 +1620,7 @@ private fun SpaceAgentsList(
     val boardState by spacesRepo.board.collectAsState()
     val default = remember(bound, boardState) { defaultAgent(bound, boardState?.defaultOwner) }
     val todosMap by agents.todos.collectAsState()
+    val authFailures by agents.authFailures.collectAsState()
     var creating by remember { mutableStateOf(false) }
     val spaces by spacesRepo.spaces.collectAsState()
     val spaceCwd = remember(spaces, slug) { spaces.firstOrNull { it.slug == slug }?.cwd }
@@ -1724,6 +1725,9 @@ private fun SpaceAgentsList(
                     if (s.backgroundProcessCount > 0) {
                         Icon(Icons.Filled.Terminal, "Background processes", tint = AMBER, modifier = Modifier.size(13.dp))
                         Text("${s.backgroundProcessCount}", style = MaterialTheme.typography.labelSmall, color = AMBER)
+                    }
+                    authFailures[s.id]?.let { f ->
+                        Text(f.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.red, maxLines = 1)
                     }
                     todosMap[s.id]?.let { ts ->
                         val done = ts.count { it.status == "completed" }

@@ -127,6 +127,9 @@ class AgentsRepository(
      *  `SessionInfo.queuedMessage`, live via `session_queued`). */
     private val _queued = MutableStateFlow<Map<String, String>>(emptyMap())
     val queued: StateFlow<Map<String, String>> = _queued
+    /** sessionId → hub `SessionInfo.authFailure`; replaced whole on every list push. */
+    private val _authFailures = MutableStateFlow<Map<String, AuthFailure>>(emptyMap())
+    val authFailures: StateFlow<Map<String, AuthFailure>> = _authFailures
     private val _generatingTitles = MutableStateFlow<Set<String>>(emptySet())
     val generatingTitles: StateFlow<Set<String>> = _generatingTitles
 
@@ -770,6 +773,7 @@ class AgentsRepository(
             val items = todosFrom(s["todos"] as? JsonArray)
             if (items.isEmpty()) null else id to items
         }.toMap()
+        _authFailures.value = AuthFailures.fromSessions(sessions)
         _queued.value = sessions.mapNotNull { s ->
             val id = s["id"]?.jsonPrimitive?.content ?: return@mapNotNull null
             val q = s["queuedMessage"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content }

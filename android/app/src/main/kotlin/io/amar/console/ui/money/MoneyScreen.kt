@@ -217,6 +217,7 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                 )
                 BudgetsSection(rows) { row -> budgetSheet = BudgetSheet.Edit(row.budget.categoryId) }
             }
+            item(key = "monthly") { MonthlySpendSection(state.monthly, cats) }
             item(key = "categories") {
                 val live = state.liveCategories.size
                 FoldableTitle(

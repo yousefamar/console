@@ -70,6 +70,7 @@ fun StatusBar(
 ) {
     if (session == null) return
     val usage = repo.contextUsage.collectAsState().value[sessionId]
+    val authFailure = repo.authFailures.collectAsState().value[sessionId]
     // The cron and listener sheets share one slot — one open at a time (SPA `sidePanel`).
     var sidePanel by remember { mutableStateOf<SidePanel?>(null) }
     var showModelMenu by remember { mutableStateOf(false) }
@@ -117,6 +118,9 @@ fun StatusBar(
                         }
                     }
                 }
+            }
+            authFailure?.let { f ->
+                Text(f.label, style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = RED, maxLines = 1)
             }
             // Permission-mode badge (only when not default).
             val mode = session.permissionMode
