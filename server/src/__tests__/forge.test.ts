@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { boardRemote, resolvePlacement, forgeConfig, type ForgeConfig } from '../forge/config.js'
 import { decidePlacement } from '../forge/index.js'
 import { remoteCommandArgv } from '../forge/ssh.js'
-import { remoteSettings, credentialRsyncArgv } from '../forge/agent-env.js'
+import { remoteSettings, remoteBedrockEnv, credentialRsyncArgv } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
 import { memoryDirFor } from '../forge/mounts.js'
 import { parseWorktreeList, decidePrimaryCheckout, githubHttpsUrl, baseRemoteFor } from '../forge/repo.js'
@@ -157,6 +157,30 @@ describe('remoteSettings', () => {
   })
   it('leaves a settings file with no env block alone', () => {
     expect(JSON.parse(remoteSettings('{"permissions":{"allow":[]}}'))).toEqual({ permissions: { allow: [] } })
+  })
+  it('wires Bedrock in even when the desktop file is on the Max subscription', () => {
+    // 9 Oct 2026: the fleet moved to a Max login, the mirror shipped a file with
+    // no Bedrock keys, and every forge fork answered "Not logged in".
+    const out = JSON.parse(remoteSettings(
+      JSON.stringify({ env: { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' }, theme: 'auto' }),
+      { CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: 'us-east-1', ANTHROPIC_MODEL: 'arn:…' },
+    )) as { env: Record<string, string>; theme: string }
+    expect(out.env).toEqual({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1', CLAUDE_CODE_USE_BEDROCK: '1', AWS_REGION: 'us-east-1', ANTHROPIC_MODEL: 'arn:…' })
+    expect(out.theme).toBe('auto')
+  })
+  it('adds the Bedrock wiring to a file that had no env block at all', () => {
+    const out = JSON.parse(remoteSettings('{}', { CLAUDE_CODE_USE_BEDROCK: '1' })) as { env: Record<string, string> }
+    expect(out.env).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1' })
+  })
+})
+
+describe('remoteBedrockEnv', () => {
+  it('is Bedrock-wired and carries no desktop credential, whatever the fleet is on', () => {
+    const env = remoteBedrockEnv()
+    expect(env.CLAUDE_CODE_USE_BEDROCK).toBe('1')
+    expect(env.AWS_REGION).toBe('us-east-1')
+    expect(env.ANTHROPIC_MODEL).toMatch(/^arn:aws:bedrock:/)
+    for (const k of ['AWS_PROFILE', 'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY']) expect(env[k], k).toBeUndefined()
   })
 })
 

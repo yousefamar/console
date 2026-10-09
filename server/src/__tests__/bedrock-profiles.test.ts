@@ -31,6 +31,42 @@ beforeEach(() => {
   backend.current = 'bedrock'
 })
 
+describe('taggedModelId, forced onto Bedrock for a box with no Max login', () => {
+  // 9 Oct 2026: the fleet moved to a Max login, forge forks were started with
+  // the fleet's first-party `--model`, and all 21 answered "Not logged in".
+  it('turns the fleet\'s first-party id into a profile ARN while the fleet is on Max', () => {
+    backend.current = 'first_party'
+    expect(taggedModelId('claude-opus-5-5')).toBe('claude-opus-5-5') // unforced: untouched, as before
+    const forced = taggedModelId('claude-opus-5-5', { forceBedrock: true })
+    expect(bare(forced)).toBe(knownProfiles()['us.anthropic.claude-opus-5-5'])
+    expect(forced).toMatch(ARN_RE)
+  })
+
+  it('finds a dated id whose Bedrock name carries a version suffix', () => {
+    backend.current = 'first_party'
+    expect(bare(taggedModelId('claude-haiku-4-5-20251001', { forceBedrock: true })))
+      .toBe(knownProfiles()['us.anthropic.claude-haiku-4-5-20251001-v1:0'])
+  })
+
+  it('never resolves one model to a longer-named sibling', () => {
+    backend.current = 'first_party'
+    // `claude-opus-5` must not prefix-match `…claude-opus-5-5`.
+    expect(bare(taggedModelId('claude-opus-5', { forceBedrock: true }))).toBe(knownProfiles()['us.anthropic.claude-opus-5'])
+  })
+
+  it('never hands a first-party id to a Bedrock-only process, even with no profile for it', () => {
+    backend.current = 'first_party'
+    expect(taggedModelId('claude-nonesuch-9', { forceBedrock: true })).toBe('us.anthropic.claude-nonesuch-9')
+  })
+
+  it('leaves aliases and ARNs alone — the CLI resolves aliases from the env the spawn supplies', () => {
+    backend.current = 'first_party'
+    expect(taggedModelId('sonnet', { forceBedrock: true })).toBe('sonnet')
+    const arn = 'arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/abc123'
+    expect(taggedModelId(arn, { forceBedrock: true })).toBe(arn)
+  })
+})
+
 describe('taggedModelId', () => {
   it('maps every id in the built-in table to a well-formed profile ARN', () => {
     const table = knownProfiles()

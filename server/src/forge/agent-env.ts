@@ -25,6 +25,7 @@ import { tmpdir, homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import type { ForgeConfig } from './config.js'
 import { forgeExec } from './ssh.js'
+import { presetEnv } from '../auth-backend.js'
 
 const execFileP = promisify(execFile)
 
@@ -42,16 +43,33 @@ async function rsyncUp(cfg: ForgeConfig, local: string, remote: string, opts: { 
   }).then(() => true).catch(() => false)
 }
 
-/** Strip the desktop's static-credential profile out of settings.json so the
- *  remote process falls through to the instance role. */
-export function remoteSettings(json: string): string {
+/** Static AWS credentials that belong to the desktop and must never reach a
+ *  cloud box; forge authenticates with its instance role. */
+const DESKTOP_ONLY_ENV = ['AWS_PROFILE', 'AWS_BEARER_TOKEN_BEDROCK', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'] as const
+
+/** The Bedrock wiring a forge process needs, whatever backend the FLEET is on.
+ *
+ *  forge has no Claude Max login and must never be given a copied one, so a
+ *  forge fork can only ever run on Bedrock. Until 9 Oct 2026 it got that wiring
+ *  by accident: it inherited the desktop's settings.json, which carried it only
+ *  while the fleet itself was on Bedrock. The night the fleet moved to a second
+ *  Max login, the next mirror shipped first-party settings and a first-party
+ *  `--model`, and all 21 forge forks answered "Not logged in" for 40 minutes. */
+export function remoteBedrockEnv(): Record<string, string> {
+  const env = presetEnv('bedrock')
+  for (const k of DESKTOP_ONLY_ENV) delete env[k]
+  return env
+}
+
+/** Rewrite the desktop's settings.json for the box: static credentials out (the
+ *  remote process falls through to the instance role), and `bedrockEnv`, when
+ *  given, in — so the file is Bedrock-wired even if the desktop's is not. */
+export function remoteSettings(json: string, bedrockEnv?: Record<string, string>): string {
   const parsed = JSON.parse(json) as { env?: Record<string, string> } & Record<string, unknown>
   if (parsed.env) {
-    delete parsed.env.AWS_PROFILE
-    delete parsed.env.AWS_BEARER_TOKEN_BEDROCK
-    delete parsed.env.AWS_ACCESS_KEY_ID
-    delete parsed.env.AWS_SECRET_ACCESS_KEY
+    for (const k of DESKTOP_ONLY_ENV) delete parsed.env[k]
   }
+  if (bedrockEnv) parsed.env = { ...(parsed.env ?? {}), ...bedrockEnv }
   return JSON.stringify(parsed, null, 2)
 }
 
@@ -86,7 +104,7 @@ export async function syncAgentEnv(cfg: ForgeConfig, log: (m: string) => void = 
   if (existsSync(settingsPath)) {
     let patched: string
     try {
-      patched = remoteSettings(readFileSync(settingsPath, 'utf8'))
+      patched = remoteSettings(readFileSync(settingsPath, 'utf8'), remoteBedrockEnv())
     } catch (err) {
       return { ok: false, reason: `settings.json unparseable: ${(err as Error).message}` }
     }

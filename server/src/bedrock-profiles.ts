@@ -117,10 +117,13 @@ function withContextHint(profileArn: string, model: string): string {
  *    `ANTHROPIC_DEFAULT_*_MODEL` env vars, which auth-backend.ts points at ARNs;
  *  - no profile for this model — WARNED, because it means untagged spend.
  */
-export function taggedModelId(model: string): string {
+export function taggedModelId(model: string, opts: { forceBedrock?: boolean } = {}): string {
   if (!model) return model
   if (isArn(model)) return model
-  if (detectActiveBackend() !== 'bedrock') return model
+  // `forceBedrock`: the caller's process runs on Bedrock whatever the FLEET is
+  // on — a forge fork, whose box has no Max login (session.ts). There the
+  // fleet's first-party id (`claude-opus-5-5`) must still become a Bedrock one.
+  if (!opts.forceBedrock && detectActiveBackend() !== 'bedrock') return model
   const hit = profiles[model]
   if (hit) return withContextHint(hit, model)
   // A first-party-shaped id (`claude-opus-4-8`) from a per-session pin that
@@ -129,6 +132,17 @@ export function taggedModelId(model: string): string {
   // alias branch below and bill untagged forever.
   const bedrockForm = profiles[`us.anthropic.${model}`]
   if (bedrockForm) return withContextHint(bedrockForm, model)
+  if (opts.forceBedrock && model.startsWith('claude-')) {
+    // Dated first-party ids gain a version suffix on Bedrock
+    // (`claude-haiku-4-5-20251001` -> `us.anthropic.claude-haiku-4-5-20251001-v1:0`).
+    // Match the suffix exactly: a bare prefix test would turn `claude-opus-5`
+    // into `…claude-opus-5-5`.
+    const versioned = Object.keys(profiles).find((k) => k.startsWith(`us.anthropic.${model}-v`))
+    if (versioned) return withContextHint(profiles[versioned], model)
+    // Never hand a first-party id to a Bedrock-only process: it is not an alias
+    // and the CLI rejects it. The bare `us.` form at least runs (untagged).
+    model = `us.anthropic.${model}`
+  }
   // Aliases are resolved by the CLI from env, which already points at ARNs.
   if (!model.includes('.')) return model
   if (!warned.has(model)) {

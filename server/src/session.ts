@@ -36,6 +36,7 @@ import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
+import { remoteBedrockEnv } from './forge/agent-env.js'
 import { activeLoginDir, canonicalDir } from './max-logins.js'
 import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, usageLimitTypeOf, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
@@ -583,11 +584,20 @@ export class Session extends EventEmitter {
         // active login's dir made every forge fork resume under a path absent
         // on the box, read as a pruned transcript, and respawn with no context
         // (9 Oct 2026, 15 forks). Same path string as before multi-login.
-        const remoteEnv = { ...sessionEnv, CLAUDE_CONFIG_DIR: canonicalDir() }
+        //
+        // And forge is Bedrock-ONLY: no Max login exists there and none may be
+        // copied over. So the Bedrock env and a Bedrock `--model` are set HERE,
+        // per spawn, not inherited from the fleet backend. They used to arrive
+        // only via the mirrored settings.json, i.e. only while the fleet itself
+        // was on Bedrock; the night it moved to a second Max login every forge
+        // fork was started with `--model claude-opus-5-5` and no AWS env, and
+        // answered "Not logged in" (9 Oct 2026, 21 forks, ~40 min).
+        const remoteEnv = { ...sessionEnv, CLAUDE_CONFIG_DIR: canonicalDir(), ...remoteBedrockEnv() }
+        const remoteArgs = args.map((a, i) => (args[i - 1] === '--model' ? taggedModelId(model, { forceBedrock: true }) : a))
         // dieWithConnection: every kill() below signals `proc`, which here is
         // only the ssh client. Without it the remote claude outlives each one
         // of them as a twin still working its turn (forge/ssh.ts, watchdog).
-        const argv = remoteCommandArgv(cfg, { cwd, env: remoteEnv, command: 'claude', args, dieWithConnection: true })
+        const argv = remoteCommandArgv(cfg, { cwd, env: remoteEnv, command: 'claude', args: remoteArgs, dieWithConnection: true })
         proc = spawn('ssh', argv, { stdio: ['pipe', 'pipe', 'pipe'], env: forgeSshEnv() })
         this.remoteHost = cfg.host
         noteForgeUse()
