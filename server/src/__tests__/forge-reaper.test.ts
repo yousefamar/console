@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { spawn, execFileSync } from 'node:child_process'
-import { remoteCommandArgv, type ExecResult } from '../forge/ssh.js'
-import { parseForgeProcs, findForgeStale, reapForgeStale, describeForgeReaped, FORGE_LIST_SCRIPT, FORGE_REAP_SCRIPT } from '../forge/reaper.js'
+import { remoteCommandArgv, execFailure, type ExecResult } from '../forge/ssh.js'
+import { parseForgeProcs, findForgeStale, reapForgeStale, describeForgeReaped, trailingDue, FORGE_LIST_SCRIPT, FORGE_REAP_SCRIPT } from '../forge/reaper.js'
 import { HUB_PID_ENV, type ProcInfo } from '../agents/process-reaper.js'
 import type { ForgeConfig } from '../forge/config.js'
 
@@ -166,6 +166,29 @@ describe('findForgeStale', () => {
     const procs = [proc({ pid: 10, csid: 's', ageMs: 400_000 }), proc({ pid: 11, csid: 's', ageMs: 200_000 })]
     expect(findForgeStale(procs, { ownPid: HUB })).toEqual([])
   })
+
+  it('the pass that follows a respawn does not wait for the sweep\'s 90 s', () => {
+    // 22:03 on 9 Oct 2026: replacements 20 s old, the agents they replaced
+    // still working. The sweep's rule leaves them; the post-respawn rule does not.
+    const procs = [proc({ pid: 10, csid: 's', ageMs: 1_601_000 }), proc({ pid: 11, csid: 's', ageMs: 20_000 })]
+    expect(findForgeStale(procs, { ownPid: HUB, supersededMinAgeMs: 90_000 })).toEqual([])
+    expect(findForgeStale(procs, { ownPid: HUB, supersededMinAgeMs: 10_000 }).map((s) => s.proc.pid)).toEqual([10])
+    // Still not while the watchdog's own 5 s grace is running.
+    const handover = [proc({ pid: 10, csid: 's', ageMs: 400_000 }), proc({ pid: 11, csid: 's', ageMs: 4_000 })]
+    expect(findForgeStale(handover, { ownPid: HUB, supersededMinAgeMs: 10_000 })).toEqual([])
+  })
+})
+
+describe('trailingDue — when the post-respawn pass runs', () => {
+  it('20 s after the last spawn of a burst', () => {
+    expect(trailingDue(1_000, 1_000, 20_000, 60_000)).toBe(21_000)
+    expect(trailingDue(9_000, 1_000, 20_000, 60_000)).toBe(29_000)
+  })
+
+  it('but never more than 60 s after the first, however long the spawns keep coming', () => {
+    expect(trailingDue(55_000, 1_000, 20_000, 60_000)).toBe(61_000)
+    expect(trailingDue(61_000, 1_000, 20_000, 60_000)).toBe(61_000)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -267,6 +290,25 @@ describe('reapForgeStale', () => {
   it('an unreachable box is a verdict, not a throw', async () => {
     const r = await reapForgeStale(cfg, { ownPid: HUB, exec: async () => ({ code: 255, stdout: '', stderr: 'ssh: connect to host forge: timed out' }) })
     expect(r).toEqual({ ok: false, reason: 'listing failed: ssh: connect to host forge: timed out', live: 0, reaped: [] })
+  })
+
+  it('a listing that never answered says so — the reason is never blank', async () => {
+    // What execFile hands back when its timeout kills ssh: code null, no stderr.
+    const timedOut = execFailure({ code: null, killed: true, signal: 'SIGTERM', stdout: '', stderr: '' }, 45_000)
+    expect(timedOut).toEqual({ code: 1, stdout: '', stderr: 'no answer within 45 s (ssh ended by SIGTERM)' })
+    const r = await reapForgeStale(cfg, { ownPid: HUB, exec: async () => timedOut })
+    expect(r.reason).toBe('listing failed: no answer within 45 s (ssh ended by SIGTERM)')
+    // And a refusal with nothing on stderr still names its exit code.
+    const silent = await reapForgeStale(cfg, { ownPid: HUB, exec: async () => ({ code: 255, stdout: '', stderr: '' }) })
+    expect(silent.reason).toBe('listing failed: exit 255, nothing on stderr')
+  })
+
+  it('execFailure keeps what ssh said, and only speaks for it when it said nothing', () => {
+    expect(execFailure({ code: 255, stderr: 'mux_client_request_session: Session open refused by peer\n' }, 1000).stderr).toBe('mux_client_request_session: Session open refused by peer')
+    expect(execFailure({ code: 255, killed: true, signal: 'SIGTERM', stderr: 'Connection timed out\n' }, 25_000).stderr).toBe('Connection timed out\nno answer within 25 s (ssh ended by SIGTERM)')
+    // A plain failure with empty stderr stays empty: callers word that themselves.
+    expect(execFailure({ code: 1, stderr: '', message: 'Command failed: ssh -o BatchMode=yes forge <a very long script>' }, 1000)).toEqual({ code: 1, stdout: '', stderr: '' })
+    expect(execFailure({ code: 'ENOENT', message: 'spawn ssh ENOENT' }, 1000)).toEqual({ code: 1, stdout: '', stderr: 'spawn ssh ENOENT' })
   })
 
   it('reports a stale agent the box gave no verdict on, instead of calling it done', async () => {

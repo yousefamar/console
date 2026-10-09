@@ -30,7 +30,7 @@ import { join } from 'node:path'
 import { getLastReadIndex, isReadPinned, setLastReadIndex } from './read-state.js'
 import { getChildCountSync } from './process-tree.js'
 import { gitStatusSync } from './git-status.js'
-import { forgeConfig, remoteCommandArgv, forgeSshEnv, noteForgeUse, syncTranscript } from './forge/index.js'
+import { forgeConfig, remoteCommandArgv, forgeSshEnv, noteForgeUse, noteForgeSpawn, syncTranscript } from './forge/index.js'
 import { HUB_PID_ENV } from './agents/process-reaper.js'
 import { isAuthFailure } from './agents/auth-failure.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
@@ -69,6 +69,9 @@ function resolveAgentModel(): string {
 
 /** kill(): SIGTERM → SIGKILL if the subprocess is still alive after this. */
 const KILL_ESCALATE_MS = 5_000
+/** stopProcessNow(): how long a forge session's ssh client gets to close its
+ *  connection before it is SIGKILLed after all. It exits in milliseconds. */
+const SSH_CLOSE_GRACE_MS = 2_000
 /** Agent processes (and every test run, build and dev server they spawn) run
  *  at this nice so the hub, the voice path (wa-voice + al-voice-pipeline at
  *  nice 0) and Yousef's desktop win under contention — on 30 Sept 2026 two
@@ -156,6 +159,8 @@ export interface SessionOptions {
   /** Restore a prompt that was queued for turn-end but never flushed (hub
    *  restarted mid-turn). Persisted in the manifest. */
   queuedMessage?: string | null
+  /** See Session.nextMessageNote. Persisted in the manifest. */
+  nextMessageNote?: string | null
   /** Pin the prompt-cache TTL for this session's whole life (every spawn,
    *  incl. hibernation wakes). Ticket forks pin `1h`: they work a card for an
    *  hour or more with think-gaps the 5m cache keeps lapsing across. Unset =
@@ -409,6 +414,7 @@ export class Session extends EventEmitter {
     // explicitly once its listeners are attached. Flushing from the ctor would
     // race the nudge and turn the queued prompt into steering.
     if (options.queuedMessage) this.queuedMessage = options.queuedMessage
+    if (options.nextMessageNote) this.nextMessageNote = options.nextMessageNote
     if (options.cacheTtl) this.cacheTtlPin = options.cacheTtl
     // Restore-into-hibernation: skip the spawn entirely — the first message
     // wakes the session with --resume (sendMessage → wakeFromHibernation).
@@ -621,7 +627,7 @@ export class Session extends EventEmitter {
         const argv = remoteCommandArgv(cfg, { cwd, env: remoteEnv, command: 'claude', args: remoteArgs, dieWithConnection: true })
         proc = spawn('ssh', argv, { stdio: ['pipe', 'pipe', 'pipe'], env: forgeSshEnv() })
         this.remoteHost = cfg.host
-        noteForgeUse()
+        noteForgeSpawn()
       }
     }
 
@@ -634,6 +640,7 @@ export class Session extends EventEmitter {
       })
     }
     this.process = proc
+    this.processIsSsh = proc.spawnfile === 'ssh'
     this.processAlive = true
 
     this.stdinReady = true
@@ -920,6 +927,10 @@ export class Session extends EventEmitter {
     this.lastActivityAt = Date.now()
     this.midTurn = true
     this.everActive = true
+    if (this.nextMessageNote) {
+      content = `${this.nextMessageNote}\n\n${content}`
+      this.nextMessageNote = null
+    }
     // Awaiting a placement decision (deferSpawn) — there is nothing to write
     // to. Hold the prompt; startDeferred() delivers it to the fresh process.
     if (this.deferredSpawn) {
@@ -1229,6 +1240,39 @@ export class Session extends EventEmitter {
    *  while the fleet is on Max unless the box has a login for the same account.
    *  null for a local session, whose backend is the fleet's. */
   remoteBackend: 'first_party' | 'bedrock' | null = null
+  /** `this.process` is the ssh CLIENT of a forge session, not a local claude. */
+  private processIsSsh = false
+  /** Hub text put in front of the NEXT message this session is sent, once. For
+   *  a fact the agent has to learn that is not worth waking it for — its dev
+   *  port changed while it slept. It rides whatever arrives next, so an idle
+   *  fork costs nothing until someone actually talks to it. */
+  nextMessageNote: string | null = null
+
+  /** End the subprocess at once, on purpose: a respawn, a hibernation, a move.
+   *  The exit handler does whatever comes next.
+   *
+   *  A local claude is SIGKILLed — instant, nothing to flush. A forge session's
+   *  process is its ssh client, and SIGKILL gives ssh no chance to CLOSE its
+   *  connection. Over the master that does not matter: the master sees the
+   *  client go and shuts the channel. But a session the master had no room for
+   *  rides its own SSM tunnel, and there nothing tells the box. Measured
+   *  9 Oct 2026 on such a connection: after SIGTERM the remote stdin closed
+   *  within the second; after SIGKILL it was still open four minutes later
+   *  with every local process gone. The watchdog (forge/ssh.ts) only acts when
+   *  that stdin closes, so each fleet-wide respawn that night left the old
+   *  agent working beside its replacement until the reaper's sweep found it —
+   *  seven such pairs at 22:03, three for 7 to 13 minutes at 19:08.
+   *
+   *  So ssh is ASKED to exit, which it does in milliseconds, and is killed
+   *  only if it has not. */
+  private stopProcessNow(): void {
+    const proc = this.process
+    if (!proc) return
+    if (!this.processIsSsh) { proc.kill('SIGKILL'); return }
+    proc.kill('SIGTERM')
+    const t = setTimeout(() => { if (proc.exitCode === null && proc.signalCode === null) proc.kill('SIGKILL') }, SSH_CLOSE_GRACE_MS)
+    t.unref?.()
+  }
   /** The spawn options held back by SessionOptions.deferSpawn, until
    *  startDeferred() decides where this session runs. */
   private deferredSpawn: SessionOptions | null = null
@@ -1277,8 +1321,8 @@ export class Session extends EventEmitter {
     if (!this.canHibernate()) return false
     this.hibernating = true
     this.stdinReady = false
-    // SIGKILL: instant, nothing to flush — mirrors restartForModelChange.
-    this.process!.kill('SIGKILL')
+    // Instant, nothing to flush — mirrors restartForModelChange.
+    this.stopProcessNow()
     return true
   }
 
@@ -1311,7 +1355,7 @@ export class Session extends EventEmitter {
       // a message racing the kill is queued and delivered after the wake.
       this.hibernating = true
       this.stdinReady = false
-      this.process.kill('SIGKILL')
+      this.stopProcessNow()
     }
     // A pruned transcript (no file) just means the wake respawns fresh — the
     // existing resumeTargetMissing path handles that; nothing to move.
@@ -1338,7 +1382,7 @@ export class Session extends EventEmitter {
     if (this.processAlive && this.process) {
       this.hibernating = true
       this.stdinReady = false
-      this.process.kill('SIGKILL')
+      this.stopProcessNow()
     }
     this.placement = placement
     this.devPort = devPort
@@ -1477,7 +1521,7 @@ export class Session extends EventEmitter {
         this.emitQueued()
       }
       this.restartingForModel = true
-      this.process.kill('SIGKILL')
+      this.stopProcessNow()
     } else {
       // Already dead (e.g. failed before init) — re-spawn directly. Killing a
       // dead process would never fire `exit`, so the exit-driven path can't run.
@@ -1495,7 +1539,7 @@ export class Session extends EventEmitter {
     this.modelRestarts = 0
     if (this.process && this.processAlive) {
       this.reloading = true
-      this.process.kill('SIGKILL') // exit handler does the re-spawn
+      this.stopProcessNow() // exit handler does the re-spawn
     } else {
       this.doModelRespawn()
     }

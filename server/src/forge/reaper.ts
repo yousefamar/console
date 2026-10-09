@@ -13,6 +13,8 @@
 //     on the box that a previous hub generation started.
 //   • sweep belt — the same on a timer, plus copies of one session started by
 //     THIS hub that a newer copy has superseded (the watchdog's safety net).
+//     The same pass also runs 20 s after a forge agent is started (index.ts,
+//     `respawn`), with a shorter wait: a replacement is when twins are made.
 //
 // The judgement is the local reaper's, on a listing fetched over ssh: an agent
 // is hub-spawned if its argv is the claude CLI with the stream-json signature,
@@ -26,6 +28,9 @@ import type { ForgeConfig } from './config.js'
 import { forgeExec, FORGE_TREE_FNS, FORGE_KILL_GRACE_S, type ExecResult } from './ssh.js'
 
 const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`
+/** Last non-empty line — '' when there is none (`''.split('\n').pop()` is ''
+ *  too, never undefined, which is how a reason once came out blank). */
+const lastLine = (s: string) => s.trim().split('\n').pop()?.trim() ?? ''
 
 const CSID_ENV = 'CONSOLE_CLAUDE_SESSION_ID'
 const AGENT_KEY_ENV = 'CONSOLE_AGENT_KEY'
@@ -158,8 +163,10 @@ export async function reapForgeStale(cfg: ForgeConfig, opts: {
   exec?: Exec
 }): Promise<ForgeReapResult> {
   const exec = opts.exec ?? forgeExec
-  const listed = await exec(cfg, `bash -c ${shq(FORGE_LIST_SCRIPT)} forge-list`, { timeoutMs: 25_000 })
-  if (listed.code !== 0) return { ok: false, reason: `listing failed: ${listed.stderr.trim().split('\n').pop() ?? `exit ${listed.code}`}`, live: 0, reaped: [] }
+  // 45 s, not 25: when the master has no session to spare ssh dials its own
+  // SSM tunnel first, and on a loaded box that alone took the old budget.
+  const listed = await exec(cfg, `bash -c ${shq(FORGE_LIST_SCRIPT)} forge-list`, { timeoutMs: 45_000 })
+  if (listed.code !== 0) return { ok: false, reason: `listing failed: ${lastLine(listed.stderr) || `exit ${listed.code}, nothing on stderr`}`, live: 0, reaped: [] }
   const { procs, complete } = parseForgeProcs(listed.stdout)
   const stale = findForgeStale(procs, opts)
   const live = procs.filter((p) => isClaudeArgv(p.args) && hasHubSignature(p.args)).length - stale.length
@@ -181,9 +188,15 @@ export async function reapForgeStale(cfg: ForgeConfig, opts: {
   const missing = stale.length - reaped.length
   return {
     ok: missing === 0,
-    reason: missing ? `${missing} of ${stale.length} stale agent(s) got no verdict from the box: ${killed.stderr.trim().split('\n').pop() ?? `exit ${killed.code}`}` : note,
+    reason: missing ? `${missing} of ${stale.length} stale agent(s) got no verdict from the box: ${lastLine(killed.stderr) || `exit ${killed.code}, nothing on stderr`}` : note,
     live, reaped,
   }
+}
+
+/** When a debounced job is due: `quietMs` after the latest trigger, but never
+ *  more than `maxMs` after the first one of the burst. Pure. */
+export function trailingDue(now: number, firstAt: number, quietMs: number, maxMs: number): number {
+  return Math.min(now + quietMs, firstAt + maxMs)
 }
 
 /** One log line per reaped agent, in the local reaper's voice. */

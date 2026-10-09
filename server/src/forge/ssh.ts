@@ -48,9 +48,29 @@ export async function forgeExec(cfg: ForgeConfig, command: string, opts: { timeo
     })
     return { code: 0, stdout, stderr }
   } catch (err) {
-    const e = err as { code?: number; stdout?: string; stderr?: string; message?: string }
-    return { code: typeof e.code === 'number' ? e.code : 1, stdout: e.stdout ?? '', stderr: e.stderr ?? e.message ?? '' }
+    return execFailure(err as ExecError, opts.timeoutMs ?? 120_000)
   }
+}
+
+type ExecError = { code?: number | string | null; killed?: boolean; signal?: string | null; stdout?: string; stderr?: string; message?: string }
+
+/** Turn an execFile rejection into an ExecResult that always says WHY.
+ *
+ *  A command the timeout killed rejects with `code: null`, `killed: true` and
+ *  whatever stderr it had printed — usually nothing — so "it never answered"
+ *  used to come back as exit 1 with an empty reason (the forge sweep logged
+ *  `listing failed: ` three times on 9 Oct 2026 and nobody could tell it from
+ *  a refusal). Its own stderr still comes first when it has one. */
+export function execFailure(e: ExecError, timeoutMs: number): ExecResult {
+  const code = typeof e.code === 'number' ? e.code : 1
+  const said = (e.stderr ?? '').trim()
+  // A plain non-zero exit with nothing on stderr stays empty: callers word that
+  // themselves ("sshfs <path> failed"). `e.message` repeats the whole command
+  // line, so it is only used when ssh could not be started at all (ENOENT).
+  const why = e.killed || e.signal
+    ? `no answer within ${Math.round(timeoutMs / 1000)} s (ssh ended by ${e.signal ?? 'the timeout'})`
+    : !said && typeof e.code === 'string' ? (e.message ?? e.code) : ''
+  return { code, stdout: e.stdout ?? '', stderr: [said, why].filter(Boolean).join('\n') }
 }
 
 /** Is the multiplexed master alive? */

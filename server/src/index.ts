@@ -54,7 +54,8 @@ import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnv
 import { probeSilentWindDown, summaryFromCardLines } from './kanban/winddown.js'
 import {
   prepareRemoteSession, releaseRemoteSession, forgeAvailable, decidePlacement, prewarmCwd, boardRemote,
-  allocateDevPort, forwardDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
+  allocateDevPort, claimRestoredDevPorts, releaseDevPort, setDevPortsInUse, devPortChangedNote, onForgeSpawn, trailingDue,
+  forwardDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
   stopForgeIfIdle, isCwdPrepared, preparedCwdList, moveSessionToForge, abandonPendingMoves, type MoveTarget,
   reapForgeStale, describeForgeReaped, masterAlive,
 } from './forge/index.js'
@@ -840,6 +841,9 @@ const alBridge = new AlBridge({
 // --------------------------------------------------------------------------
 
 const sessions = new Map<string, Session>()
+// The dev-port allocator trusts the sessions, not a table of its own
+// (forge/dev-ports.ts): a port is taken while a session that is not ended has it.
+setDevPortsInUse(() => [...sessions.values()].filter((s) => s.status !== 'ended' && s.devPort).map((s) => s.devPort!))
 const clients = new Set<WebSocket>()
 
 /** Counts behind `GET /debug/memory`. Every "the hub is at 2.6 GB again"
@@ -3282,7 +3286,7 @@ httpServer.listen(port, host, () => {
     }
     // Same again on forge, and for the same reason it comes before the restore
     // loop: every remote agent the previous hub started is still on the box.
-    await reapForgeTwins('boot')
+    const forgeReapedAtBoot = await reapForgeTwins('boot')
     if (manifest.length > 0) {
       log(`Restoring ${manifest.length} session(s) from manifest...`)
 
@@ -3322,15 +3326,28 @@ httpServer.listen(port, host, () => {
       // it and let every entry fall back to local rather than hang the boot.
       const forgeEntries = manifest.filter((e) => e.placement === 'forge' && !e.ended)
       let forgeReadyOnBoot = false
+      const restoredDevPorts: number[] = []
       if (forgeEntries.length > 0) {
         const cwds = [...new Set(forgeEntries.map((e) => e.cwd).filter((c): c is string => !!c))]
         log(`  ${forgeEntries.length} session(s) were on forge — warming it for ${cwds.length} cwd(s)`)
         for (const cwd of cwds) {
           const prep = await prepareRemoteSession({ sessionId: `restore:${cwd}`, cwd, log })
+          // The warm-up's own port is nobody's — hand it back, as prewarmCwd does.
+          releaseDevPort(`restore:${cwd}`)
           if (prep.ok) forgeReadyOnBoot = true
           else log(`  forge not ready for ${cwd}: ${prep.reason} — those sessions restore LOCALLY`)
         }
+        // The boot reap needs a master and found none (the box was asleep, or
+        // the master was replaced on purpose): the warm-up has just opened
+        // one, and nothing has been respawned yet — so this is still "before".
+        if (!forgeReapedAtBoot && forgeReadyOnBoot) await reapForgeTwins('boot')
       }
+
+      // Settled for the whole manifest before any session exists, so the first
+      // holder of each number keeps it whatever order the entries come in.
+      const restoredDevPortClaims = forgeReadyOnBoot
+        ? claimRestoredDevPorts(forgeEntries.filter((e) => e.devPort).map((e) => ({ key: e.claudeSessionId, port: e.devPort! })))
+        : new Map<string, { port: number | null; changed: boolean }>()
 
       for (const entry of manifest) {
         // User explicitly ended this session — stay dead. The saveManifest()
@@ -3347,6 +3364,15 @@ httpServer.listen(port, host, () => {
           }
           alRestored = true
         }
+        // A restored forge session keeps the dev port it was told — unless an
+        // earlier one in this restore holds the same number, which a restart
+        // used to cause (forge/dev-ports.ts). Then it moves, and is told so
+        // with its next message rather than woken for it.
+        const onForge = entry.placement === 'forge' && forgeReadyOnBoot
+        const claimed = onForge ? restoredDevPortClaims.get(entry.claudeSessionId) ?? null : null
+        if (claimed?.changed) log(`  [forge] ${entry.name ?? entry.claudeSessionId}: dev port ${entry.devPort} is held by another session too — moved to ${claimed.port ?? 'none, the range is full'}`)
+        if (claimed?.port) restoredDevPorts.push(claimed.port)
+        const owedNote = [entry.nextMessageNote, claimed?.changed ? devPortChangedNote(entry.devPort!, claimed.port) : null].filter(Boolean).join('\n\n')
         try {
           const session = createSession(agentCtx, {
             prompt: entry.prompt,
@@ -3370,9 +3396,10 @@ httpServer.listen(port, host, () => {
             effort: entry.effort,
             // Only honour the recorded placement if the box actually answered
             // during the warm-up above; otherwise this restores local.
-            ...(entry.placement === 'forge' && forgeReadyOnBoot
-              ? { placement: 'forge' as const, devPort: entry.devPort }
+            ...(onForge
+              ? { placement: 'forge' as const, devPort: claimed ? claimed.port ?? undefined : entry.devPort }
               : {}),
+            ...(owedNote ? { nextMessageNote: owedNote } : {}),
             formerIds: [entry.hubId, ...(entry.formerHubIds ?? [])].filter((id): id is string => !!id),
             // The restore spawn of a mid-turn session is "being worked" for the
             // cache-TTL decision (the nudge below continues its turn).
@@ -3409,6 +3436,17 @@ httpServer.listen(port, host, () => {
         } catch (err) {
           log(`  Failed to resume ${entry.claudeSessionId}: ${(err as Error).message}`)
         }
+      }
+      // Forwards live on the ssh master, which normally outlives the hub — but
+      // not a box restart or a replaced master, and a port that just moved
+      // never had one. Adding one that exists is a no-op.
+      if (restoredDevPorts.length) {
+        const cfg = forgeConfig()
+        if (cfg) void (async () => {
+          let failed = 0
+          for (const port of restoredDevPorts) if (!(await forwardDevPort(cfg, port))) failed++
+          log(`  [forge] dev ports forwarded for ${restoredDevPorts.length - failed} of ${restoredDevPorts.length} restored session(s)`)
+        })()
       }
       // Save manifest immediately so restored sessions are persisted
       saveManifest(sessions)
@@ -3577,24 +3615,58 @@ const staleSweeper = new StaleProcessSweeper({
 // a copy of a session that a newer copy from THIS hub has superseded — the net
 // under the watchdog that normally makes that impossible.
 //
+//
+// `respawn` is the sweep brought forward: a forge agent that REPLACES another
+// is the one moment a twin can exist, and the sweep's answer to it was two to
+// four minutes away (its interval, plus waiting for the newer copy to be 90 s
+// old). On 9 Oct 2026 every fleet-wide respawn left the old agents working for
+// exactly that long, three of them for 7 to 13 minutes while each retry kept
+// the newest copy young. So every forge spawn books a pass 20 s after the LAST
+// spawn of its burst (60 s after the first at most), judging a copy superseded
+// once its replacement is 10 s old — past the watchdog's own 5 s grace.
+//
 // Only ever over a master that is already up: a stopped box runs nothing, and
 // a reaper must not be the thing that wakes it or holds it awake.
 const FORGE_SWEEP_MS = 120_000
+const FORGE_RESPAWN_REAP_MS = 20_000
+const FORGE_RESPAWN_REAP_MAX_MS = 60_000
+const FORGE_SUPERSEDED_MIN_AGE_MS = { sweep: 90_000, respawn: 10_000 } as const
 let forgeSweepTimer: ReturnType<typeof setInterval> | null = null
 let forgeReapBusy = false
-async function reapForgeTwins(when: 'boot' | 'sweep'): Promise<void> {
+let forgeRespawnReapTimer: ReturnType<typeof setTimeout> | null = null
+let forgeRespawnBurstAt = 0
+function reapForgeAfterRespawn(): void {
+  const now = Date.now()
+  if (forgeRespawnReapTimer) clearTimeout(forgeRespawnReapTimer)
+  else forgeRespawnBurstAt = now
+  const due = trailingDue(now, forgeRespawnBurstAt, FORGE_RESPAWN_REAP_MS, FORGE_RESPAWN_REAP_MAX_MS)
+  forgeRespawnReapTimer = setTimeout(() => {
+    forgeRespawnReapTimer = null
+    // A sweep is on the box right now: it would judge with the 90 s rule and
+    // miss what this pass is for. Come back when it is done.
+    if (forgeReapBusy) { reapForgeAfterRespawn(); return }
+    void reapForgeTwins('respawn')
+  }, Math.max(0, due - now))
+  forgeRespawnReapTimer.unref?.()
+}
+onForgeSpawn(reapForgeAfterRespawn)
+/** Resolves true when the box was actually listed (false: no forge, no master,
+ *  another pass running, or the listing failed). */
+async function reapForgeTwins(when: 'boot' | 'sweep' | 'respawn'): Promise<boolean> {
   const cfg = forgeConfig()
-  if (!cfg || forgeReapBusy) return
+  if (!cfg || forgeReapBusy) return false
   forgeReapBusy = true
   try {
-    if (!(await masterAlive(cfg))) return
-    const r = await reapForgeStale(cfg, { ownPid: process.pid, ...(when === 'sweep' ? { supersededMinAgeMs: 90_000 } : {}) })
+    if (!(await masterAlive(cfg))) return false
+    const r = await reapForgeStale(cfg, { ownPid: process.pid, ...(when === 'boot' ? {} : { supersededMinAgeMs: FORGE_SUPERSEDED_MIN_AGE_MS[when] }) })
     for (const x of r.reaped) log(`[reaper] ${describeForgeReaped(x)}`)
     if (r.reaped.length) log(`[reaper] forge ${when}: ${r.reaped.length} stale agent(s) ended, ${r.live} live`)
     else if (when === 'boot') log(`[reaper] forge boot: nothing stale on the box (${r.live} agent(s) running)`)
     if (!r.ok || r.reason) log(`[reaper] forge ${when}: ${r.reason ?? 'incomplete'}`)
+    return r.ok
   } catch (err) {
     log(`[reaper] forge ${when} reap failed: ${(err as Error).message}`)
+    return false
   } finally {
     forgeReapBusy = false
   }

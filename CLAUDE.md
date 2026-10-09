@@ -724,9 +724,12 @@ local SSD was tried first and did not help.
   **(1) the watchdog** (`forge/ssh.ts`, `dieWithConnection`): the agent's stdin
   reaches it THROUGH a small relay process; when the channel closes, the relay
   SIGTERMs the agent and what it is running, and SIGKILLs after 5 s. Measured on
-  the box: the tree is gone ~0.4 s after the ssh client dies by KILL, TERM or
-  INT; without it, it survives indefinitely. Never set `dieWithConnection` on a
-  command whose stdin is closed up front — EOF is the signal.
+  the box OVER THE MASTER: the tree is gone ~0.4 s after the ssh client dies by
+  KILL, TERM or INT; without it, it survives indefinitely. Never set
+  `dieWithConnection` on a command whose stdin is closed up front — EOF is the
+  signal. **The watchdog only acts when the box SEES the connection close, and
+  on a connection that is not multiplexed that depends on HOW the client died**
+  (next bullet).
   **(2) the boot reap** and **(3) the 2-min sweep** (`forge/reaper.ts`,
   `reapForgeTwins` in `index.ts`): list the box's agents over ssh, judge them
   with the local reaper's rules, end the stale trees. Stale = `CONSOLE_HUB_PID`
@@ -745,6 +748,56 @@ local SSD was tried first and did not help.
   `CONSOLE_HUB_PID` (`tr '\0' '\n' </proc/<pid>/environ`) with the hub's node
   pid — and bracket the first letter of any pattern you count over ssh, or the
   counting shell counts itself.
+- **A forge session's ssh client is ASKED to exit, never SIGKILLed first
+  (`Session.stopProcessNow`), and the box drops a client that stops answering
+  (`ClientAliveInterval 30` x 4).** When the master has no session to spare
+  (`mux_client_request_session: Session open refused by peer`) ssh quietly dials
+  its OWN SSM tunnel ("disabling multiplexing"), and on that connection nothing
+  tells the box that a SIGKILLed client is gone. Measured 9 Oct 2026: after
+  SIGTERM the remote stdin closed within the second; after SIGKILL it was still
+  open 240 s later with every local process (ssh, aws, session-manager-plugin)
+  already dead. Hibernate, reload, a model / login / backend respawn and a move
+  all used SIGKILL ("instant, nothing to flush" — true of a local claude), so
+  every fleet-wide respawn that evening left the old agent working beside its
+  replacement: 7 pairs at 22:03, three for 7-13 min at 19:08 (Console
+  treasurer's finding). Four things changed, in order of how early they act:
+  (a) SIGTERM, with SIGKILL only if ssh has not exited after 2 s; (b) every forge
+  spawn books a reap 20 s after the last spawn of its burst (`reapForgeTwins
+  ('respawn')`, superseded once the replacement is 10 s old — the sweep's own
+  rule is 90 s and its interval 2 min); (c) the box's sshd pings its clients
+  (`/etc/ssh/sshd_config.d/98-forge-sessions.conf`, also in
+  `scripts/forge/bootstrap.sh`), which covers what no signal handler can: the
+  hub itself SIGKILLed, the desktop losing power; (d) `MaxSessions 64` on the
+  box (treasurer, 98552659) so sessions fit on the master in the first place.
+  **A connection keeps the sshd limits it was OPENED with** — the master too,
+  and it outlives every hub restart (`ssh -M -N -f`, 42 h old that night, still
+  on MaxSessions 10 three hours after the box said 64). After changing the
+  box's sshd config: `sudo sshd -t && sudo systemctl reload ssh` there, then at
+  a moment when no forge session is mid-turn `ssh -O exit forge` here and
+  restart the hub (its boot reopens the master with both reverse forwards,
+  re-forwards every restored session's dev port, and the sshfs mounts reconnect
+  by themselves). Idle sessions that were on the old master come back with
+  their next message.
+- **A failed forge exec always says why (`execFailure`, `forge/ssh.ts`).** A
+  command its timeout killed rejects with `code: null` and an empty stderr, and
+  `''.split('\n').pop()` is `''`, not undefined — so the sweep logged
+  `listing failed: ` with nothing after it three times on 9 Oct. A timeout now
+  reads `no answer within 45 s (ssh ended by SIGTERM)`; a refusal with nothing
+  on stderr names its exit code. The listing's budget is 45 s, because on a
+  saturated master it first has to dial its own tunnel.
+- **Dev ports come from the sessions, not from a table (`forge/dev-ports.ts`).**
+  The dispatch envelope tells a fork its number ("run your dev server on PORT
+  5183"), so two forks on one number is two dev servers fighting on the box, or
+  one fork's specs answered by the other's server. The old table only grew
+  (nothing released a port: dry after 40 dispatches) and was EMPTY after a hub
+  restart while restored sessions kept theirs — on 9 Oct, after a day of
+  restarts, 7 ports were each held by 2-3 live forks (16 sessions). Now a port
+  is taken while a session that has not ended carries it; the map holds only
+  reservations (a number promised before a session carries it, lapsing after
+  10 min). A restore settles the whole manifest first (`claimAll`, two passes:
+  first holders keep, then the rest move) and a session that had to move is
+  told with its NEXT message (`Session.nextMessageNote`, persisted in the
+  manifest) instead of being woken for it.
 - **A forge fork's identity is decided per spawn (`forgeSpawnPlan`), and a
   restart is what proves it.** Two identities exist on the box. (1) **The
   subscription**, when the fleet is on `first_party` AND the box has a login

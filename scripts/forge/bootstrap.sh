@@ -73,9 +73,21 @@ EOF
 # Every forge agent is one session on the hub's single multiplexed connection.
 # At the default MaxSessions 10, a fleet-wide respawn of 11 forks had nine
 # refused, and their SSM fallback connections timed out (9 Oct 2026).
+#
+# ClientAlive*: a remote agent ends when its connection does (the watchdog in
+# server/src/forge/ssh.ts), so the box has to NOTICE a client that is gone. It
+# did not: with the default of 0, a client that was SIGKILLed on its own SSM
+# tunnel left the session open here for more than four minutes (measured
+# 9 Oct 2026), and the old agent worked on beside its replacement. 30 s x 4
+# mirrors the client's own ServerAliveInterval/CountMax in ~/.ssh/config.
+#
+# A connection keeps the limits it was opened with: after changing this file on
+# a live box, reload sshd AND replace the hub's master (CLAUDE.md, forge).
 sudo tee /etc/ssh/sshd_config.d/98-forge-sessions.conf >/dev/null <<'EOF'
 MaxSessions 64
 MaxStartups 40:30:100
+ClientAliveInterval 30
+ClientAliveCountMax 4
 EOF
 sudo mkdir -p /etc/systemd/system/ssh.socket.d
 sudo tee /etc/systemd/system/ssh.socket.d/99-forge-loopback.conf >/dev/null <<'EOF'

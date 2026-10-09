@@ -14,11 +14,13 @@ import { ensureSessionMounts, memoryDirFor, isMounted, cwdSource, releaseMountOv
 import { ensureRepoOnForge, foldBackFromForge, ensureConCli, repoNameFor } from './repo.js'
 import { syncAgentEnv, syncCliToken, syncProjectCredentials } from './agent-env.js'
 import { syncTranscript } from './transcripts.js'
+import { DevPorts } from './dev-ports.js'
 
 export * from './config.js'
 export { ensureForgeReady, stopIfIdle, instanceState, ssmPingStatus } from './instance.js'
 export { forgeExec, remoteCommandArgv, spawnRemote, forwardDevPort, cancelDevPort, ensureMaster, masterAlive, HUB_PORT, sshEnv as forgeSshEnv } from './ssh.js'
-export { reapForgeStale, describeForgeReaped } from './reaper.js'
+export { reapForgeStale, describeForgeReaped, trailingDue } from './reaper.js'
+export { devPortChangedNote } from './dev-ports.js'
 export { foldBackFromForge, ensureRepoOnForge } from './repo.js'
 export { syncTranscript, pushTranscript, transcriptPath } from './transcripts.js'
 export { moveSessionToForge, worktreesForSession, abandonPendingMoves } from './move.js'
@@ -29,37 +31,46 @@ export { memoryDirFor } from './mounts.js'
  *  5173/5174 so a forwarded port never collides with the local Vite or the
  *  verify SPA — and because each remote fork gets its OWN number, the
  *  long-standing "two forks fight over 5173" failure disappears. */
-const DEV_PORT_BASE = 5180
-const DEV_PORT_TOP = 5219
-
-const allocatedPorts = new Map<string, number>()
+const devPorts = new DevPorts()
 let lastUseAt = Date.now()
 
 export function noteForgeUse(): void {
   lastUseAt = Date.now()
 }
 
+/** Tell the allocator which ports live sessions already carry (forge/dev-ports.ts). */
+export function setDevPortsInUse(fn: () => Iterable<number>): void {
+  devPorts.setInUse(fn)
+}
+
 export function allocateDevPort(sessionId: string): number | null {
-  const existing = allocatedPorts.get(sessionId)
-  if (existing) return existing
-  const taken = new Set(allocatedPorts.values())
-  for (let p = DEV_PORT_BASE; p <= DEV_PORT_TOP; p++) {
-    if (!taken.has(p)) {
-      allocatedPorts.set(sessionId, p)
-      return p
-    }
-  }
-  return null
+  return devPorts.allocate(sessionId)
+}
+
+/** Keep every restored session on the port it was told, except where two were
+ *  told the same one — then the later ones get a fresh number (`changed`). */
+export function claimRestoredDevPorts(holders: Array<{ key: string; port: number }>): Map<string, { port: number | null; changed: boolean }> {
+  return devPorts.claimAll(holders)
 }
 
 export function releaseDevPort(sessionId: string): number | null {
-  const p = allocatedPorts.get(sessionId) ?? null
-  allocatedPorts.delete(sessionId)
-  return p
+  return devPorts.release(sessionId)
 }
 
 export function devPortFor(sessionId: string): number | null {
-  return allocatedPorts.get(sessionId) ?? null
+  return devPorts.get(sessionId)
+}
+
+/** A forge agent process was just started. The hub hangs the post-respawn reap
+ *  off this (index.ts): a process that replaced another is the one moment a
+ *  twin can exist. */
+let forgeSpawnListener: (() => void) | null = null
+export function onForgeSpawn(fn: () => void): void {
+  forgeSpawnListener = fn
+}
+export function noteForgeSpawn(): void {
+  lastUseAt = Date.now()
+  try { forgeSpawnListener?.() } catch { /* a listener must never break a spawn */ }
 }
 
 // ---------------------------------------------------------------- readiness

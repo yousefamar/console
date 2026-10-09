@@ -66,6 +66,8 @@ export interface ManifestEntry {
   /** A prompt queued for turn-end that hadn't flushed yet. Surviving a restart
    *  mid-turn is the reason the queue lives hub-side at all. */
   queuedMessage?: string
+  /** Hub text owed to the agent with its next message (Session.nextMessageNote). */
+  nextMessageNote?: string
 }
 
 /** Write the manifest synchronously and atomically.
@@ -115,6 +117,7 @@ export function saveManifest(sessions: Map<string, Session>) {
       ...(session.placement === 'forge' ? { placement: session.placement } : {}),
       ...(session.devPort ? { devPort: session.devPort } : {}),
       ...(session.queuedMessage ? { queuedMessage: session.queuedMessage } : {}),
+      ...(session.nextMessageNote ? { nextMessageNote: session.nextMessageNote } : {}),
     })
   }
   try {
