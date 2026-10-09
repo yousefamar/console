@@ -291,6 +291,18 @@ class AgentsRepositoryTest {
         assertTrue(logs["s1"]!!.requests.isEmpty()) // nothing to catch up
     }
 
+    @Test
+    fun `authFailure rides sessions_list and an absent field clears it`() = runTest {
+        logs["s1"] = FakeLog(total = 0)
+        val failing = kotlinx.serialization.json.JsonObject(sessionInfo("s1", 0) + ("authFailure" to
+            kotlinx.serialization.json.Json.parseToJsonElement("""{"at":1760000000000,"detail":"Not logged in","count":3}""")))
+        repo.applySessionsList(listOf(failing))
+        assertEquals(AuthFailure(1760000000000, "Not logged in", 3), repo.authFailures.value["s1"])
+
+        repo.applySessionsList(listOf(sessionInfo("s1", 0)))
+        assertTrue(repo.authFailures.value.isEmpty())
+    }
+
     private fun sessionInfo(id: String, logLen: Long) = kotlinx.serialization.json.buildJsonObject {
         put("id", kotlinx.serialization.json.JsonPrimitive(id))
         put("name", kotlinx.serialization.json.JsonPrimitive("S$id"))
