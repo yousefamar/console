@@ -1032,3 +1032,40 @@ describe('BoardWatcher onReopen', () => {
     }
   })
 })
+
+describe('the dispatch envelope on forge — what is his disk, and where a commit is', () => {
+  const base = {
+    boardAbsPath: '/home/amar/sync/brain/root/projects/console/board.md',
+    card: { text: 'Emails render poorly', blockId: 'odd-crow', lines: ['- [ ] Emails render poorly ^odd-crow'] },
+    column: 'In Progress',
+    project: 'console',
+  }
+
+  it('does not claim the vault is mounted, and names the one folder where a screenshot reaches him', () => {
+    const dir = '/home/amar/sync/brain/root/projects/console/assets/odd-crow'
+    const env = buildBoardEnvelope({ ...base, forge: { host: 'forge', devPort: 5183, mediaDir: dir } })
+    expect(env).not.toContain('the vault\nis mounted live')
+    expect(env).not.toMatch(/vault\s+is mounted live/)
+    expect(env).toContain('WHAT IS HIS DISK')
+    expect(env).toContain(`goes in \`${dir}/\``)
+    expect(env).toContain(`![c](${dir}/x.png)`)
+  })
+
+  it('a fork with nothing of his mounted is told to attach instead of embedding a box path', () => {
+    const env = buildBoardEnvelope({ ...base, forge: { host: 'forge', devPort: 5183, mediaDir: null } })
+    expect(env).toContain('no folder of his is mounted for you')
+    expect(env).toContain('Attach it to the card')
+  })
+
+  it('says a commit made there is not on his desktop, so the hand-back cannot say "on main"', () => {
+    const env = buildBoardEnvelope({ ...base, forge: { host: 'forge', devPort: 5183 } })
+    expect(env).toContain('NOT on his desktop')
+    expect(env).toContain('never just "on main"')
+  })
+
+  it('a local fork is told none of it', () => {
+    const env = buildBoardEnvelope(base)
+    expect(env).not.toContain('WHAT IS HIS DISK')
+    expect(env).not.toContain('REMOTE: you are running')
+  })
+})

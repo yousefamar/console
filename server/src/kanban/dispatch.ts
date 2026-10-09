@@ -292,7 +292,13 @@ export function buildBoardEnvelope(opts: {
    *  about HOW it works is unchanged — same paths, same `autowt`, same `con` —
    *  so the envelope only has to say where it is and which dev port is already
    *  forwarded back to Yousef's localhost. */
-  forge?: { host: string; devPort?: number | null } | null
+  forge?: {
+    host: string
+    devPort?: number | null
+    /** A folder on YOUSEF'S disk that the box has mounted, for files he has to
+     *  see (forge/mounts.ts forgeMediaDir). null = this fork has none. */
+    mediaDir?: string | null
+  } | null
 }): string {
   const { boardAbsPath, card, column, project, deployGate, forkIdentity, load, parentDigest, skills, assetsAbsPath, forge } = opts
   const inherited = forkIdentity?.context !== 'fresh'
@@ -380,8 +386,19 @@ export function buildBoardEnvelope(opts: {
       '— NOT Yousef\'s desktop. This is deliberate: dev servers, Playwright and big',
       'builds were starving his machine. Nothing about how you work changes — the paths',
       'are identical (`~/proj/code/<repo>`, `~/sync/brain/root/projects/<slug>`),',
-      '`autowt` makes your worktree here, `con` reaches the hub as usual, and the vault',
-      'is mounted live off his machine. What this buys you:',
+      '`autowt` makes your worktree here, and `con` reaches the hub as usual.',
+      // Said outright because "the vault is mounted" used to stand here and was
+      // only true of the fork's own project folder: ^odd-crow (9 Oct 2026) put
+      // its before/after screenshots under ~/sync/brain/assets/, which on the
+      // box is a plain directory — a dead path on the card and a broken image.
+      '- WHAT IS HIS DISK: only your working directory, when it is your project\'s',
+      '  vault folder, and your memory folder are mounted live off his machine.',
+      '  Everything else you write here (`/tmp`, the code checkout, any other',
+      '  `~/sync/brain/…` path) is a plain directory on THIS box that he cannot open.',
+      forge.mediaDir
+        ? `- A FILE YOUSEF HAS TO SEE (screenshot, clip, PDF) goes in \`${forge.mediaDir}/\`. That is his disk, so \`![c](${forge.mediaDir}/x.png)\` renders in your session and the path you put on the card opens for him. Written anywhere else, he gets a broken picture.`
+        : '- A FILE YOUSEF HAS TO SEE (screenshot, clip, PDF): no folder of his is mounted for you, so an inline `![c](/path)` to a file here shows him a broken picture. Attach it to the card instead (`con help board`, attach) and say so in your hand-back.',
+      'What the box buys you:',
       '- YOU HAVE ROOM. The machine is yours. Run the full typecheck, the whole test',
       '  suite, Playwright, a release build, several at once — in parallel, not',
       '  serialised. Do NOT throttle yourself, do not route heavy steps through a',
@@ -392,9 +409,12 @@ export function buildBoardEnvelope(opts: {
       forge.devPort
         ? `- Run your dev server on PORT ${forge.devPort} (\`npm run dev -- --port ${forge.devPort}\`). It is already forwarded, so it appears to Yousef at http://localhost:${forge.devPort} — give him THAT url, and no other fork can collide with it.`
         : '- No dev port was forwarded for you; ask before starting a long-running server.',
-      '- Your commits land on this box. Merge into main as usual when you are done;',
-      '  the hub fast-forwards his checkout. If it reports a divergence, say so on',
-      '  the card rather than forcing anything.',
+      '- Your commits land on this box, NOT on his desktop: the hub brings them home',
+      '  when the card is approved. So nothing you commit is running in his app yet,',
+      '  and your hand-back says "committed on forge\'s main (<sha>), not yet on the',
+      '  desktop" — never just "on main". Merge into main here as usual when you are',
+      '  done. If the hub reports a divergence, say so on the card rather than',
+      '  forcing anything.',
     ] : []),
     // LOAD is about THIS machine's one disk and 8 cores — a remote fork shares
     // neither, and telling it to serialise anyway is exactly the throttling the

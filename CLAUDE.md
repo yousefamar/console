@@ -1087,6 +1087,40 @@ local SSD was tried first and did not help.
   commits the desktop lacks. Not built (Backlog plan): the hub fast-forwarding
   by itself when forge is strictly ahead, and waking the project owner on a
   divergence instead of logging it.
+  **The commit is not even on the box's MIRROR until approval — it sits in the
+  box's own checkout** (`~/proj/code/console` there; `forge/main` here is the
+  mirror, `/srv/git/console.git`). Fold-back's first step is `push` from that
+  checkout to the mirror, and it is REFUSED as non-fast-forward if any prepare
+  pushed the desktop's newer main in between, which on a trunk every agent
+  commits to is within the hour. 9 Oct 2026, ^odd-crow: committed 20:15, the
+  desktop pushed at 21:36 (the hub logged "main on forge has DIVERGED from the
+  mirror and was left at e74221c3" three times, to nobody), Yousef approved at
+  22:56, the fold-back failed — and the hub wrote its warning on a card already
+  in Done while handing the parent a summary that still said "Commit e74221c3
+  on main". The fix was approved and absent from the app until the parent went
+  looking for the commit. Since then: (a) a failed fold-back LEADS the MERGE
+  hand-back the parent receives, on one line, with the command that brings the
+  commit home (`publishFailureReason`, `forge/repo.ts`); (b) the guard looks at
+  the box's checkout as well as its mirror; (c) the dispatch envelope tells a
+  forge fork to write "committed on forge's main (<sha>), not yet on the
+  desktop". Home by hand when both sides moved: `git fetch
+  forge:/home/amar/proj/code/console main && git merge FETCH_HEAD`, push origin
+  and forge, `con agent forge up` (the box's checkout then fast-forwards).
+  **Verify a forge hand-back with `git merge-base --is-ancestor <sha> main` on
+  the desktop — not `git cat-file`, not the card.**
+- **A forge fork's screenshot has to be written to HIS disk, and only the
+  fork's vault working directory is** (`forgeMediaDir`, `forge/mounts.ts`). The
+  hub serves inline media (`![c](/abs/path)`) and opens card paths from the
+  DESKTOP; the box has only the session cwd (when it is a vault folder) and the
+  memory dir mounted. The envelope used to say "the vault is mounted live", so
+  ^odd-crow put its before/after shots under `~/sync/brain/assets/board/` —
+  on the box a plain directory: a broken image in the session Yousef reviews and
+  a dead path on the card. The envelope now names
+  `<project folder>/assets/<card-id>/` (not published: Eleventy passes through
+  only the top-level `assets/` allow-list) and says outright that everything
+  else written there stays on the box. A fork whose cwd is a code checkout has
+  no such folder and is told to attach to the card instead. Rescue by hand:
+  `rsync -a forge:<path>/ <same path>/`.
   **Never bring forge commits home with `git cherry-pick`** — it lands the code
   under NEW SHAs and leaves the mirror's originals unmerged, so the two mains
   have diverged while holding identical content, and EVERY later prepare for

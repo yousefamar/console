@@ -25,7 +25,7 @@ export { foldBackFromForge, ensureRepoOnForge } from './repo.js'
 export { syncTranscript, pushTranscript, transcriptPath } from './transcripts.js'
 export { moveSessionToForge, worktreesForSession, abandonPendingMoves } from './move.js'
 export type { MoveTarget, MoveResult } from './move.js'
-export { memoryDirFor } from './mounts.js'
+export { memoryDirFor, forgeMediaDir } from './mounts.js'
 
 /** Dev-server ports handed to remote sessions. Starts above the desktop's own
  *  5173/5174 so a forwarded port never collides with the local Vite or the

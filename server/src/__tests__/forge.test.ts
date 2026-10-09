@@ -8,8 +8,8 @@ import { decidePlacement, enclosingCodeRepo, repoForCwd } from '../forge/index.j
 import { remoteCommandArgv } from '../forge/ssh.js'
 import { remoteSettings, remoteBedrockEnv, credentialRsyncArgv, forgeSpawnPlan, forgeMaxLoginScript, remoteMaxSettings } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
-import { memoryDirFor, cwdSource } from '../forge/mounts.js'
-import { parseWorktreeList, decidePrimaryCheckout, githubHttpsUrl, baseRemoteFor } from '../forge/repo.js'
+import { memoryDirFor, cwdSource, forgeMediaDir } from '../forge/mounts.js'
+import { parseWorktreeList, decidePrimaryCheckout, githubHttpsUrl, baseRemoteFor, publishFailureReason } from '../forge/repo.js'
 import { isGithubOriginRepo } from '../forge/config.js'
 import { blockIdFromAgentKey, PendingMoves, type MoveResult } from '../forge/move.js'
 import { parseCardTokens, parseBoard, serializeBoard } from '../kanban/board.js'
@@ -471,5 +471,53 @@ describe('a deferred move that never runs still reports', () => {
     p.add('b', 'B', (r) => seen.push(r.session))
     expect(p.drain('shutdown')).toHaveLength(2)
     expect(seen).toEqual(['B'])
+  })
+})
+
+describe('publishFailureReason — why a fold-back could not leave the box', () => {
+  const base = { branch: 'main', head: 'e74221c3aa11bb22', host: 'forge', code: '/home/amar/proj/code/console', localRepoPath: '/home/amar/proj/code/console' }
+
+  it('a refused push is the desktop having pushed in between: one line, and the way home', () => {
+    // Verbatim from ^odd-crow's card, 9 Oct 2026 — all four lines used to be written onto it.
+    const stderr = [
+      'To /srv/git/console.git',
+      ' ! [rejected]          main -> main (non-fast-forward)',
+      "error: failed to push some refs to '/srv/git/console.git'",
+      'hint: Updates were rejected because the tip of your current branch is behind',
+      "hint: its remote counterpart. If you want to integrate the remote changes,",
+      "hint: use 'git pull' before pushing again.",
+    ].join('\n')
+    const reason = publishFailureReason({ ...base, stderr })
+    expect(reason).not.toContain('\n')
+    expect(reason).toContain("forge's main at e74221c3 could not be published")
+    expect(reason).toContain('NOT on the desktop')
+    expect(reason).toContain('git -C /home/amar/proj/code/console fetch forge:/home/amar/proj/code/console main && git -C /home/amar/proj/code/console merge FETCH_HEAD')
+    // git's own advice is to pull ON the box, which is the wrong direction here.
+    expect(reason).not.toContain('git pull')
+  })
+
+  it('anything else keeps git\'s last word, still on one line', () => {
+    expect(publishFailureReason({ ...base, stderr: 'fatal: not a git repository\n' })).toBe('forge could not publish main at e74221c3: fatal: not a git repository')
+    expect(publishFailureReason({ ...base, head: '', stderr: "error: pathspec 'main' did not match\nfatal: bad revision\n" })).toBe('forge could not publish main: fatal: bad revision')
+    expect(publishFailureReason({ ...base, head: '', stderr: '' })).toBe('forge could not publish main: no reason given')
+  })
+})
+
+describe('forgeMediaDir — the one place a forge fork\'s screenshot reaches Yousef', () => {
+  it('a folder under the fork\'s vault working directory, per card', () => {
+    expect(forgeMediaDir('/home/amar/sync/brain/root/projects/console', 'odd-crow')).toBe('/home/amar/sync/brain/root/projects/console/assets/odd-crow')
+    expect(forgeMediaDir('/home/amar/sync/brain/root/projects/astera/', 'keen-hawk')).toBe('/home/amar/sync/brain/root/projects/astera/assets/keen-hawk')
+  })
+
+  it('nothing when the working directory is not his disk on the box', () => {
+    // A code checkout is the box's own clone.
+    expect(forgeMediaDir('/home/amar/proj/code/console/android', 'red-fox')).toBe(null)
+    // The `repo` symlink inside a project folder leads to that clone too.
+    expect(forgeMediaDir('/home/amar/sync/brain/root/projects/console/repo', 'red-fox')).toBe(null)
+    expect(forgeMediaDir('/home/amar/sync/brain/root/projects/console/repo/server', 'red-fox')).toBe(null)
+    // The vault's top-level assets/ is not under root/ and is NOT mounted (^odd-crow wrote there).
+    expect(forgeMediaDir('/home/amar/sync/brain/assets/board', 'odd-crow')).toBe(null)
+    expect(forgeMediaDir('/home/amar/sync/brain/root/projects/console', null)).toBe(null)
+    expect(forgeMediaDir(null, 'odd-crow')).toBe(null)
   })
 })

@@ -472,6 +472,24 @@ export async function ensureWorktreeOnForge(
   return { ok: true, reason: `worktree ${wt} @ ${add.stdout.trim()}`, branch: br }
 }
 
+/** Why forge's checkout could not be published to its mirror, on ONE line, with
+ *  the way home when there is one. Pure.
+ *
+ *  The common case is not an error on the box at all: the fork committed in
+ *  forge's checkout, the commit sat there until its card was approved, and in
+ *  the meantime a prepare pushed the desktop's newer main to the mirror — so
+ *  the push home is refused as non-fast-forward. git's four lines of advice
+ *  about `git pull` are wrong here (nothing should be pulled ON the box) and
+ *  used to be written into the card verbatim (^odd-crow, 9 Oct 2026). */
+export function publishFailureReason(o: { branch: string; head: string; stderr: string; host: string; code: string; localRepoPath: string }): string {
+  const at = o.head ? ` at ${o.head.slice(0, 8)}` : ''
+  if (/non-fast-forward|\[rejected\]|fetch first/i.test(o.stderr)) {
+    return `forge's ${o.branch}${at} could not be published: the box's mirror moved on while that commit waited (the desktop pushed in between). Nothing is lost, and it is NOT on the desktop. Bring it home: git -C ${o.localRepoPath} fetch ${o.host}:${o.code} ${o.branch} && git -C ${o.localRepoPath} merge FETCH_HEAD`
+  }
+  const said = o.stderr.trim().split('\n').map((l) => l.trim()).filter(Boolean)
+  return `forge could not publish ${o.branch}${at}: ${said.pop() ?? 'no reason given'}`
+}
+
 /** Pull a remote fork's merged work back onto the desktop's main.
  *
  *  Fast-forward only, by design. A divergence means the desktop's main moved
@@ -486,16 +504,18 @@ export async function foldBackFromForge(cfg: ForgeConfig, localRepoPath: string,
   // which for a GitHub-origin repo is `mirror`, NOT `origin`. Getting this
   // wrong would push a fold-back straight to GitHub instead of home.
   const home = baseRemoteFor(cfg, name)
+  // HEAD is printed BEFORE the push, so a refused push still says which commit
+  // is waiting on the box.
   const up = await forgeExec(cfg, `set -e
     git -C ${code} checkout --quiet ${branch}
-    git -C ${code} push --quiet ${home} ${branch}:refs/heads/${branch}
-    git -C ${code} rev-parse HEAD`)
-  if (up.code !== 0) return { ok: false, reason: `forge could not publish ${branch}: ${up.stderr.trim()}`, branch }
+    git -C ${code} rev-parse HEAD
+    git -C ${code} push --quiet ${home} ${branch}:refs/heads/${branch}`)
+  const remoteHead = up.stdout.trim().split('\n').pop()?.trim() ?? ''
+  if (up.code !== 0) return { ok: false, reason: publishFailureReason({ branch, head: remoteHead, stderr: up.stderr, host: cfg.host, code, localRepoPath }), branch }
 
   const fetch = await git(['fetch', 'forge', branch], localRepoPath)
   if (!fetch.ok) return { ok: false, reason: `fetch from forge failed: ${fetch.stderr.trim()}`, branch }
 
-  const remoteHead = up.stdout.trim()
   const already = await git(['merge-base', '--is-ancestor', remoteHead, 'HEAD'], localRepoPath)
   if (already.ok) {
     log(`[forge] ${name}: desktop already contains ${remoteHead.slice(0, 8)}`)

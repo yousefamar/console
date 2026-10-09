@@ -115,6 +115,25 @@ export type CwdSource = 'mount' | 'clone'
 
 export const VAULT_DIR = '/home/amar/sync/brain'
 
+/** Where a forge fork puts a file Yousef has to SEE, or null when it has no
+ *  such place. Pure.
+ *
+ *  The hub serves inline media (`![c](/abs/path)`) and opens card paths from the
+ *  DESKTOP's disk, and the only desktop folders the box has are the mounts: a
+ *  session cwd inside the vault's `root/` (ensureSessionMounts) and its memory
+ *  dir. So the answer is a folder under that cwd — `assets/<card>/`, next to
+ *  where projects already keep images (`projects/demovid/assets/`), and outside
+ *  everything Eleventy publishes (only the top-level `assets/` allow-list is
+ *  passed through). A cwd inside a code checkout is read from the box's clone
+ *  and has nothing of his mounted: null. */
+export function forgeMediaDir(cwd: string | null | undefined, cardId: string | null | undefined, vault = VAULT_DIR): string | null {
+  if (!cwd || !cardId) return null
+  const root = `${vault}/root/`
+  const clean = cwd.replace(/\/+$/, '')
+  if (!`${clean}/`.startsWith(root) || clean.includes('/repo/') || clean.endsWith('/repo')) return null
+  return `${clean}/assets/${cardId}`
+}
+
 export function cwdSource(cwd: string, repo: string | null, vault = VAULT_DIR): CwdSource {
   if (!repo) return 'mount'
   const r = repo.replace(/\/+$/, '')

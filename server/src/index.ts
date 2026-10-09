@@ -54,7 +54,7 @@ import { buildBoardEnvelope, buildReopenNudge, buildStaleNudge, buildWindDownEnv
 import { probeSilentWindDown, summaryFromCardLines } from './kanban/winddown.js'
 import {
   prepareRemoteSession, releaseRemoteSession, forgeAvailable, decidePlacement, prewarmCwd, boardRemote,
-  allocateDevPort, claimRestoredDevPorts, releaseDevPort, setDevPortsInUse, devPortChangedNote, onForgeSpawn, trailingDue,
+  allocateDevPort, claimRestoredDevPorts, releaseDevPort, setDevPortsInUse, devPortChangedNote, onForgeSpawn, trailingDue, forgeMediaDir,
   forwardDevPort, forgeConfig, foldBackFromForge, syncTranscript, remoteGitRunner, repoForCwd,
   stopForgeIfIdle, isCwdPrepared, preparedCwdList, moveSessionToForge, abandonPendingMoves, type MoveTarget,
   reapForgeStale, describeForgeReaped, masterAlive,
@@ -1416,7 +1416,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       forkIdentity: forked && target.agentKey ? { key: target.agentKey, sourceKey: card.agentKey, claudeSessionId: target.claudeSessionId ?? null, context: inherit ? 'inherited' : 'fresh' } : null,
       parentDigest: forked && !inherit ? parentDigestFor(live) : null,
       load,
-      forge: target.placement === 'forge' ? { host: target.remoteHost ?? forgeConfig()?.host ?? 'forge', devPort: target.devPort } : null,
+      forge: target.placement === 'forge' ? { host: target.remoteHost ?? forgeConfig()?.host ?? 'forge', devPort: target.devPort, mediaDir: forgeMediaDir(target.cwd, card.blockId) } : null,
     }), images)
     if (deferredToForge) {
       // The card is already stamped and its fork already exists — nothing here
@@ -1494,6 +1494,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
         // refuses loudly rather than being resolved behind Yousef's back.
         const forgeCfgForWindDown = w.placement === 'forge' ? forgeConfig() : null
         void probeSilentWindDown(w.cwd, t.blockId, forgeCfgForWindDown ? remoteGitRunner(forgeCfgForWindDown) : undefined).then(async (probe) => {
+          let foldFailure: string | null = null
           if (probe.silent && forgeCfgForWindDown) {
             const repo = await repoForCwd(w.cwd)
             const proj = projectForBoardPath(t.boardPath)
@@ -1501,7 +1502,13 @@ const boardWatcher = new BoardWatcher(noteStore, {
               const fold = await foldBackFromForge(forgeCfgForWindDown, repo, (m) => log(m))
               if (!fold.ok) {
                 // Loud, and on the CARD: the work exists but only on forge, and
-                // that is exactly the kind of thing a log line loses.
+                // that is exactly the kind of thing a log line loses. And at the
+                // HEAD of the hand-back the parent is about to receive (below):
+                // the card is in Done by now, where nobody reads a new note, and
+                // the hand-back's own words still say "commit … on main"
+                // (^odd-crow, 9 Oct 2026: an approved fix sat on the box, absent
+                // from the app, until the parent went looking for its commit).
+                foldFailure = fold.reason
                 log(`[boards] ^${t.blockId} FOLD-BACK FAILED: ${fold.reason}`)
                 if (proj) {
                   void boardOps.note(proj, `^${t.blockId}`, `- ⚠ forge fold-back failed — this card's commits are still only on forge: ${fold.reason}`, 'hub').catch(() => {})
@@ -1510,7 +1517,11 @@ const boardWatcher = new BoardWatcher(noteStore, {
             }
           }
           if (probe.silent) {
-            const r = await mergeIntoParent(agentCtx, w.id, undefined, { absorb: 'queue', summary: summaryFromCardLines(t.text, t.lines) })
+            const handBack = summaryFromCardLines(t.text, t.lines)
+            const summary = foldFailure
+              ? `⚠ THIS FORK'S COMMITS ARE NOT ON THE DESKTOP. The fold-back from forge failed, so whatever the hand-back below says is "on main" is on the box only, and nothing it changed is running here. ${foldFailure}\n\n${handBack}`
+              : handBack
+            const r = await mergeIntoParent(agentCtx, w.id, undefined, { absorb: 'queue', summary })
             if (r.ok) {
               broadcast({ type: 'session_merged', forkId: w.id, parentId: r.parentId!, summary: r.summary! })
               log(`[boards] ^${t.blockId} wound down silently (${probe.reason}${probe.removed.length ? `; removed ${probe.removed.join(', ')}` : ''}): fork ${w.id} folded into ${r.parentId} without a wake`)
@@ -1671,7 +1682,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
       skills: skillHintsFor(projectForBoardPath(t.boardPath), t.lines),
       forkIdentity: forked && reopenTarget.agentKey ? { key: reopenTarget.agentKey, sourceKey: source.agentKey ?? null, claudeSessionId: reopenTarget.claudeSessionId ?? null, context: t.inherit ? 'inherited' : 'fresh' } : null,
       parentDigest: forked && !t.inherit ? parentDigestFor(source) : null,
-      forge: reopenTarget.placement === 'forge' ? { host: reopenTarget.remoteHost ?? forgeConfig()?.host ?? 'forge', devPort: reopenTarget.devPort } : null,
+      forge: reopenTarget.placement === 'forge' ? { host: reopenTarget.remoteHost ?? forgeConfig()?.host ?? 'forge', devPort: reopenTarget.devPort, mediaDir: forgeMediaDir(reopenTarget.cwd, t.blockId) } : null,
     }), images)
     if (reopenDeferred) {
       void (async () => {
