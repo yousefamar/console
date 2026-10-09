@@ -391,6 +391,19 @@ before folding; keep both intents on conflict. Forks never cut releases — the
 parent reconciles all sibling cards, runs the FULL suite on the folded state,
 restarts the hub if any fork touched `server/`, then cuts.
 
+**A fork that ran on forge folds into FORGE's main, not the desktop's**, so
+"commit X on main (pushed)" on a card can be true while this checkout has
+nothing (8 and 9 Oct 2026, both nights). First step of every reconcile:
+`git log <last release commit>..HEAD -- android/`. If the cards' commits are
+missing, `git fetch forge`, then `git merge --ff-only forge/main`; when the
+desktop has commits of its own as well (the usual case — someone committed
+`server/` meanwhile) a plain `git merge forge/main` with a merge commit is
+right. Never `git cherry-pick`: new SHAs leave the mirror's originals unmerged
+and every later console prepare is rejected (the 8 Oct sweep did this and
+blocked forge for 17 h). Afterwards `git push --dry-run forge main` must print
+a fast-forward. Then re-check anything a fork says it built blind because a
+hub commit was not on the box.
+
 ## The Mobile agent and the nightly parity sweep
 
 The durable session for this directory is **"Console mobile"** (agentKey

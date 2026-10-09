@@ -49,6 +49,12 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+_(nothing — v112 was cut 2026-10-09)_
+
+## Shipped
+
+### v112 (2026-10-09)
+
 - Money: monthly spend chart (^soft-boar, closes the next item of Open "Money:
   editing parity" — SPA `MonthlySpendChart.tsx` on the Cashflow tab). Before,
   the phone had no answer to "where does my money go each month": the SPA
@@ -67,9 +73,7 @@ view-mode hub-sync (Room meta is fine on one device).
   the meta table (`money:monthly`, no Room change) so the chart opens offline,
   and a non-array reply (proxy error page) never blanks the cache.
   `MoneyMonthlyTest` (10) + `MoneyRepositoryMonthlyTest` (2).
-- **Fleet picker offers opus 5.5 / opus 5 / sonnet 5.5; sessions show "not logged in"** (^neat-carp, nightly sweep 9 Oct 2026; SPA 05c2117b, hub 4bc031e8). (1) `AgentDialogs.kt` hardcoded the pre-5.5 model lists, so the fleet sheet's "other models" sections never offered `claude-opus-5-5`, `claude-opus-5` or the Bedrock `opus-5-5`/`opus-5`/`sonnet-5-5` ids. They now come from `data/agents/FleetModels.kt`, a verbatim port of `src/utils/fleet-models.ts`; `FleetModelsTest` reads the SPA file from the repo and fails if the two drift. Haiku 5.5 stays out (the CLI rejects every form of its id). The per-session pin picker is unchanged: the SPA's `SessionModelPicker` also offers only hub model + chain + current pin. (2) Hub `SessionInfo.authFailure {at, detail, count}` (a session whose backend answered "not logged in", cleared by the next real answer) is parsed on every `sessions_list` into `AgentsRepository.authFailures` (in-memory, replaced whole each push, so absent = cleared; no Room column) and shown as a red `not logged in · N unanswered` chip on the Spaces agent row and in the session status bar. The SPA doesn't render it yet, so the phone is first. Tests: `AuthFailureTest`, an `AgentsRepositoryTest` set/clear case.
-
-## Shipped
+- **Fleet picker offers opus 5.5 / opus 5 / sonnet 5.5; sessions show "not logged in"** (^neat-carp, nightly sweep 9 Oct 2026; SPA 05c2117b, hub 4bc031e8). (1) `AgentDialogs.kt` hardcoded the pre-5.5 model lists, so the fleet sheet's "other models" sections never offered `claude-opus-5-5`, `claude-opus-5` or the Bedrock `opus-5-5`/`opus-5`/`sonnet-5-5` ids. They now come from `data/agents/FleetModels.kt`, a verbatim port of `src/utils/fleet-models.ts`; `FleetModelsTest` reads the SPA file from the repo and fails if the two drift. Haiku 5.5 stays out (the CLI rejects every form of its id). The per-session pin picker is unchanged: the SPA's `SessionModelPicker` also offers only hub model + chain + current pin. (2) Hub `SessionInfo.authFailure {at, detail, count}` (a session whose backend answered "not logged in", cleared by the next real answer) is parsed on every `sessions_list` into `AgentsRepository.authFailures` (in-memory, replaced whole each push, so absent = cleared; no Room column) and shown as a red `not logged in · N unanswered` chip on the Spaces agent row and in the session status bar. The SPA doesn't render it yet, so the phone is first. Tests: `AuthFailureTest`, an `AgentsRepositoryTest` set/clear case. The fork built the parser on forge without hub 4bc031e8 in its tree; checked against `server/src/protocol.ts` after the fold and it matches. The chip only appears once the running hub is on 4bc031e8 or later (at the v112 cut it had started eight minutes before that commit).
 
 ### v111 (2026-10-08)
 
