@@ -38,7 +38,7 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, applyLoginSwitch, remotelyPlacedSessions, broadcastModelState, restartAllSessionsForModel, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, applyLoginSwitch, broadcastModelState, restartAllSessionsForModel, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, readSettingsEnv, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BackendFailover, DEFAULT_HOLD_MS } from './backend-failover.js'
 import { SubscriptionUsageLedger, summariseUsage, credentialsPath } from './subscription-usage.js'
@@ -2457,11 +2457,6 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
             // Same rule as a switch onto the subscription: prove the login
             // before every live session respawns onto it (7 Oct 2026).
             if (!force) {
-              const stranded = remotelyPlacedSessions(agentCtx)
-              if (stranded.length) {
-                fail(409, `Not switching: ${stranded.length} live session(s) run on another machine, where '${name}' has no config dir — they would respawn with no transcript and lose their context (${stranded.slice(0, 5).join(', ')}${stranded.length > 5 ? ', …' : ''}). End them, or re-run with --force. No session was touched.`)
-                return
-              }
               if (!existsSync(credentialsPath(login.dir))) {
                 fail(409, `'${name}' is not logged in yet. Run: CLAUDE_CONFIG_DIR=${login.dir} claude auth login`)
                 return

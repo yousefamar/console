@@ -36,7 +36,7 @@ import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
-import { activeLoginDir } from './max-logins.js'
+import { activeLoginDir, canonicalDir } from './max-logins.js'
 import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, usageLimitTypeOf, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
@@ -578,7 +578,13 @@ export class Session extends EventEmitter {
         this.placement = 'local'
         this.emitHub({ type: 'status', sessionId: this.id, text: '[forge] config missing at spawn — running locally' })
       } else {
-        const argv = remoteCommandArgv(cfg, { cwd, env: sessionEnv, command: 'claude', args })
+        // A Max login is a dir on THIS machine; forge has only its own
+        // `~/.claude` (Bedrock-pinned, no Max credentials). Forwarding the
+        // active login's dir made every forge fork resume under a path absent
+        // on the box, read as a pruned transcript, and respawn with no context
+        // (9 Oct 2026, 15 forks). Same path string as before multi-login.
+        const remoteEnv = { ...sessionEnv, CLAUDE_CONFIG_DIR: canonicalDir() }
+        const argv = remoteCommandArgv(cfg, { cwd, env: remoteEnv, command: 'claude', args })
         proc = spawn('ssh', argv, { stdio: ['pipe', 'pipe', 'pipe'], env: forgeSshEnv() })
         this.remoteHost = cfg.host
         noteForgeUse()
