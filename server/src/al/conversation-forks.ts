@@ -12,13 +12,27 @@
 // the main relationship; routing him via a fork that merges hourly would give
 // parent-Al a delayed, second-hand view of its own owner.
 //
-// Idle lifecycle (checked once a minute):
-//   - a fork idle > IDLE_MS with a SUBSTANTIVE conversation (> TRIVIAL_MAX
-//     inbound messages or any tool call beyond the reply-send) → digest-merge
-//     into the parent (mergeIntoParent — same path as `con agent merge`).
-//   - a trivial conversation → reap silently (kill + remove from the list; the
-//     full transcript stays on disk + in the Beeper chat archive). A digest
-//     of "he said thanks, I said np" is worth less than the 2 turns it costs.
+// Idle lifecycle (checked once a minute). "Idle" is measured from whichever is
+// later: the last inbound message, or the end of the fork's last turn.
+//   - DEFAULT: digest-merge into the parent (mergeIntoParent — same path as
+//     `con agent merge`). What a fork learned or did must reach the parent.
+//   - a PROVABLY trivial conversation → reap silently (kill + remove from the
+//     list; the full transcript stays on disk + in the Beeper chat archive). A
+//     digest of "he said thanks, I said np" is worth less than the 2 turns it
+//     costs. Provably = the hub watched every tool call of the fork's life
+//     (`observed`), every one was a plain reply to its own thread, and there
+//     were ≤ TRIVIAL_MAX inbound messages.
+//
+// Why it is that way round (9 Oct 2026): the "any tool call beyond the
+// reply-send makes it substantive" half was never wired — `markSubstantive`
+// had no caller — so message count alone decided. A fork that spent 95 minutes
+// and 245 tool calls on one request (it got Yousef's approval, wrote 17 files,
+// published a canvas tab and sent the result) had 2 inbound messages, was
+// called "trivial (2 msg)" and removed with no merge, 15 minutes after it
+// finished, because the clock ran from her last message rather than its own
+// last work. Yousef: "It should have folded back into the parent at least, we
+// can't lose fork information like this." Nothing was lost only because that
+// fork had written its own notes to disk.
 //
 // Introspection: forks are ordinary hub sessions — they show in
 // `con agent list` (nested under Al), and `con agent peek <id|name>` gives a
@@ -62,8 +76,61 @@ export interface ForkRecord {
   createdAt: number
   lastInboundAt: number
   inboundCount: number
-  /** True once the fork did anything beyond replying (extra tool calls). */
+  /** True once the fork did anything beyond replying (see `workCalls`). */
   substantive?: boolean
+  /** Tool calls that were NOT a plain reply to this thread — the evidence. */
+  workCalls?: number
+  /** The hub has watched every tool call since this fork was born. Records
+   *  from before that existed lack it, and an unwatched history is never
+   *  "trivial": it gets merged. */
+  observed?: boolean
+  /** When the fork last finished a turn. Its own work keeps it alive, not
+   *  only the other person's messages. */
+  lastTurnEndAt?: number
+  /** Every identifier of the person on this thread, normalised — a send to
+   *  any of them is the reply; a send to anyone else is work. */
+  ids?: string[]
+}
+
+/** When the conversation last moved: their last message or the fork's last
+ *  finished turn, whichever is later. */
+export function lastMovedAt(rec: ForkRecord): number {
+  return Math.max(rec.lastInboundAt, rec.lastTurnEndAt ?? 0)
+}
+
+/** Is this tool call nothing more than the fork replying to its own thread?
+ *
+ *  Only a bare `con whatsapp send <one of this thread's ids> …` counts. A send
+ *  to anyone else (the fork asking Yousef for approval, say), a different verb
+ *  (`send-file`), or a send chained to other commands is work. Shell
+ *  metacharacters are looked for OUTSIDE quotes, since the message body may
+ *  legitimately contain them. When in doubt it is work: the cost of a needless
+ *  merge is two turns, the cost of a wrong reap is everything the fork knew. */
+export function isReplySend(toolName: string, input: Record<string, unknown>, threadIds: string[]): boolean {
+  if (toolName !== 'Bash') return false
+  const command = String(input.command ?? '').trim()
+  const m = /^con\s+whatsapp\s+send\s+(?:"([^"]+)"|'([^']+)'|(\S+))(?:\s|$)/.exec(command)
+  if (!m) return false
+  const target = normalize(m[1] ?? m[2] ?? m[3] ?? '')
+  if (!target || !threadIds.map(normalize).includes(target)) return false
+  return !runsMoreThanOneCommand(command)
+}
+
+/** Does this shell line do more than run one command? Walks the string the way
+ *  a shell would: `; & | newline` outside quotes chain commands, and a command
+ *  substitution runs one even inside double quotes. Single quotes are inert. */
+function runsMoreThanOneCommand(command: string): boolean {
+  let quote: '"' | "'" | null = null
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!
+    if (quote === "'") { if (c === "'") quote = null; continue }
+    if (c === '\\') { i++; continue }
+    if (c === '`' || (c === '$' && command[i + 1] === '(')) return true
+    if (quote === '"') { if (c === '"') quote = null; continue }
+    if (c === '"' || c === "'") { quote = c; continue }
+    if (c === ';' || c === '&' || c === '|' || c === '\n') return true
+  }
+  return false
 }
 
 interface ForksFile {
@@ -185,6 +252,7 @@ export function routeInbound(
       project: parent.project,
       areas: parent.areas,
     })
+    const otherIds = identifiersFor(resolvedUser).filter((id) => id !== normalize(threadJid))
     state.forks[threadJid] = {
       threadJid,
       label: senderLabel,
@@ -192,10 +260,14 @@ export function routeInbound(
       createdAt: Date.now(),
       lastInboundAt: Date.now(),
       inboundCount: 1,
+      observed: true,
+      workCalls: 0,
+      ids: [normalize(threadJid), ...otherIds],
     }
+    // Watch BEFORE the first wake, so not one tool call of its life is missed.
+    watchFork(fork, threadJid)
     // CRITICAL: a --fork-session emits no init until it gets input — send the
     // seed + envelope immediately (same rule as fork_session/con agent chat).
-    const otherIds = identifiersFor(resolvedUser).filter((id) => id !== normalize(threadJid))
     wakeSession(ctx, fork, `${opts.seed ?? forkSeed(threadJid, senderLabel, otherIds)}\n\n${envelope}`)
     // Capture the fork's own claudeSessionId when it lands, then flush any
     // messages that arrived during the spawn gap.
@@ -232,10 +304,38 @@ export function routeInbound(
   }
 }
 
-/** Mark a thread's fork as substantive (did real work beyond replying). */
-export function markSubstantive(threadJid: string): void {
-  const rec = state.forks[threadJid]
-  if (rec && !rec.substantive) { rec.substantive = true; saveForks(state) }
+/** Follow a fork's own stream: count the tool calls that are not a plain reply,
+ *  and note when each turn ends. This is the evidence windDown decides on. It
+ *  replaces `markSubstantive`, which existed for the same purpose and was never
+ *  called by anything. */
+function watchFork(fork: Session, threadJid: string): void {
+  const onMessage = (msg: { type: string; toolName?: string; input?: Record<string, unknown> }) => {
+    const rec = state.forks[threadJid]
+    // The record may have moved on (wound down, or re-forked for a new session).
+    if (!rec) return
+    const sameSession = rec.hubSessionId === fork.id || (!!rec.claudeSessionId && rec.claudeSessionId === fork.claudeSessionId)
+    if (!sameSession) return
+    if (msg.type === 'tool_use') {
+      if (isReplySend(msg.toolName ?? '', msg.input ?? {}, rec.ids ?? [threadJid])) return
+      rec.workCalls = (rec.workCalls ?? 0) + 1
+      // Persist the transition, not every call: a long turn makes hundreds.
+      if (!rec.substantive) { rec.substantive = true; saveForks(state) }
+    } else if (msg.type === 'result') {
+      rec.lastTurnEndAt = Date.now()
+      saveForks(state)
+    }
+  }
+  fork.on('hub_message', onMessage as never)
+}
+
+/** Why this fork's conversation goes to the parent — or null when it is
+ *  PROVABLY trivial and may be dropped. Merging is the default; every clause
+ *  here is a reason, and the absence of proof is one of them. Pure. */
+export function mergeReason(rec: ForkRecord): string | null {
+  if (!rec.observed) return 'its history was not watched'
+  if (rec.substantive || (rec.workCalls ?? 0) > 0) return `${rec.workCalls ?? 'some'} tool call(s) beyond replying`
+  if (rec.inboundCount > TRIVIAL_MAX_INBOUND) return `${rec.inboundCount} inbound messages`
+  return null
 }
 
 async function windDown(ctx: AgentContext, rec: ForkRecord): Promise<void> {
@@ -264,9 +364,9 @@ async function windDown(ctx: AgentContext, rec: ForkRecord): Promise<void> {
   // transcripts on disk + the chat archive, and anything important reaches
   // the parent as a digest first. The @amar guard above is what prevents a
   // fork that's waiting on Yousef from being removed.
-  const substantive = rec.substantive || rec.inboundCount > TRIVIAL_MAX_INBOUND
-  if (substantive) {
-    console.log(`[al/forks] idle ${rec.threadJid} — merging digest into parent, then removing`)
+  const why = mergeReason(rec)
+  if (why) {
+    console.log(`[al/forks] idle ${rec.threadJid} — merging digest into parent (${why}), then removing`)
     const res = await mergeIntoParent(ctx, fork.id)
     if (!res.ok) {
       console.warn(`[al/forks] merge failed (${res.error}) — keeping alive (nothing lost)`)
@@ -274,10 +374,10 @@ async function windDown(ctx: AgentContext, rec: ForkRecord): Promise<void> {
       saveForks(state)
     }
   } else {
-    // Trivial — not worth 2 turns of digest. Remove from the list entirely
-    // (kill + delete + persist + broadcast, mirroring mergeIntoParent);
-    // transcript survives on disk if forensics are ever needed.
-    console.log(`[al/forks] idle ${rec.threadJid} — trivial (${rec.inboundCount} msg), removing without merge`)
+    // Provably trivial — not worth 2 turns of digest. Remove from the list
+    // entirely (kill + delete + persist + broadcast, mirroring
+    // mergeIntoParent); transcript survives on disk if forensics are ever needed.
+    console.log(`[al/forks] idle ${rec.threadJid} — trivial (${rec.inboundCount} msg, every tool call a reply), removing without merge`)
     try { fork.kill() } catch { /* ignore */ }
     ctx.sessions.delete(fork.id)
     saveManifest(ctx.sessions)
@@ -295,14 +395,18 @@ export function startConversationForks(ctx: AgentContext): void {
   // Drop records whose sessions didn't survive the restart (liveFork also
   // re-points hub ids that the restore loop re-minted).
   for (const [jid, rec] of Object.entries(state.forks)) {
-    if (!liveFork(ctx, rec)) delete state.forks[jid]
+    const fork = liveFork(ctx, rec)
+    if (!fork) { delete state.forks[jid]; continue }
+    // The watcher lived on the old Session object. Nothing ran while the hub
+    // was down, so re-attaching here leaves no gap in what was observed.
+    watchFork(fork, jid)
   }
   saveForks(state)
   if (sweepTimer) clearInterval(sweepTimer)
   sweepTimer = setInterval(() => {
     const now = Date.now()
     for (const rec of Object.values(state.forks)) {
-      if (now - rec.lastInboundAt > IDLE_MS) {
+      if (now - lastMovedAt(rec) > IDLE_MS) {
         windDown(ctx, rec).catch((err) => console.error('[al/forks] windDown failed:', (err as Error)?.message))
       }
     }
