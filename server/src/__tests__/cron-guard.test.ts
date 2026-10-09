@@ -113,3 +113,97 @@ describe('cron guard gate', () => {
     expect(s2.list()[0]!.guard).toBe('exit 0')
   })
 })
+
+// ---------------------------------------------------------------------------
+// A guard that cannot CHECK is not a guard that found nothing.
+// ---------------------------------------------------------------------------
+
+import { classifyGuardExit } from '../cron/scheduler.js'
+
+describe('classifyGuardExit', () => {
+  it('exit 1 with nothing alarming on stderr is "nothing to do"', () => {
+    expect(classifyGuardExit(1, '')).toBeNull()
+    expect(classifyGuardExit(1, 'no new mail\n')).toBeNull()
+  })
+
+  it('any other exit code is a failure to check', () => {
+    expect(classifyGuardExit(2, '')).toBe('exit 2')
+    expect(classifyGuardExit(28, 'curl: (28) Operation timed out after 10001 milliseconds\n')).toBe('exit 28: curl: (28) Operation timed out after 10001 milliseconds')
+    expect(classifyGuardExit(127, 'bash: line 1: nosuchtool: command not found\n')).toBe('crashed (exit 127): bash: line 1: nosuchtool: command not found')
+  })
+
+  it('recognises a crash that exits 1, which is what an uncaught exception does', () => {
+    // The real one, 9 Oct 2026: a guard's own 40 s timeout on a slow `con`.
+    const stderr = 'Traceback (most recent call last):\n  File "guard.py", line 96, in main\n    for s in sessions():\nsubprocess.TimeoutExpired: Command \'[con, agent, list]\' timed out after 40 seconds\n'
+    expect(classifyGuardExit(1, stderr)).toBe("crashed (exit 1): subprocess.TimeoutExpired: Command '[con, agent, list]' timed out after 40 seconds")
+    expect(classifyGuardExit(1, 'guard.sh: line 12: syntax error near unexpected token `fi\'\n')).toMatch(/^crashed \(exit 1\)/)
+  })
+})
+
+describe('a failing guard reaches its owner', () => {
+  const crash = `python3 -c 'raise TimeoutError("con agent list timed out after 40 seconds")'`
+
+  it('records a crash as an error, not as "no change"', async () => {
+    const s = makeScheduler()
+    const t = s.add({ claudeSessionId: CSID, trigger: '*/5 * * * *', prompt: 'p', recurring: true, guard: crash })
+    await s.runOnce(t.id)
+    const task = s.list()[0]!
+    expect(task.lastGuardResult).toBe('error')
+    expect(task.lastSkipReason).toMatch(/^guard error: crashed \(exit 1\): TimeoutError: con agent list timed out/)
+    expect(task.guardErrorStreak).toBe(1)
+    expect(session.sent).toHaveLength(0)           // one failure is not worth a wake
+  })
+
+  it('wakes the owner on the third failure in a row, once, and never with the task prompt', async () => {
+    const s = makeScheduler()
+    const t = s.add({ claudeSessionId: CSID, trigger: '*/5 * * * *', prompt: 'THE REAL PROMPT', recurring: true, guard: 'echo "could not reach the hub" >&2; exit 2' })
+    await s.runOnce(t.id)
+    await s.runOnce(t.id)
+    expect(session.sent).toHaveLength(0)
+    await s.runOnce(t.id)
+    expect(session.sent).toHaveLength(1)
+    expect(session.sent[0]).toContain('[HUB CRON — GUARD FAILING]')
+    expect(session.sent[0]).toContain(`\`${t.id}\``)
+    expect(session.sent[0]).toContain('3 runs in a row')
+    expect(session.sent[0]).toContain('Last failure: exit 2: could not reach the hub')
+    expect(session.sent[0]).not.toContain('THE REAL PROMPT')
+    for (let i = 0; i < 20; i++) await s.runOnce(t.id)
+    expect(session.sent).toHaveLength(1)           // told once, not every five minutes
+    expect(s.list()[0]!.lastFiredAt).toBeUndefined()
+    expect(s.list()[0]!.disabledAt).toBeUndefined()
+  })
+
+  it('a guard that the hub had to kill at its own cap counts too', async () => {
+    // That path was already labelled an error; it just never reached anyone.
+    const s = makeScheduler()
+    const t = s.add({ claudeSessionId: CSID, trigger: '*/5 * * * *', prompt: 'p', recurring: true, guard: 'kill -9 $$' })
+    for (let i = 0; i < 3; i++) await s.runOnce(t.id)
+    expect(s.list()[0]!.lastGuardResult).toBe('error')
+    expect(session.sent).toHaveLength(1)
+  })
+
+  it('one good check ends the streak, and a new streak is reported afresh', async () => {
+    const flag = join(dir, 'broken')
+    const s = makeScheduler()
+    const t = s.add({ claudeSessionId: CSID, trigger: '*/5 * * * *', prompt: 'p', recurring: true, guard: `[ -e ${flag} ] && exit 2; exit 1` })
+    const { writeFileSync, unlinkSync } = await import('node:fs')
+    writeFileSync(flag, '')
+    for (let i = 0; i < 3; i++) await s.runOnce(t.id)
+    expect(session.sent).toHaveLength(1)
+    unlinkSync(flag)
+    await s.runOnce(t.id)                           // "nothing to do": the guard can look again
+    expect(s.list()[0]!.guardErrorStreak).toBe(0)
+    expect(s.list()[0]!.lastSkipReason).toBe('guard: no change')
+    writeFileSync(flag, '')
+    for (let i = 0; i < 3; i++) await s.runOnce(t.id)
+    expect(session.sent).toHaveLength(2)           // not muffled by the six-hour re-alert
+  })
+
+  it('plain "nothing to do" never wakes anyone, however long it goes on', async () => {
+    const s = makeScheduler()
+    const t = s.add({ claudeSessionId: CSID, trigger: '*/5 * * * *', prompt: 'p', recurring: true, guard: 'exit 1' })
+    for (let i = 0; i < 50; i++) await s.runOnce(t.id)
+    expect(session.sent).toHaveLength(0)
+    expect(s.list()[0]!.guardErrorStreak).toBe(0)
+  })
+})

@@ -57,6 +57,12 @@ export interface HubCronTask {
   /** Outcome of the most recent guard evaluation, for the UI/inspection. */
   lastGuardResult?: 'fired' | 'skipped' | 'error'
   lastSkipReason?: string
+  /** Consecutive runs in which the guard could not CHECK (it crashed, timed
+   *  out, or exited >= 2). That is not "no change": a watcher that cannot look
+   *  is blind, and its owner is told once this reaches GUARD_ERRORS_BEFORE_ALERT. */
+  guardErrorStreak?: number
+  /** When the owner was last told this task's guard is failing. */
+  guardErrorAlertedAt?: number
   consecutiveSkips: number
   disabledAt?: number
   /** Stamped synchronously on ENTRY to every fire attempt, before any await —
@@ -92,6 +98,29 @@ const SAVE_DEBOUNCE_MS = 500
 const GUARD_TIMEOUT_MS = 60_000
 /** Cap on guard stdout appended to the wake prompt (chars). */
 const GUARD_OUTPUT_CAP = 4000
+/** A guard that could not check this many times running wakes its owner. */
+const GUARD_ERRORS_BEFORE_ALERT = 3
+/** ...and again this often for as long as it keeps failing. */
+const GUARD_ERROR_REALERT_MS = 6 * 3_600_000
+
+/** Did a guard that exited non-zero say "nothing to do", or did it fail to look?
+ *
+ *  The contract: **exit 0 = wake, exit 1 = nothing to do, anything else = I
+ *  could not check.** Returns the failure in words, or null for "nothing to do".
+ *
+ *  Exit 1 is also what an uncaught exception produces, so a crash is recognised
+ *  by what it left on stderr. That is the case this exists for: on 9 Oct 2026
+ *  every `con` call began taking over a minute, guards that shell out to it hit
+ *  their own inner timeouts, died with a Python traceback and exit 1 — and for
+ *  four hours the scheduler recorded each of them as "guard: no change". */
+export function classifyGuardExit(code: number, stderr: string): string | null {
+  const lines = stderr.split('\n').map((l) => l.trim()).filter(Boolean)
+  const last = (lines[lines.length - 1] ?? '').slice(0, 160)
+  const crashed = /Traceback \(most recent call last\)|: command not found|\bSyntaxError\b|syntax error|Cannot find module|Segmentation fault/.test(stderr)
+  if (crashed) return `crashed (exit ${code})${last ? `: ${last}` : ''}`
+  if (code === 1) return null
+  return `exit ${code}${last ? `: ${last}` : ''}`
+}
 /** How often the missed-fire sweep runs. */
 const SWEEP_INTERVAL_MS = 60_000
 /** Slack after `nextFireAt` before an un-attempted fire counts as missed:
@@ -481,8 +510,11 @@ export class HubCronScheduler {
       if (!g.proceed) {
         task.lastGuardResult = g.error ? 'error' : 'skipped'
         task.lastSkipReason = g.error ? `guard error: ${g.error}` : 'guard: no change'
+        if (g.error) this.noteGuardError(task, g.error)
+        else this.guardChecked(task)
         return { ok: false, reason: task.lastSkipReason }
       }
+      this.guardChecked(task)
       task.lastGuardResult = 'fired'
       // Guard passed — its stdout becomes context for the agent.
       task.guardOutput = g.output
@@ -538,13 +570,46 @@ export class HubCronScheduler {
       const out = stdout.trim().slice(0, GUARD_OUTPUT_CAP)
       return { proceed: true, output: out || undefined }
     } catch (e) {
-      const err = e as { code?: number; killed?: boolean; signal?: string; message?: string }
-      // Non-zero exit is the EXPECTED "no change / nothing to do" signal — not
-      // an error. A timeout/spawn failure IS an error (surfaced, but still just
-      // skips the fire — never wakes the agent on a broken guard).
-      if (typeof err.code === 'number' && !err.killed) return { proceed: false }
+      const err = e as { code?: number; killed?: boolean; signal?: string; message?: string; stderr?: string }
+      // Exit 1 is the EXPECTED "nothing to do" signal — not an error. A crash,
+      // any other exit code, a timeout or a spawn failure means the guard could
+      // not check; none of them wakes the agent with the task's prompt, but
+      // they are recorded as errors and a run of them reaches the owner.
+      if (typeof err.code === 'number' && !err.killed) {
+        const failure = classifyGuardExit(err.code, err.stderr ?? '')
+        return failure ? { proceed: false, error: failure } : { proceed: false }
+      }
       return { proceed: false, error: err.killed ? `timed out after ${GUARD_TIMEOUT_MS}ms` : (err.message ?? 'guard failed to run') }
     }
+  }
+
+  /** The guard ran and gave an answer (wake, or nothing to do). Whatever failure
+   *  streak it had is over, so the next one is reported promptly rather than
+   *  being muffled by the re-alert interval of the last. */
+  private guardChecked(task: HubCronTask): void {
+    task.guardErrorStreak = 0
+    delete task.guardErrorAlertedAt
+  }
+
+  /** A guard failed to check. Count it, and once it has failed enough times in
+   *  a row tell the owning session — a broken watcher is the one thing a
+   *  watcher's owner must hear about, and the only thing it never reports. */
+  private noteGuardError(task: HubCronTask, error: string): void {
+    task.guardErrorStreak = (task.guardErrorStreak ?? 0) + 1
+    if (task.guardErrorStreak < GUARD_ERRORS_BEFORE_ALERT) return
+    const now = Date.now()
+    if (task.guardErrorAlertedAt && now - task.guardErrorAlertedAt < GUARD_ERROR_REALERT_MS) return
+    const session = [...this.getSessions().values()].find((s) => s.claudeSessionId === task.claudeSessionId)
+    if (!session || session.status === 'ended') return
+    task.guardErrorAlertedAt = now
+    this.log(`[cron] ${task.id} guard has failed ${task.guardErrorStreak} runs in a row (${error}) — telling its owner`)
+    wakeOrQueue(session, [
+      `[HUB CRON — GUARD FAILING] Your cron task \`${task.id}\` (trigger \`${task.trigger}\`) has not been able to CHECK for ${task.guardErrorStreak} runs in a row.`,
+      `Last failure: ${error}`,
+      `Guard: \`${task.guard}\``,
+      'This is not "no change": while its guard fails, this watcher is blind and would not wake you for the thing it watches. Run the guard by hand, fix it or remove the task (`con cron remove ' + task.id + '`).',
+      'Convention: exit 0 = wake me, exit 1 = nothing to do, any other exit or a crash = could not check. You will be told again in 6 h if it is still failing.',
+    ].join('\n'), this.broadcast)
   }
 
   /** A skip = the fire could not be delivered: session gone, fire threw,
