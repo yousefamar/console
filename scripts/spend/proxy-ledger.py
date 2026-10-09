@@ -21,9 +21,11 @@ if A.since.endswith('d'): CUT = time.time() - int(A.since[:-1]) * 86400
 elif A.since.endswith('h'): CUT = time.time() - int(A.since[:-1]) * 3600
 else: CUT = datetime.datetime.fromisoformat(A.since).timestamp()
 
+# LIST price, Bedrock bills 1.10x. No 'opus-4' row on purpose — Opus 4.8 bills the same as
+# Opus 5; the old (15, 1.50, 18.75, 30, 75) row was 3x too high. Evidence: extract.py RATES.
 RATES = {  # $/MTok: (base_input, read, write_5m, write_1h, output)
     'fable-5-1': (10, 0.25, 12.5, 20, 50), 'fable-5': (10, 1.00, 12.5, 20, 50),
-    'opus-4': (15, 1.50, 18.75, 30, 75), 'opus': (5, 0.50, 6.25, 10, 25),
+    'opus-5-5': (4, 0.20, 5, 8, 20), 'opus': (5, 0.50, 6.25, 10, 25),
     'sonnet-4': (3, 0.30, 3.75, 6, 15), 'sonnet': (2, 0.20, 2.5, 4, 10),
     'haiku': (1, 0.10, 1.25, 2, 5),
 }
