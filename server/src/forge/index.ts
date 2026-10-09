@@ -4,13 +4,13 @@
 // throws into a dispatch path; each returns a verdict the caller downgrades on.
 // A sleeping or broken cloud box must never be able to wedge the board.
 
-import { existsSync, realpathSync } from 'node:fs'
+import { existsSync, realpathSync, statSync } from 'node:fs'
 import { resolveCheckout } from '../git-status.js'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { forgeConfig, forgeAvailable, resolvePlacement, boardRemote, type ForgeConfig, type Placement } from './config.js'
 import { ensureForgeReady, stopIfIdle, instanceState, ssmPingStatus } from './instance.js'
 import { ensureMaster, forwardDevPort, cancelDevPort, forgeExec, remoteCommandArgv, spawnRemote, HUB_PORT } from './ssh.js'
-import { ensureSessionMounts, memoryDirFor, isMounted } from './mounts.js'
+import { ensureSessionMounts, memoryDirFor, isMounted, cwdSource, releaseMountOverClone, VAULT_DIR } from './mounts.js'
 import { ensureRepoOnForge, foldBackFromForge, ensureConCli, repoNameFor } from './repo.js'
 import { syncAgentEnv, syncCliToken, syncProjectCredentials } from './agent-env.js'
 import { syncTranscript } from './transcripts.js'
@@ -138,8 +138,30 @@ export interface PrepareResult {
  *  is a legitimate case — such a fork needs no repo synced. */
 export async function repoForCwd(cwd: string): Promise<string | null> {
   const dir = await resolveCheckout(cwd)
-  if (dir === cwd && !existsSync(join(cwd, '.git'))) return null
+  if (dir === cwd && !existsSync(join(cwd, '.git'))) return enclosingCodeRepo(cwd)
   try { return realpathSync(dir) } catch { return null }
+}
+
+/** The code repo a cwd sits INSIDE, for a session that runs from a subdirectory
+ *  of one (Console mobile: ~/proj/code/console/android). Without this such a
+ *  session had no repo at all as far as a prepare was concerned.
+ *
+ *  The vault is a git repo as well and every project dir is inside it; it is
+ *  never the answer. Neither is a linked worktree or submodule (`.git` is a
+ *  file there): its name is not the repo's, and syncing it as one would create
+ *  a mirror called after a branch. */
+export function enclosingCodeRepo(cwd: string, vault = VAULT_DIR): string | null {
+  let dir: string
+  try { dir = realpathSync(cwd) } catch { return null }
+  for (;;) {
+    const parent = dirname(dir)
+    if (parent === dir) return null
+    dir = parent
+    const dotGit = join(dir, '.git')
+    if (!existsSync(dotGit)) continue
+    if (dir === vault) return null
+    try { return statSync(dotGit).isDirectory() ? dir : null } catch { return null }
+  }
 }
 
 /** Everything that must be true before a remote `claude` is spawned for `cwd`.
@@ -180,13 +202,29 @@ export async function prepareRemoteSession(opts: {
   const creds = await syncProjectCredentials(cfg, log)
   if (!creds.ok) log(`[forge] ${creds.reason}`)
 
-  const mounts = await ensureSessionMounts(cfg, { cwd: opts.cwd, memoryDir: memoryDirFor(opts.cwd) }, log)
+  const repo = await repoForCwd(opts.cwd)
+  let realCwd = opts.cwd
+  try { realCwd = realpathSync(opts.cwd) } catch { /* not present locally — mounting it will say so */ }
+  const cwdFrom = cwdSource(realCwd, repo)
+
+  const mounts = await ensureSessionMounts(cfg, { cwd: opts.cwd, memoryDir: memoryDirFor(opts.cwd), cwdFrom }, log)
   if (!mounts.ok) return { ok: false, reason: mounts.reason, cfg }
 
-  const repo = await repoForCwd(opts.cwd)
+  // Before the repo sync, not after: the sync is what decides whether the
+  // primary checkout is clean enough to fast-forward, and a mount left over it
+  // by an earlier prepare is exactly what makes it look dirty.
+  if (cwdFrom === 'clone') {
+    const released = await releaseMountOverClone(cfg, opts.cwd)
+    if (!released.ok) return { ok: false, reason: `a mount is shadowing the clone at ${opts.cwd} and would not come off: ${released.reason}`, cfg }
+    if (released.reason === 'released') log(`[forge] ${opts.cwd}: removed the desktop mount that was shadowing the clone`)
+  }
+
   if (repo) {
     const synced = await ensureRepoOnForge(cfg, repo, log)
     if (!synced.ok) return { ok: false, reason: synced.reason, cfg }
+    if (cwdFrom === 'clone' && !(await remoteExists(cfg)(opts.cwd))) {
+      return { ok: false, reason: `${opts.cwd} is not in forge's checkout of ${repoNameFor(repo)} (${synced.reason}) — it is read from the clone, not mounted, so it has to be committed on the branch the box has checked out`, cfg }
+    }
     // The CLI comes from the Console checkout; a non-Console project still
     // needs `con`, so ensure it whenever Console happens to be synced.
     if (repoNameFor(repo) === 'console') {

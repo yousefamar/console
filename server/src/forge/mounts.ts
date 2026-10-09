@@ -56,9 +56,9 @@ export async function isMounted(cfg: ForgeConfig, path: string): Promise<boolean
 
 /** Everything a remote session needs to see of the desktop: its cwd (the vault
  *  project dir, carrying CLAUDE.md and the `repo` symlink) and its auto-memory
- *  dir. Returns ok:false so the caller can downgrade the fork to local — a
+ *  dir. A cwd the box already has in a clone (`cwdFrom: 'clone'`) is not mounted. Returns ok:false so the caller can downgrade the fork to local — a
  *  session whose cwd is missing would fail in a far more confusing way. */
-export async function ensureSessionMounts(cfg: ForgeConfig, opts: { cwd: string; memoryDir?: string | null }, log: (m: string) => void = () => {}): Promise<MountResult> {
+export async function ensureSessionMounts(cfg: ForgeConfig, opts: { cwd: string; memoryDir?: string | null; cwdFrom?: CwdSource }, log: (m: string) => void = () => {}): Promise<MountResult> {
   const mounted: string[] = []
 
   // The memory dir is frequently a SYMLINK on the desktop — `con agent cwd`
@@ -67,7 +67,7 @@ export async function ensureSessionMounts(cfg: ForgeConfig, opts: { cwd: string;
   // sshfs cannot mount through that link, so resolve it, mount the REAL dir at
   // its own path, and reproduce the link on forge. The agent then sees exactly
   // the indirection it sees here.
-  const paths: string[] = [opts.cwd]
+  const paths: string[] = opts.cwdFrom === 'clone' ? [] : [opts.cwd]
   let memoryLink: { link: string; target: string } | null = null
   if (opts.memoryDir) {
     let target = opts.memoryDir
@@ -97,6 +97,43 @@ export async function ensureSessionMounts(cfg: ForgeConfig, opts: { cwd: string;
   }
 
   return { ok: true, reason: `mounted ${mounted.length}`, mounted }
+}
+
+/** Where a session's cwd comes from on forge.
+ *
+ *  A vault project dir is MOUNTED: the box has no copy of the vault. A cwd that
+ *  is a code repo, or sits inside one (Console mobile runs from
+ *  ~/proj/code/console/android), is already there in the box's own CLONE — and
+ *  mounting the desktop's directory over it shadows that part of the clone with
+ *  a live tree from another commit. git then reports the difference as
+ *  uncommitted changes, the primary checkout is "dirty" for ever, and a prepare
+ *  never fast-forwards it again: by 9 Oct 2026 forge's Console checkout was 77
+ *  commits behind its own mirror, and every write under android/ there landed in
+ *  the desktop's working tree. The vault is a git repo too but is never cloned
+ *  onto the box, so it always mounts. */
+export type CwdSource = 'mount' | 'clone'
+
+export const VAULT_DIR = '/home/amar/sync/brain'
+
+export function cwdSource(cwd: string, repo: string | null, vault = VAULT_DIR): CwdSource {
+  if (!repo) return 'mount'
+  const r = repo.replace(/\/+$/, '')
+  const c = cwd.replace(/\/+$/, '')
+  if (r === vault.replace(/\/+$/, '')) return 'mount'
+  return c === r || c.startsWith(`${r}/`) ? 'clone' : 'mount'
+}
+
+/** Take down a mount an earlier prepare put over the clone. Lazy when busy, so
+ *  a process already standing in it keeps its view until it exits and nothing
+ *  running is cut off. Reports whether one was there. */
+export async function releaseMountOverClone(cfg: ForgeConfig, path: string): Promise<{ ok: boolean; reason: string }> {
+  const q = JSON.stringify(path)
+  const r = await forgeExec(cfg, `
+    if ! mountpoint -q ${q}; then echo none; exit 0; fi
+    fusermount -u ${q} 2>/dev/null || fusermount -uz ${q} || exit 1
+    echo released`, { timeoutMs: 30_000 })
+  if (r.code !== 0) return { ok: false, reason: r.stderr.trim() || `could not unmount ${path}` }
+  return { ok: true, reason: r.stdout.trim() }
 }
 
 export async function unmount(cfg: ForgeConfig, path: string): Promise<boolean> {

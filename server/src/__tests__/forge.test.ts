@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { existsSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, writeFileSync, rmSync, mkdirSync, mkdtempSync, symlinkSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { boardRemote, resolvePlacement, forgeConfig, type ForgeConfig } from '../forge/config.js'
-import { decidePlacement } from '../forge/index.js'
+import { decidePlacement, enclosingCodeRepo, repoForCwd } from '../forge/index.js'
 import { remoteCommandArgv } from '../forge/ssh.js'
 import { remoteSettings, remoteBedrockEnv, credentialRsyncArgv, forgeSpawnPlan, forgeMaxLoginScript, remoteMaxSettings } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
-import { memoryDirFor } from '../forge/mounts.js'
+import { memoryDirFor, cwdSource } from '../forge/mounts.js'
 import { parseWorktreeList, decidePrimaryCheckout, githubHttpsUrl, baseRemoteFor } from '../forge/repo.js'
 import { isGithubOriginRepo } from '../forge/config.js'
 import { blockIdFromAgentKey, PendingMoves, type MoveResult } from '../forge/move.js'
@@ -244,6 +244,55 @@ describe('path parity', () => {
   it('derives the auto-memory dir that has to be mounted', () => {
     expect(memoryDirFor('/home/amar/sync/brain/root/projects/console'))
       .toBe('/home/amar/.claude/projects/-home-amar-sync-brain-root-projects-console/memory')
+  })
+})
+
+describe('a cwd inside a repo is read from the clone, never mounted over it', () => {
+  const vault = '/home/amar/sync/brain'
+  it('mounts a vault project dir, whose repo is behind a link', () => {
+    expect(cwdSource(`${vault}/root/projects/console`, '/home/amar/proj/code/console', vault)).toBe('mount')
+  })
+  it('mounts a docs-only project dir', () => {
+    expect(cwdSource(`${vault}/root/projects/dojo`, null, vault)).toBe('mount')
+  })
+  it('does not mount a subdirectory of the repo (Console mobile)', () => {
+    expect(cwdSource('/home/amar/proj/code/console/android', '/home/amar/proj/code/console', vault)).toBe('clone')
+  })
+  it('does not mount the repo root itself', () => {
+    expect(cwdSource('/home/amar/proj/code/console/', '/home/amar/proj/code/console', vault)).toBe('clone')
+  })
+  it('is not fooled by a sibling that shares the prefix', () => {
+    expect(cwdSource('/home/amar/proj/code/console-worktrees/x', '/home/amar/proj/code/console', vault)).toBe('mount')
+  })
+  it('always mounts the vault, which is a repo the box never clones', () => {
+    expect(cwdSource(vault, vault, vault)).toBe('mount')
+  })
+
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'forge-cwd-')))
+  const repo = join(tmp, 'code', 'app')
+  const fakeVault = join(tmp, 'vault')
+  mkdirSync(join(repo, '.git'), { recursive: true })
+  mkdirSync(join(repo, 'android', 'app'), { recursive: true })
+  mkdirSync(join(fakeVault, '.git'), { recursive: true })
+  mkdirSync(join(fakeVault, 'root', 'projects', 'docs'), { recursive: true })
+  mkdirSync(join(fakeVault, 'root', 'projects', 'app'), { recursive: true })
+  symlinkSync(repo, join(fakeVault, 'root', 'projects', 'app', 'repo'))
+  const worktree = join(tmp, 'code', 'app-worktrees', 'x')
+  mkdirSync(join(worktree, 'android'), { recursive: true })
+  writeFileSync(join(worktree, '.git'), 'gitdir: elsewhere\n')
+
+  it('finds the repo a subdirectory cwd sits in', async () => {
+    expect(enclosingCodeRepo(join(repo, 'android', 'app'), fakeVault)).toBe(repo)
+    expect(await repoForCwd(join(repo, 'android'))).toBe(repo)
+  })
+  it('never answers with the vault for a project dir', () => {
+    expect(enclosingCodeRepo(join(fakeVault, 'root', 'projects', 'docs'), fakeVault)).toBeNull()
+  })
+  it('still resolves a project dir through its repo link', async () => {
+    expect(await repoForCwd(join(fakeVault, 'root', 'projects', 'app'))).toBe(repo)
+  })
+  it('does not treat a linked worktree as a repo to sync', () => {
+    expect(enclosingCodeRepo(join(worktree, 'android'), fakeVault)).toBeNull()
   })
 })
 

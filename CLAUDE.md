@@ -1051,6 +1051,15 @@ local SSD was tried first and did not help.
   lives on forge and is rsynced back at each turn end or `con agent search`
   goes blind to it; and the repo link is not always named `repo` (Astera uses
   `app`) — use `resolveCheckout()`, never a hardcoded name.
+- **A session cwd inside a code repo is NOT mounted** (`cwdSource()` in
+  `forge/mounts.ts`, ^keen-eel 9 Oct 2026): Console mobile runs from
+  `~/proj/code/console/android`, and mounting the desktop's directory there
+  shadowed that part of the box's clone, so the primary checkout looked dirty
+  for ever and no prepare fast-forwarded it (77 commits behind when found). Such
+  a cwd is read from the clone; `repoForCwd()` finds the enclosing repo
+  (`enclosingCodeRepo()` — never the vault, never a linked worktree), a prepare
+  lazily unmounts a leftover mount before the repo sync, and it fails with a
+  reason if the cwd is not in the box's checkout. Only vault dirs are mounted.
 - forge holds **no copy of the vault** — it sshfs-mounts the project dir off
   this machine. **The mount is PER-PROJECT (`projects/<slug>/**`), not the whole
   vault**, so `~/sync/brain/assets/` on the box is a plain box-local directory:

@@ -415,16 +415,15 @@ blocked forge for 17 h). Afterwards `git push --dry-run forge main` must print
 a fast-forward. Then re-check anything a fork says it built blind because a
 hub commit was not on the box.
 
-**On forge, this `android/` directory is the DESKTOP's, sshfs-mounted over the
-box's clone** (because the session's cwd is mounted; measured 9 Oct 2026). Three
-things follow until the hub stops doing that (console board card, `@console-general`):
-`git status` in the box's `~/proj/code/console` shows dozens of phantom
-"modified" files under `android/` — that is the desktop's tree against a stale
-HEAD, not someone's uncommitted work (^jade-fox reported it as such); anything
-written or any git command run there lands in the desktop's working tree, so
-work ONLY in your own worktree; and the box's root `CLAUDE.md` is days stale
-(its primary never fast-forwards), so trust this file over that one when they
-disagree. Also on forge: `SyncBusClientTest` can fail in isolation too, not just
+**On forge, this `android/` directory is the box's own clone** — the primary
+checkout of `~/proj/code/console` at the mirror's `main`, fast-forwarded by each
+prepare. Until 9 Oct 2026 it was the DESKTOP's directory sshfs-mounted over the
+clone (the session cwd was always mounted), which showed dozens of phantom
+"modified" files under `android/` and froze the box's root `CLAUDE.md` at 7 Oct
+(^jade-fox read it as someone's uncommitted work; fixed by ^keen-eel). So an
+uncommitted edit to this file on the desktop does NOT reach a forge fork —
+commit it. Work in your own worktree as always: a file left modified in the
+primary stops it fast-forwarding for everyone. Also on forge: `SyncBusClientTest` can fail in isolation too, not just
 in the full run (^jade-fox, 8 Oct: 3 of 4 cases red on UNCHANGED main under CPU
 contention) — compare against unchanged main on the same box before calling it
 a regression.
