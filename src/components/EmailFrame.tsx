@@ -154,26 +154,21 @@ function fitBodyToWidth(iframe: HTMLIFrameElement) {
   if (!doc) return
   const iframeW = iframe.clientWidth
   if (iframeW <= 0) return
-  // Replace if present so HMR / rule changes take effect on existing iframes.
-  doc.getElementById(FIT_STYLE_ID)?.remove()
-  const style = doc.createElement('style')
-  style.id = FIT_STYLE_ID
-  style.textContent = `
-    html, body { max-width: 100% !important; overflow-x: hidden !important; }
-    body * { max-width: 100% !important; }
-    /* Marketing emails use fixed-width <table> for layout. Force linear flow
-       so text wraps to the viewport instead of getting clipped. */
-    table, tbody, thead, tfoot, tr, td, th {
-      display: block !important;
-      width: 100% !important;
-      max-width: 100% !important;
-      box-sizing: border-box !important;
-    }
-    td, th { word-break: break-word; overflow-wrap: anywhere; }
-    img, video, iframe { height: auto !important; }
-    pre { white-space: pre-wrap !important; word-break: break-word; }
-  `
-  doc.head.appendChild(style)
+  const body = doc.body
+  if (!doc.getElementById(FIT_STYLE_ID)) {
+    const style = doc.createElement('style')
+    style.id = FIT_STYLE_ID
+    style.textContent = `
+      html { overflow-x: hidden; }
+      pre { white-space: pre-wrap !important; word-break: break-word; }
+    `
+    doc.head.appendChild(style)
+  }
+  // Overriding the email's own table/image CSS distorts it (stretched images,
+  // split rows), so scale the untouched layout down instead, like Gmail does.
+  body.style.zoom = ''
+  const contentW = Math.max(body.scrollWidth, doc.documentElement.scrollWidth)
+  if (contentW > iframeW + 1) body.style.zoom = String(iframeW / contentW)
 }
 
 function toggleDarkInIframe(iframe: HTMLIFrameElement, dark: boolean) {
