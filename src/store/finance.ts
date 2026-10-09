@@ -4,6 +4,7 @@
 
 import { create } from 'zustand'
 import { hubFetch } from '@/hub'
+import { editBody } from '@/utils/edit-body'
 
 // --- Types (mirror server/src/finance/types.ts) -----------------------------
 
@@ -406,7 +407,7 @@ export const useFinanceStore = create<FinanceState>((set, get) => ({
 
   upsertCategory: async (input) => {
     const cat = input.id
-      ? await hubFetch<Category>(`/finance/categories/${input.id}`, { method: 'PATCH', body: JSON.stringify(input) })
+      ? await hubFetch<Category>(`/finance/categories/${input.id}`, { method: 'PATCH', body: editBody(input) })
       : await hubFetch<Category>('/finance/categories', { method: 'POST', body: JSON.stringify(input) })
     await get().fetchAll()
     return cat
@@ -419,7 +420,7 @@ export const useFinanceStore = create<FinanceState>((set, get) => ({
 
   upsertRule: async (input) => {
     const r = input.id
-      ? await hubFetch<CategoryRule>(`/finance/rules/${input.id}`, { method: 'PATCH', body: JSON.stringify(input) })
+      ? await hubFetch<CategoryRule>(`/finance/rules/${input.id}`, { method: 'PATCH', body: editBody(input) })
       : await hubFetch<CategoryRule>('/finance/rules', { method: 'POST', body: JSON.stringify(input) })
     await get().fetchAll()
     return r
@@ -432,7 +433,7 @@ export const useFinanceStore = create<FinanceState>((set, get) => ({
 
   upsertAccount: async (input) => {
     const a = input.id
-      ? await hubFetch<Account>(`/finance/accounts/${input.id}`, { method: 'PATCH', body: JSON.stringify(input) })
+      ? await hubFetch<Account>(`/finance/accounts/${input.id}`, { method: 'PATCH', body: editBody(input) })
       : await hubFetch<Account>('/finance/accounts', { method: 'POST', body: JSON.stringify(input) })
     await get().fetchAll()
     return a
@@ -459,7 +460,7 @@ export const useFinanceStore = create<FinanceState>((set, get) => ({
 
   upsertStream: async (input) => {
     const s = input.id
-      ? await hubFetch<Stream>(`/finance/streams/${input.id}`, { method: 'PATCH', body: JSON.stringify(input) })
+      ? await hubFetch<Stream>(`/finance/streams/${input.id}`, { method: 'PATCH', body: editBody(input) })
       : await hubFetch<Stream>('/finance/streams', { method: 'POST', body: JSON.stringify(input) })
     await get().fetchAll()
     return s
@@ -483,7 +484,7 @@ export const useFinanceStore = create<FinanceState>((set, get) => ({
 
   upsertScenario: async (input) => {
     const s = input.id
-      ? await hubFetch<Scenario>(`/finance/scenarios/${input.id}`, { method: 'PATCH', body: JSON.stringify(input) })
+      ? await hubFetch<Scenario>(`/finance/scenarios/${input.id}`, { method: 'PATCH', body: editBody(input) })
       : await hubFetch<Scenario>('/finance/scenarios', { method: 'POST', body: JSON.stringify(input) })
     await get().fetchAll()
     return s

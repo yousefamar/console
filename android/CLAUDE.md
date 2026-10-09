@@ -178,8 +178,10 @@ while the app is foregrounded (plus short background borrows), so a remote
     phone (`cat_<8hex>`) so the identity is final from the optimistic write and
     there is no temp-id swap at all; and because that hub upsert is
     `Object.assign(existing, input)`, an EDIT must send cleared optionals as
-    `null` — omitting a field keeps the old value (^busy-goat; the SPA has that
-    bug, its `undefined`s drop out of the JSON — don't port it).
+    `null` — omitting a field keeps the old value (^busy-goat). Since 9 Oct 2026
+    the hub removes a null key instead of storing it, on every finance record,
+    and ignores a `ledger` riding an account edit; the SPA had the omit bug
+    until then and now sends emptied fields as `null` (`src/utils/edit-body.ts`).
 
 **Coroutine cancellation (three separate incidents)**
 - Never let a debounce cancel the job the WORK runs inside. `trigger()`

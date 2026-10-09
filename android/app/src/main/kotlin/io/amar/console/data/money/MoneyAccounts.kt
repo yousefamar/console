@@ -26,15 +26,15 @@ import java.util.UUID
  * Three hub behaviours this module exists to respect:
  *
  *  1. The upsert is `Object.assign(existing, input)`, so an EDIT must send the
- *     optionals that are now empty as `null` — see [accountBody]. The SPA has
- *     exactly that bug (its `undefined`s drop out of the JSON), hence
- *     `growthPctYoy` silently surviving a clear there.
- *  2. The same `Object.assign` means a `ledger` we send REPLACES the server's
- *     balance history, so a write body never carries one ([accountBody] passes
- *     `includeLedger = false`). The ledger is owned by `money:balance`.
- *  3. The hub's CREATE branch builds the record field by field and omits
- *     `growthPctYoy` and `archived` — a first POST drops them. [patchBody]
- *     is the follow-up PATCH that puts them back; [needsPatch] says when.
+ *     optionals that are now empty as `null` — see [accountBody]. The hub
+ *     removes a null key instead of storing it (9 Oct 2026).
+ *  2. A write body never carries the `ledger` ([accountBody] passes
+ *     `includeLedger = false`): the ledger is owned by `money:balance`. A hub
+ *     older than 9 Oct 2026 let one REPLACE the balance history; it is ignored
+ *     now, and we still never send it.
+ *  3. A hub older than 9 Oct 2026 dropped `growthPctYoy` and `archived` on a
+ *     CREATE. [patchBody] is the follow-up PATCH that put them back and
+ *     [needsPatch] says when; it only repeats what the POST now stores.
  *
  * Monzo accounts are not hand-editable here beyond their metadata: their
  * `type` / `monzoAccountId` link is the desktop's to define and deleting one
@@ -187,9 +187,9 @@ object MoneyAccounts {
         MoneyJson.accountJson(a, nullsForCleared = isEdit, includeLedger = false).toString()
 
     /**
-     * The hub's create branch omits `growthPctYoy` and `archived`, so a new
-     * account carrying either needs one PATCH behind its POST (the PATCH goes
-     * through `{...existing, ...patch}`, which does apply them).
+     * A hub older than 9 Oct 2026 omitted `growthPctYoy` and `archived` on a
+     * create, so a new account carrying either gets one PATCH behind its POST
+     * (the PATCH goes through `{...existing, ...patch}`, which applies them).
      */
     fun needsPatch(a: Account, isEdit: Boolean): Boolean =
         !isEdit && (a.growthPctYoy != null || a.archived)

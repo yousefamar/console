@@ -640,7 +640,7 @@ class MoneyRepository(
         return try {
             if (a.body != null) {
                 hub.post("/finance/accounts", a.body)
-                // The hub's create branch drops growthPctYoy / archived; PATCH applies them.
+                // Repeats growthPctYoy / archived, which a hub older than 9 Oct 2026 dropped on a create.
                 a.patch?.let { hub.patch(MoneyAccounts.path(a.accountId), it) }
             } else try {
                 hub.delete(MoneyAccounts.path(a.accountId))

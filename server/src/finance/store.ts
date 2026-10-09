@@ -21,6 +21,19 @@ const FILE_NAMES = {
   settings: 'finance-settings.json',
 } as const
 
+/**
+ * JSON has no `undefined`, so `null` is the only way a client can say "clear
+ * this field" on an edit (the phone does; the SPA store maps an emptied form
+ * field to it). Nothing in these records is legitimately null, so one never
+ * reaches memory or disk: it removes the key. Top level only.
+ */
+function dropNulls<T extends object>(record: T): T {
+  for (const k of Object.keys(record) as (keyof T)[]) {
+    if (record[k] === null) delete record[k]
+  }
+  return record
+}
+
 const DEFAULT_CATEGORIES: Category[] = [
   // System / default expense
   { id: 'cat_uncat', name: 'Uncategorised', emoji: '❓', color: '#94a3b8', kind: 'expense', isSystem: true, variable: true },
@@ -80,6 +93,10 @@ export class FinanceStore {
     this.scenarios = this.loadFile(FILE_NAMES.scenarios, [] as Scenario[])
     this.overrides = this.loadFile(FILE_NAMES.overrides, [] as TxOverride[])
     this.settings = this.loadFile(FILE_NAMES.settings, DEFAULT_SETTINGS)
+    // Nulls an older hub stored are cleared in memory; the next write persists it.
+    for (const list of [this.categories, this.rules, this.accounts, this.streams, this.budgets, this.scenarios, this.overrides]) {
+      if (Array.isArray(list)) list.forEach((r) => { if (r && typeof r === 'object') dropNulls(r) })
+    }
   }
 
   private path(name: string): string { return join(this.dir, name) }
@@ -140,7 +157,7 @@ export class FinanceStore {
   upsertCategory(input: Partial<Category> & { name: string }): Category {
     const existing = input.id ? this.categories.find((c) => c.id === input.id) : undefined
     if (existing) {
-      Object.assign(existing, input)
+      dropNulls(Object.assign(existing, input))
     } else {
       const cat: Category = {
         id: input.id ?? `cat_${randomUUID().slice(0, 8)}`,
@@ -149,8 +166,9 @@ export class FinanceStore {
         color: input.color ?? '#94a3b8',
         kind: input.kind ?? 'expense',
         variable: input.variable ?? true,
+        archived: input.archived,
       }
-      this.categories.push(cat)
+      this.categories.push(dropNulls(cat))
     }
     this.writeFile(FILE_NAMES.categories, this.categories)
     return existing ?? this.categories[this.categories.length - 1]!
@@ -180,7 +198,7 @@ export class FinanceStore {
   upsertRule(input: Partial<CategoryRule> & { categoryId: string; match: CategoryRule['match'] }): CategoryRule {
     const existing = input.id ? this.rules.find((r) => r.id === input.id) : undefined
     if (existing) {
-      Object.assign(existing, input)
+      dropNulls(Object.assign(existing, input))
     } else {
       const r: CategoryRule = {
         id: input.id ?? `rule_${randomUUID().slice(0, 8)}`,
@@ -190,8 +208,10 @@ export class FinanceStore {
         categoryId: input.categoryId,
         ignore: input.ignore,
         asTransfer: input.asTransfer,
+        sharedFraction: input.sharedFraction,
+        sharedWithCounterparty: input.sharedWithCounterparty,
       }
-      this.rules.push(r)
+      this.rules.push(dropNulls(r))
     }
     this.rules.sort((a, b) => a.priority - b.priority)
     this.writeFile(FILE_NAMES.rules, this.rules)
@@ -211,7 +231,13 @@ export class FinanceStore {
   upsertAccount(input: Partial<Account> & { name: string; type: Account['type']; liquidity: Account['liquidity'] }): Account {
     const existing = input.id ? this.accounts.find((a) => a.id === input.id) : undefined
     if (existing) {
-      Object.assign(existing, input)
+      // The balance history changes only through the balance routes: a copy
+      // riding an edit is the client's snapshot, stale by the time it lands.
+      const { ledger, ...fields } = input
+      if (ledger !== undefined && ledger !== existing.ledger) {
+        console.warn(`[finance] ignored the ledger sent with an edit of account ${existing.id} — use /finance/accounts/:id/balance`)
+      }
+      dropNulls(Object.assign(existing, fields))
     } else {
       const acc: Account = {
         id: input.id ?? `acc_${randomUUID().slice(0, 8)}`,
@@ -226,8 +252,10 @@ export class FinanceStore {
         isExternal: input.isExternal,
         sort: input.sort ?? this.accounts.length,
         notes: input.notes,
+        archived: input.archived,
+        growthPctYoy: input.growthPctYoy,
       }
-      this.accounts.push(acc)
+      this.accounts.push(dropNulls(acc))
     }
     this.writeFile(FILE_NAMES.accounts, this.accounts)
     return existing ?? this.accounts[this.accounts.length - 1]!
@@ -282,7 +310,7 @@ export class FinanceStore {
   upsertStream(input: Partial<Stream> & { name: string; kind: Stream['kind']; amountPence: number; cadence: Stream['cadence']; startDate: string }): Stream {
     const existing = input.id ? this.streams.find((s) => s.id === input.id) : undefined
     if (existing) {
-      Object.assign(existing, input)
+      dropNulls(Object.assign(existing, input))
     } else {
       const s: Stream = {
         id: input.id ?? `str_${randomUUID().slice(0, 8)}`,
@@ -298,8 +326,9 @@ export class FinanceStore {
         accountId: input.accountId,
         growthPctYoy: input.growthPctYoy,
         notes: input.notes,
+        archived: input.archived,
       }
-      this.streams.push(s)
+      this.streams.push(dropNulls(s))
     }
     this.writeFile(FILE_NAMES.streams, this.streams)
     return existing ?? this.streams[this.streams.length - 1]!
@@ -320,7 +349,7 @@ export class FinanceStore {
       ? this.budgets.find((b) => b.id === input.id)
       : this.budgets.find((b) => b.categoryId === input.categoryId)
     if (existing) {
-      Object.assign(existing, input)
+      dropNulls(Object.assign(existing, input))
     } else {
       const b: Budget = {
         id: input.id ?? `bud_${randomUUID().slice(0, 8)}`,
@@ -329,7 +358,7 @@ export class FinanceStore {
         rollover: input.rollover,
         notes: input.notes,
       }
-      this.budgets.push(b)
+      this.budgets.push(dropNulls(b))
     }
     this.writeFile(FILE_NAMES.budgets, this.budgets)
     return existing ?? this.budgets[this.budgets.length - 1]!
@@ -349,7 +378,7 @@ export class FinanceStore {
     const existing = input.id ? this.scenarios.find((s) => s.id === input.id) : undefined
     const now = new Date().toISOString()
     if (existing) {
-      Object.assign(existing, input, { updatedAt: now })
+      dropNulls(Object.assign(existing, input, { updatedAt: now }))
     } else {
       const s: Scenario = {
         id: input.id ?? `scn_${randomUUID().slice(0, 8)}`,
@@ -360,7 +389,7 @@ export class FinanceStore {
         createdAt: now,
         updatedAt: now,
       }
-      this.scenarios.push(s)
+      this.scenarios.push(dropNulls(s))
     }
     this.writeFile(FILE_NAMES.scenarios, this.scenarios)
     return existing ?? this.scenarios[this.scenarios.length - 1]!
@@ -379,9 +408,9 @@ export class FinanceStore {
   upsertOverride(input: TxOverride): TxOverride {
     const idx = this.overrides.findIndex((o) => o.txId === input.txId)
     if (idx >= 0) {
-      this.overrides[idx] = { ...this.overrides[idx]!, ...input }
+      this.overrides[idx] = dropNulls({ ...this.overrides[idx]!, ...input })
     } else {
-      this.overrides.push(input)
+      this.overrides.push(dropNulls({ ...input }))
     }
     this.writeFile(FILE_NAMES.overrides, this.overrides)
     return this.overrides.find((o) => o.txId === input.txId)!
