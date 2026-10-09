@@ -959,6 +959,23 @@ local SSD was tried first and did not help.
   records the old SHAs as ancestors with main's tree untouched (compare
   `git rev-parse HEAD^{tree}` before and after), push, `con agent forge up`.
   Never force the mirror.
+- **The Tor shield ends every forge fork when it is flipped, in either
+  direction.** Yousef's taskbar toggle (`/usr/local/sbin/torroute`; design in
+  the vault at `projects/console/research/tor-taskbar-toggle.md`) closes every
+  established connection to a non-local peer so running apps re-route. The
+  forge link is one of them — `session-manager-plugin` holds a TCP connection
+  to AWS as uid `amar` and the ssh master rides it — so a flip drops every
+  forge session, and since the watchdog a dropped session's agent dies with it.
+  It also cuts every local agent's API stream (re-sent as a cache miss), and
+  while it is ON local agents cannot reach their models at all and forge is
+  assumed unusable. **For any sudden fleet-wide failure, `sudo -n
+  /usr/local/sbin/torroute status` is the first check** — the hub knows nothing
+  about the shield, so its retries, the `agent.auth.failed` alert and failing
+  guards will all look like separate problems. Agents never flip it
+  (`~/CLAUDE.md`). Not built, Yousef's call (Backlog): running the forge
+  transport in its own systemd scope so it can be exempted like Syncthing —
+  which does not break his "an agent's curl goes through Tor" condition,
+  because the ssh master and the SSM plugin never run agent commands.
 - **Path parity covers SIBLING checkouts too, and the prepare does not create
   them yet.** On the desktop `/opt/code/astera-app-staging` is a git worktree
   of `astera-app` on `staging`; astera's `worktree-db.sh` and
