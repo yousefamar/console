@@ -73,6 +73,20 @@ export const SHARED_DIRS = [
  *  deliberately absent: it is the one thing a login owns privately. */
 export const SHARED_FILES = ['settings.json', 'settings.local.json', '.mcp.json'] as const
 
+/** Every env key a backend preset manages (auth-backend.ts imports this; the
+ *  list lives here because this file owns each login dir's settings.json). */
+export const MANAGED_ENV_KEYS = [
+  'CLAUDE_CODE_USE_BEDROCK',
+  'AWS_PROFILE',
+  'AWS_REGION',
+  'ANTHROPIC_MODEL',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL',
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+] as const
+
 /** Pure: the state a registry file's contents mean, with the implicit
  *  single-login default applied. Unknown/renamed actives fall back to the
  *  canonical login rather than leaving the fleet pointing at nothing. */
@@ -127,7 +141,33 @@ export function ensureLoginDir(dir: string, canonical = canonicalDir()): { linke
       copied.push(entry)
     } catch { /* ditto */ }
   }
+  if (!existsSync(join(dir, '.credentials.json'))) stripManagedEnv(join(dir, 'settings.json'))
   return { linked, copied }
+}
+
+/** Remove the backend preset's env from a settings.json. A dir with no
+ *  credentials can do exactly one thing — `claude auth login` — and that has to
+ *  reach Anthropic, so it must not inherit a spill. Provisioning copies the
+ *  canonical settings.json verbatim, and while the fleet is spilled that file
+ *  carries `CLAUDE_CODE_USE_BEDROCK=1`: a login added mid-spill therefore talked
+ *  to Bedrock and never offered the OAuth flow at all (9 Oct 2026, the second
+ *  Max login). auth-backend.ts puts the right env back on the next switch, by
+ *  which point the login has credentials. */
+function stripManagedEnv(path: string): void {
+  try {
+    const raw = readFileSync(path, 'utf-8')
+    const json = JSON.parse(raw)
+    const env = json?.env
+    if (!env || typeof env !== 'object') return
+    let changed = false
+    for (const key of MANAGED_ENV_KEYS) {
+      if (key in env) { delete env[key]; changed = true }
+    }
+    if (!changed) return
+    const tmp = `${path}.tmp`
+    writeFileSync(tmp, `${JSON.stringify(json, null, 2)}\n`)
+    renameSync(tmp, path)
+  } catch { /* a settings file we cannot rewrite is not worth failing a boot over */ }
 }
 
 export interface LoginRegistryDeps {

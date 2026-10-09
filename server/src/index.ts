@@ -38,11 +38,11 @@ import { handleBlogRoutes } from './routes/blog.js'
 import { listSpaces, projectRepo } from './spaces.js'
 import { readdir } from 'node:fs/promises'
 import { WORKSPACE_DIR } from './al/identity.js'
-import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, applyLoginSwitch, broadcastModelState, restartAllSessionsForModel, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
+import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGroups, applyUserModelChange, applyBackendSwitch, applyUserBackendChoice, applyLoginSwitch, remotelyPlacedSessions, broadcastModelState, restartAllSessionsForModel, liveSessionForRole, forkRoleSessionForTicket, forkSessionForWake, closeSession, wakeSession, findProjectBoard, wakeForkCompacted, mergeIntoParent, withReviewReminder, type AgentContext } from './routes/agents.js'
 import { BACKEND_PRESETS, detectActiveBackend, readSettingsEnv, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BackendFailover, DEFAULT_HOLD_MS } from './backend-failover.js'
 import { SubscriptionUsageLedger, summariseUsage, credentialsPath } from './subscription-usage.js'
-import { MaxLoginRegistry, setLoginRegistry } from './max-logins.js'
+import { MaxLoginRegistry, setLoginRegistry, activeLoginDir } from './max-logins.js'
 import { checkMaxLogin } from './max-login.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
@@ -2457,6 +2457,11 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
             // Same rule as a switch onto the subscription: prove the login
             // before every live session respawns onto it (7 Oct 2026).
             if (!force) {
+              const stranded = remotelyPlacedSessions(agentCtx)
+              if (stranded.length) {
+                fail(409, `Not switching: ${stranded.length} live session(s) run on another machine, where '${name}' has no config dir — they would respawn with no transcript and lose their context (${stranded.slice(0, 5).join(', ')}${stranded.length > 5 ? ', …' : ''}). End them, or re-run with --force. No session was touched.`)
+                return
+              }
               if (!existsSync(credentialsPath(login.dir))) {
                 fail(409, `'${name}' is not logged in yet. Run: CLAUDE_CONFIG_DIR=${login.dir} claude auth login`)
                 return
@@ -2523,7 +2528,13 @@ const requestHandler = async (req: IncomingMessage, res: ServerResponse) => {
           // Every live session respawns onto the subscription, so prove its
           // login first — 7 Oct 2026 a switch onto a dead login killed them all.
           if (backend === 'first_party') {
-            const check = await checkMaxLogin()
+            // The ACTIVE login's dir, not `~/.claude`: with a second login
+            // registered, probing the canonical dir answers for whichever
+            // subscription happens to live there. On 9 Oct 2026 that refused a
+            // switch onto a login sitting at 0% because `default` — no longer
+            // the active one — had hit its weekly limit, and then refused the
+            // revert for the same reason.
+            const check = await checkMaxLogin({ configDir: activeLoginDir() })
             if (!check.ok) {
               notifyMaxLoginDead(check.detail, check.auth)
               res.writeHead(409, { 'Content-Type': 'application/json' })

@@ -109,6 +109,27 @@ describe('ensureLoginDir', () => {
   it('the canonical dir is left exactly as it is', () => {
     expect(ensureLoginDir(canonical, canonical)).toEqual({ linked: [], copied: [] })
   })
+
+  it('strips the backend env while a login has no credentials, so `claude auth login` can reach Anthropic', () => {
+    writeFileSync(join(canonical, 'settings.json'), JSON.stringify({
+      env: { CLAUDE_CODE_USE_BEDROCK: '1', AWS_PROFILE: 'p', ANTHROPIC_MODEL: 'arn:…', KEEP_ME: '1' },
+      theme: 'auto',
+    }))
+    ensureLoginDir(login, canonical)
+    const env = JSON.parse(readFileSync(join(login, 'settings.json'), 'utf-8')).env
+    expect(env).toEqual({ KEEP_ME: '1' })
+    expect(JSON.parse(readFileSync(join(login, 'settings.json'), 'utf-8')).theme).toBe('auto')
+    // The canonical file is untouched: the fleet's own backend is not this function's business.
+    expect(JSON.parse(readFileSync(join(canonical, 'settings.json'), 'utf-8')).env.CLAUDE_CODE_USE_BEDROCK).toBe('1')
+  })
+
+  it('leaves the backend env alone once the login HAS credentials — auth-backend owns it from then on', () => {
+    writeFileSync(join(canonical, 'settings.json'), JSON.stringify({ env: { CLAUDE_CODE_USE_BEDROCK: '1' } }))
+    mkdirSync(login, { recursive: true })
+    writeFileSync(join(login, '.credentials.json'), '{"claudeAiOauth":{"accessToken":"its-own"}}')
+    ensureLoginDir(login, canonical)
+    expect(JSON.parse(readFileSync(join(login, 'settings.json'), 'utf-8')).env.CLAUDE_CODE_USE_BEDROCK).toBe('1')
+  })
 })
 
 describe('MaxLoginRegistry', () => {

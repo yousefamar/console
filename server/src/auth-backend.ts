@@ -26,7 +26,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from '
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { aliasProfileEnv } from './bedrock-profiles.js'
-import { loginDirs } from './max-logins.js'
+import { loginDirs, MANAGED_ENV_KEYS } from './max-logins.js'
 import { BEDROCK_CHAIN, FIRST_PARTY_CHAIN } from './model-chains.js'
 
 export type AuthBackend = 'first_party' | 'bedrock'
@@ -40,21 +40,6 @@ export interface BackendPreset {
    *  one-shot spawn sweep (see model-config.ts DEFAULT_MODEL_CHAIN comment). */
   chain: string[]
 }
-
-/** Every env key any preset manages. Switching strips keys in this set that
- *  aren't in the target preset, so bedrock -> first_party actually removes the
- *  AWS_ and ANTHROPIC_MODEL keys rather than leaving them alongside the new value. */
-const MANAGED_ENV_KEYS = [
-  'CLAUDE_CODE_USE_BEDROCK',
-  'AWS_PROFILE',
-  'AWS_REGION',
-  'ANTHROPIC_MODEL',
-  'ANTHROPIC_DEFAULT_FABLE_MODEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'ANTHROPIC_SMALL_FAST_MODEL',
-] as const
 
 export const BACKEND_PRESETS: Record<AuthBackend, BackendPreset> = {
   first_party: {

@@ -234,6 +234,22 @@ export function applyBackendSwitch(ctx: AgentContext, backend: AuthBackend): Bac
  *  registry at it, make sure its settings.json carries the live backend, and
  *  respawn every live session so they pick up the new `CLAUDE_CONFIG_DIR`.
  *  Hibernated sessions need nothing — they resolve the active login at wake. */
+/** Live sessions a login switch would strand: their config dir lives on ANOTHER
+ *  machine, where `ensureLoginDir` has never run. The switch sets
+ *  `CLAUDE_CONFIG_DIR` fleet-wide, so a remote session's `--resume` target
+ *  resolves under a path that does not exist on its own box; session.ts treats
+ *  that missing file as a pruned transcript and respawns FRESH on a new
+ *  claudeSessionId. Locally this is harmless — `projects` is symlinked back to
+ *  `~/.claude/projects` — which is exactly why it looked safe on 9 Oct 2026 and
+ *  still cost 15 forge forks their context. */
+export function remotelyPlacedSessions(ctx: AgentContext): string[] {
+  const names: string[] = []
+  for (const s of ctx.sessions.values()) {
+    if (s.placement && s.placement !== 'local' && s.status !== 'ended') names.push(s.name || s.id)
+  }
+  return names
+}
+
 export function applyLoginSwitch(ctx: AgentContext, name: string): MaxLogin {
   const reg = loginRegistry()
   if (!reg) throw new Error('login registry is not wired')
