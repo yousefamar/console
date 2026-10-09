@@ -68,6 +68,36 @@ export function getHubUrl(): string {
 }
 
 /**
+ * Does a hub answer at `baseUrl`? Only the STATUS is wanted, so the body is
+ * cancelled, and that is the whole point of this function.
+ *
+ * `/health` carries the full session list. Left unread, a body larger than the
+ * ~64 KiB the HTTP client will buffer is never fully received: the connection
+ * stays open and holds this process alive until the hub drops it, about 65 s
+ * later. The command had long since printed its answer; it just could not EXIT.
+ * On 9 Oct 2026 the fleet reached 78 sessions, `/health` crossed 64 KiB at about
+ * 04:30, and from then every `con` call took 17-74 s to return. Guards that
+ * shell out to `con` under a 60 s cap timed out, and the hub logged each
+ * timeout as "guard: no change" — four hours of blind watchers.
+ *
+ * Exported for the test that pins this.
+ */
+export async function probeHub(baseUrl: string, timeoutMs = 1500): Promise<boolean> {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await insecureFetch(`${baseUrl}/health`, { signal: ctrl.signal })
+    await res.body?.cancel().catch(() => {})
+    return res.ok
+  } catch {
+    return false
+  } finally {
+    // A pending timer keeps the process alive too, if only for 1.5 s.
+    clearTimeout(t)
+  }
+}
+
+/**
  * Probe HTTPS then HTTP on the default host/port. Caches the winning URL for
  * the lifetime of the process. Only runs if `CONSOLE_HUB_URL` isn't set.
  */
@@ -76,17 +106,9 @@ async function detectHubUrl(): Promise<string> {
   if (cachedHubUrl) return cachedHubUrl
   for (const proto of ['https', 'http'] as const) {
     const url = `${proto}://${DEFAULT_HUB_HOST}:${DEFAULT_HUB_PORT}`
-    try {
-      const ctrl = new AbortController()
-      const t = setTimeout(() => ctrl.abort(), 1500)
-      const res = await insecureFetch(`${url}/health`, { signal: ctrl.signal })
-      clearTimeout(t)
-      if (res.ok) {
-        cachedHubUrl = url
-        return url
-      }
-    } catch {
-      // try next
+    if (await probeHub(url)) {
+      cachedHubUrl = url
+      return url
     }
   }
   // Default to HTTPS if both probes fail — the error will surface cleanly
