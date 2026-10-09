@@ -70,6 +70,13 @@ KbdInteractiveAuthentication no
 PermitEmptyPasswords no
 X11Forwarding no
 EOF
+# Every forge agent is one session on the hub's single multiplexed connection.
+# At the default MaxSessions 10, a fleet-wide respawn of 11 forks had nine
+# refused, and their SSM fallback connections timed out (9 Oct 2026).
+sudo tee /etc/ssh/sshd_config.d/98-forge-sessions.conf >/dev/null <<'EOF'
+MaxSessions 64
+MaxStartups 40:30:100
+EOF
 sudo mkdir -p /etc/systemd/system/ssh.socket.d
 sudo tee /etc/systemd/system/ssh.socket.d/99-forge-loopback.conf >/dev/null <<'EOF'
 [Socket]

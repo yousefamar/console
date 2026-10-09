@@ -86,6 +86,7 @@ export function agentNice(env: NodeJS.ProcessEnv = process.env): number {
  *  before giving up — guards against a restart loop if every model fails. */
 const MAX_MODEL_RESTARTS = 6
 const PRE_INIT_STDERR_LOG_CAP = 5
+const FORGE_SSH_RETRY_MAX = 3
 /** Delivered to a session whose in-flight turn was cut by a model/backend respawn. */
 export const MODEL_RESTART_NUDGE = 'The hub switched model/backend mid-turn, which interrupted you. Continue from where you left off.'
 
@@ -481,6 +482,7 @@ export class Session extends EventEmitter {
     this.spawnedAt = Date.now()
     this.gotSystemInit = false
     this.preInitStderrLogged = 0
+    this.lastStdinPrompt = null
     // A respawn orphans any outstanding control_request — the new process
     // knows nothing of it, so a stale marker would misroute normal messages
     // into denyTool (whose response would go unanswered anyway).
@@ -760,13 +762,43 @@ export class Session extends EventEmitter {
         this.flushQueuedMessage()
         return
       }
+      // ssh itself failed (255) before the remote claude spoke: the box refused
+      // the session or the SSM transport timed out. Not a model fault. On
+      // 9 Oct 2026 a failover respawned 11 forge forks at once over one
+      // multiplexed connection (sshd MaxSessions 10, box at load 40); nine died
+      // here and three lost their in-flight turn, because the "continue" nudge
+      // had been written into the dead pipe.
+      const sshFailed = this.placement === 'forge' && code === 255 && !this.gotSystemInit
+      if (sshFailed && !this.endedByUser && this.claudeSessionId) {
+        const lost = this.pendingWakeMessage ?? this.lastStdinPrompt
+        if (lost && this.forgeSshRetries < FORGE_SSH_RETRY_MAX) {
+          this.forgeSshRetries++
+          this.pendingWakeMessage = null
+          this.lastStdinPrompt = null
+          this.hibernated = true
+          this.status = 'idle'
+          this.forgeSshRetryPending = lost
+          const delay = this.forgeSshRetries * 20_000 + Math.floor(Math.random() * 10_000)
+          console.log(`[forge] ${this.id}: ssh failed before the agent started — retry ${this.forgeSshRetries}/${FORGE_SSH_RETRY_MAX} in ${Math.round(delay / 1000)}s`)
+          this.emitHub({ type: 'status', sessionId: this.id, text: `[forge] ssh to the box failed before the agent started — retrying in ${Math.round(delay / 1000)}s` })
+          this.forgeSshRetryTimer = setTimeout(() => {
+            this.forgeSshRetryTimer = null
+            const p = this.forgeSshRetryPending
+            this.forgeSshRetryPending = null
+            if (!p || this.endedByUser || !this.hibernated) return
+            this.sendMessage(p.content, p.images)
+          }, delay)
+          this.forgeSshRetryTimer.unref?.()
+          return
+        }
+      }
       // Exited before ever initializing, soon after spawn → the model is the
       // likely culprit (pulled / unavailable / not entitled). Signal the hub so
       // it can advance the fallback chain. reportFailure → restartAllSessions
       // (or the stale/else branch) synchronously re-spawns THIS session via
       // restartForModelChange (which handles the now-dead process). Do NOT end
       // the session here — returning lets that re-spawn stand.
-      if (!this.gotSystemInit && !this.endedByUser
+      if (!this.gotSystemInit && !this.endedByUser && !sshFailed
           && Date.now() - this.spawnedAt < 20_000) {
         this.signalModelFailure(`exited before init (code=${code})`)
         // If the signal led to a re-spawn (new process alive), we're done.
@@ -905,6 +937,18 @@ export class Session extends EventEmitter {
       return
     }
     if (this.hibernated) {
+      // Waking ahead of a forge ssh retry: carry what the failed spawn lost.
+      if (this.forgeSshRetryTimer) {
+        clearTimeout(this.forgeSshRetryTimer)
+        this.forgeSshRetryTimer = null
+      }
+      const lost = this.forgeSshRetryPending
+      this.forgeSshRetryPending = null
+      if (lost) {
+        content = `${lost.content}\n\n${content}`
+        images = [...(lost.images ?? []), ...(images ?? [])]
+        if (images.length === 0) images = undefined
+      }
       this.wakeFromHibernation()
     }
     this.status = 'running'
@@ -1198,6 +1242,10 @@ export class Session extends EventEmitter {
   /** Last message written to stdin this process-lifetime — re-delivered when a
    *  failed resume forces a fresh respawn (the write went to a dying process). */
   private lastStdinPrompt: { content: string; images?: ImageAttachment[] } | null = null
+  /** Forge spawns that died on ssh before init, retried with backoff (exit handler). */
+  private forgeSshRetries = 0
+  private forgeSshRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private forgeSshRetryPending: { content: string; images?: ImageAttachment[] } | null = null
   /** Wall-clock of the last user message or completed turn — the idle clock. */
   lastActivityAt = Date.now()
   /** An approval (AskUserQuestion / plan) is outstanding — hibernating now
@@ -1356,6 +1404,7 @@ export class Session extends EventEmitter {
   terminateForShutdown(): number | null {
     this.shuttingDown = true
     if (this.transientResumeTimer) { clearTimeout(this.transientResumeTimer); this.transientResumeTimer = null }
+    if (this.forgeSshRetryTimer) { clearTimeout(this.forgeSshRetryTimer); this.forgeSshRetryTimer = null }
     if (!this.process || !this.processAlive) return null
     const pid = this.process.pid ?? null
     this.process.kill('SIGTERM')
@@ -1365,6 +1414,8 @@ export class Session extends EventEmitter {
   /** Kill the session */
   kill() {
     if (this.transientResumeTimer) { clearTimeout(this.transientResumeTimer); this.transientResumeTimer = null }
+    if (this.forgeSshRetryTimer) { clearTimeout(this.forgeSshRetryTimer); this.forgeSshRetryTimer = null }
+    this.forgeSshRetryPending = null
 
     this.endedByUser = true
     // Mark ended unconditionally — not only when a live process exists. If the
@@ -1551,6 +1602,7 @@ export class Session extends EventEmitter {
         this.gotSystemInit = true
         this.modelFailureSignaled = false
         this.modelRestarts = 0
+        this.forgeSshRetries = 0
         const { displayName, contextWindow } = parseModelString(msg.model)
         this.contextWindow = contextWindow
         this.emitHub({
