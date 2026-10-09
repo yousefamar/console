@@ -767,7 +767,8 @@ local SSD was tried first and did not help.
   rule is 90 s and its interval 2 min); (c) the box's sshd pings its clients
   (`/etc/ssh/sshd_config.d/98-forge-sessions.conf`, also in
   `scripts/forge/bootstrap.sh`), which covers what no signal handler can: the
-  hub itself SIGKILLed, the desktop losing power; (d) `MaxSessions 64` on the
+  hub itself SIGKILLed, the desktop losing power — the same SIGKILL test after
+  the change: dropped at 150 s; (d) `MaxSessions 64` on the
   box (treasurer, 98552659) so sessions fit on the master in the first place.
   **A connection keeps the sshd limits it was OPENED with** — the master too,
   and it outlives every hub restart (`ssh -M -N -f`, 42 h old that night, still
@@ -777,7 +778,15 @@ local SSD was tried first and did not help.
   restart the hub (its boot reopens the master with both reverse forwards,
   re-forwards every restored session's dev port, and the sshfs mounts reconnect
   by themselves). Idle sessions that were on the old master come back with
-  their next message.
+  their next message. Open the new master BEFORE the restart
+  (`con agent forge up`, then `ssh -O check forge` shows a new pid): a boot that
+  cannot reach the box restores its forge sessions LOCALLY, into empty history.
+- **Never signal a process on the box by NAME.** Every agent there has a
+  watchdog whose blocking child is a plain `cat`; `pkill -f 'cat$'` (written
+  into a probe's cleanup on 9 Oct and caught before it ran) would end one live
+  agent's whole tree per match. Kill by a pid you recorded yourself
+  (`echo $$ > /tmp/x.pid` in the remote command, then `pkill -P "$(cat …)"`),
+  and when you count or match over ssh, bracket the first letter.
 - **A failed forge exec always says why (`execFailure`, `forge/ssh.ts`).** A
   command its timeout killed rejects with `code: null` and an empty stderr, and
   `''.split('\n').pop()` is `''`, not undefined — so the sweep logged
