@@ -261,6 +261,10 @@ export interface SessionInfo {
   messageLogLength?: number
   /** Present when the session is flagged for Yousef's attention (`@amar`). */
   needsAttention?: AttentionState | null
+  /** Present while the session's backend login does not work: its last
+   *  `count` message(s) were answered by the CLI's "Not logged in", not by the
+   *  model, so they were delivered and never acted on. */
+  authFailure?: { at: number; detail: string; count: number }
   /** Pinned read (hand-back approved): stays read, and raises no attention,
    *  until it is folded into its parent. */
   readPinned?: boolean

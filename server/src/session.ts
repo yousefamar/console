@@ -32,6 +32,7 @@ import { getChildCountSync } from './process-tree.js'
 import { gitStatusSync } from './git-status.js'
 import { forgeConfig, remoteCommandArgv, forgeSshEnv, noteForgeUse, syncTranscript } from './forge/index.js'
 import { HUB_PID_ENV } from './agents/process-reaper.js'
+import { isAuthFailure } from './agents/auth-failure.js'
 import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
@@ -288,6 +289,12 @@ export class Session extends EventEmitter {
    *  session ignores the hub-wide model: spawns/respawns use it, and
    *  restartAllSessionsForModel skips the session. undefined = follow the hub. */
   modelOverride?: string
+
+  /** Set when a turn came back as the CLI's own "no usable login" verdict
+   *  (agents/auth-failure.ts), cleared by the next real answer. `count` is how
+   *  many messages were spent into that error — each one was delivered,
+   *  "answered", and not acted on, so this is also the re-send list. */
+  authFailure: { at: number; detail: string; count: number } | null = null
 
   /** `@amar` attention flag — set when the session emits `@amar` in assistant
    *  output, cleared when Yousef opens / marks-read the session. */
@@ -1485,6 +1492,7 @@ export class Session extends EventEmitter {
       hibernated: this.hibernated || undefined,
       backgroundProcessCount: getChildCountSync(this.process?.pid),
       needsAttention: this.needsAttention,
+      authFailure: this.authFailure ?? undefined,
       lastTextSnippet: this.lastTextSnippet,
       queuedMessage: this.queuedMessage,
       todos: this.visibleTodos().length ? this.visibleTodos() : undefined,
@@ -1553,6 +1561,11 @@ export class Session extends EventEmitter {
         // We emit text/error explicitly here based on the flag.
         const anyMsg = msg as unknown as { isApiErrorMessage?: boolean; is_api_error_message?: boolean; error?: string; message: { model?: string } }
         const isSynthetic = anyMsg.message?.model === '<synthetic>'
+        // A real answer from the model is the only proof the login works again.
+        if (!isSynthetic && this.authFailure) {
+          this.authFailure = null
+          this.emit('auth_recovered')
+        }
         if (isSynthetic) {
           const text = msg.message.content
             .map((b) => (b.type === 'text' ? (b as { text: string }).text : ''))
@@ -1569,6 +1582,13 @@ export class Session extends EventEmitter {
             const isApiError = anyMsg.isApiErrorMessage || anyMsg.is_api_error_message
               || anyMsg.error != null || /^API Error/i.test(text)
             if (isApiError) {
+              // "Not logged in · Please run /login" is not an answer. Until
+              // 9 Oct 2026 it was treated as one: 21 forge forks spent their
+              // instructions into it and sat idle for 40 minutes unseen.
+              if (isAuthFailure(anyMsg.error, text)) {
+                this.authFailure = { at: this.authFailure?.at ?? Date.now(), detail: text.slice(0, 200), count: (this.authFailure?.count ?? 0) + 1 }
+                this.emit('auth_failed', this.authFailure.detail, this.authFailure.count)
+              }
               // A subscription quota exhaustion worded as an API error (the
               // structured rate_limit_event usually precedes it; this is the
               // belt to that brace). The turn is also a transient failure —

@@ -126,6 +126,10 @@ export interface AgentContext {
   /** Subscription → Bedrock failover on a Max usage-limit rejection
    *  (backend-failover.ts). Absent in tests that never spawn. */
   failover?: BackendFailover
+  /** A session's turn came back as "no usable login" / it answered for real
+   *  again (agents/auth-failure.ts). index.ts turns these into ONE alert. */
+  onAuthFailed?: (session: Session, detail: string, count: number) => void
+  onAuthRecovered?: (session: Session) => void
   /** Force a fresh Al spawn (re-derive persona). Wired in index.ts to
    *  `reloadAlSession`; used by the `reload_al` client message. */
   reloadAl?: () => Promise<Session | null>
@@ -639,6 +643,11 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
   session.on('rate_limit', (info: ClaudeRateLimitInfo, detail?: string) => {
     ctx.failover?.onRateLimit(info, session.name ?? session.id, detail)
   })
+
+  // The CLI answered "Not logged in" instead of the model answering. That is
+  // a failed spawn wearing an answer's clothes; say so.
+  session.on('auth_failed', (detail: string, count: number) => ctx.onAuthFailed?.(session, detail, count))
+  session.on('auth_recovered', () => ctx.onAuthRecovered?.(session))
 
   ctx.sessions.set(session.id, session)
   // A resume already knows its claudeSessionId (a fresh spawn / fork learns it

@@ -25,6 +25,7 @@ import { NoteStore } from './notes.js'
 import { FeedStore } from './feeds.js'
 import { saveManifest, saveManifestSync, loadManifest } from './manifest.js'
 import { reapStaleProcesses, StaleProcessSweeper, waitForExit } from './agents/process-reaper.js'
+import { AuthFailureWatch, describeAuthAlert } from './agents/auth-failure.js'
 import { CacheTtlLedger, setCacheTtlHooks, DEFAULT_RECENT_MINUTES } from './agents/cache-ttl.js'
 import { setEffortHooks } from './agents/effort.js'
 import { setCompactWindowHooks, loadLiftedCompactWindows, THRASH_WINDOW_MS } from './agents/compact-window.js'
@@ -887,7 +888,7 @@ const agentCtx: AgentContext = {
   // cronScheduler (declared below) — only ever invoked at runtime, well after boot.
   // Listeners are keyed by claudeSessionId exactly like crons and follow the same re-key/merge.
   reassignCron: (from, to) => cronScheduler.reassignSession(from, to).length + listenerEngine.reassignSession(from, to).length,
-  onSessionEnded: (s) => { eventBus.emit({ topic: 'agent.session.ended', source: 'agents', key: `${s.id}:ended`, data: { agentKey: s.agentKey ?? null, csid: s.claudeSessionId ?? null, name: s.name ?? null, parent: s.parentClaudeSessionId ?? null } }) },
+  onSessionEnded: (s) => { authFailureWatch.recovered(s.id); eventBus.emit({ topic: 'agent.session.ended', source: 'agents', key: `${s.id}:ended`, data: { agentKey: s.agentKey ?? null, csid: s.claudeSessionId ?? null, name: s.name ?? null, parent: s.parentClaudeSessionId ?? null } }) },
   // Agent Edit/Write inside the vault → tell any open doc editor so it can
   // flip into inline review mode (SPA re-reads disk and diffs locally).
   onToolDiff: (sessionId, filePath) => {
@@ -979,6 +980,33 @@ const backendFailover = new BackendFailover(join(feedsConfigDir, 'backend-failov
   },
 })
 agentCtx.failover = backendFailover
+
+// A session that answers "Not logged in" has not answered (agents/auth-failure.ts).
+// One log line per session, ONE alert per outage: a push, and `agent.auth.failed`
+// on the bus so an agent can be woken by it (`con listen add --on agent.auth.failed`)
+// instead of somebody finding it in a transcript half an hour later.
+const authFailureWatch = new AuthFailureWatch({
+  onAlert: (a) => {
+    const { title, body } = describeAuthAlert(a)
+    log(`[auth] ALERT: ${title} — ${body}`)
+    pushServer.broadcast({ type: 'generic', title, body, id: 'agent-auth-failed' })
+    eventBus.emit({
+      topic: 'agent.auth.failed', source: 'agents', key: `auth-failed:${a.firstAt}`,
+      data: { count: a.count, forge: a.forge, local: a.local, failingNow: a.failingNow, backends: a.backends, detail: a.detail, sessions: a.names },
+    })
+  },
+})
+agentCtx.onAuthFailed = (s, detail, count) => {
+  // A forge session runs on Bedrock whatever the fleet is on (its own identity).
+  const backend = s.placement === 'forge' ? 'bedrock' : detectActiveBackend()
+  if (count === 1) log(`[auth] ${s.name ?? s.id} (${s.placement}, ${backend}) cannot authenticate: ${detail}`)
+  authFailureWatch.report({ sessionId: s.id, name: s.name ?? s.id, placement: s.placement, backend, detail, at: Date.now() })
+}
+agentCtx.onAuthRecovered = (s) => {
+  log(`[auth] ${s.name ?? s.id} is answering again`)
+  authFailureWatch.recovered(s.id)
+}
+
 // Utilisation of the Max windows over time — the data behind "how many
 // subscriptions". Polls the CLI's own usage endpoint with the CLI's token.
 const subscriptionUsage = new SubscriptionUsageLedger(join(feedsConfigDir, 'subscription-usage.json'), { log })
