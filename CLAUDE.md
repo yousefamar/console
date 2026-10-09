@@ -665,6 +665,41 @@ local SSD was tried first and did not help.
   holds across a restart too: a deferred move is one in-memory callback, so
   `shutdown()` drains the pending set and reports each as a failure rather than
   letting it simply not happen.
+- **Adopting a newer model generation on Bedrock is four hand-maintained
+  surfaces and two CLIs** (^trim-duck, 8 Oct 2026; the fleet had sat a
+  generation behind for two days because nothing watched). Access is rarely the
+  blocker: the 5-5 models already answered for `claude-code-amar`; what was
+  missing was an owner-tagged application inference profile (`amar-cc-<label>`,
+  tags `owner=amar app=claude-code`), the only route to per-person cost
+  attribution. Then: (1) `server/src/model-chains.ts` `BEDROCK_CHAIN`; (2)
+  `server/src/bedrock-profiles.ts` `STATIC_PROFILES` (a miss bills untagged
+  forever); (3) the same file's `aliasProfileEnv` map, which is what subagents,
+  compaction and `--model haiku` callers resolve through; (4)
+  `src/utils/fleet-models.ts` `BEDROCK_MODELS`, the Spaces picker.
+  `bedrock-profiles.test.ts` and `fleet-models.test.ts` derive from the chain
+  and fail on a missed surface. **Bedrock serving a model is not enough: the
+  `claude` CLI gates on its own bundled catalog first**, so probe with the real
+  CLI, with the Bedrock environment set EXPLICITLY, `</dev/null` on stdin, and
+  a control model beside it — and probe BOTH CLIs, because forge runs its own,
+  usually older `claude` and every forge fork takes the Bedrock aliases whatever
+  the fleet is on. Haiku 5.5 on 9 Oct: served and profiled
+  (`amar-cc-haiku-5-5`), hangs on desktop 2.1.295, `unrecognized_model` on
+  forge 2.1.288 — not adopted. The daily guard
+  (`~/exec/console-bedrock-model-guard.sh`, cron `ahHcHQs`) scrapes
+  `BEDROCK_CHAIN` out of the source with a regex, so renaming or moving it
+  breaks the guard silently; and it only counts a model as usable when the
+  model ANSWERS (until 9 Oct any output that was not a known rejection passed,
+  which woke me for Haiku 5.5 while the fleet was on Max). Live only after a
+  hub restart (`reconcilePreset` + `syncBackendSettings` at boot).
+- **Test counts in the main checkout were inflated until 9 Oct 2026.** Vitest 4
+  no longer excludes `dist/` by default, and `server/dist` (gitignored, built
+  30 Aug, run by nothing) held 47 compiled test files: every run in the main
+  checkout collected them, tested six-week-old code and passed. "168 files /
+  2533 tests" was really 121 / 1948. Both configs now exclude `**/dist/**`.
+  If a suite is ever larger in the main checkout than in a worktree, that is
+  the question to ask. And **editing `vite.config.ts` restarts the live dev
+  server and reloads Yousef's open Console tab** — put test-only settings
+  somewhere that is not the SPA's own config, or do it when he is not in it.
 - **A remote agent must die with its connection, because every hub-side stop
   is only a signal to the local `ssh` client.** `interrupt()`, `kill()`,
   hibernation, a model / login / backend respawn and shutdown all call

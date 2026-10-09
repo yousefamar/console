@@ -1,5 +1,6 @@
 /// <reference types="vitest" />
 import { defineConfig } from 'vite'
+import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -28,5 +29,9 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
+    // Never collect build output: Vitest 4 no longer excludes `dist/` by
+    // default, and `server/dist` held 47 stale compiled tests (see
+    // server/vitest.config.ts).
+    exclude: [...configDefaults.exclude, '**/dist/**'],
   },
 })
