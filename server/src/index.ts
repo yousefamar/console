@@ -43,7 +43,8 @@ import { handleClientMessage, createSession, loadSessionOrder, loadCollapsedGrou
 import { BACKEND_PRESETS, detectActiveBackend, readSettingsEnv, syncBackendSettings, type AuthBackend } from './auth-backend.js'
 import { BackendFailover, DEFAULT_HOLD_MS } from './backend-failover.js'
 import { SubscriptionUsageLedger, summariseUsage, credentialsPath } from './subscription-usage.js'
-import { MaxLoginRegistry, setLoginRegistry, activeLoginDir } from './max-logins.js'
+import { MaxLoginRegistry, setLoginRegistry, activeLoginDir, activeLoginName } from './max-logins.js'
+import { markForgeMaxLoginUnusable } from './forge/agent-env.js'
 import { checkMaxLogin } from './max-login.js'
 import { missingSessionMessage } from './agents/stale-id.js'
 import { BoardWatcher, projectForBoardPath } from './kanban/watcher.js'
@@ -997,10 +998,20 @@ const authFailureWatch = new AuthFailureWatch({
   },
 })
 agentCtx.onAuthFailed = (s, detail, count) => {
-  // A forge session runs on Bedrock whatever the fleet is on (its own identity).
-  const backend = s.placement === 'forge' ? 'bedrock' : detectActiveBackend()
+  // A forge session has its own identity: the subscription login on the box
+  // when one matches the fleet's account, Bedrock otherwise (session.remoteBackend).
+  const backend = s.placement === 'forge' ? (s.remoteBackend ?? 'bedrock') : detectActiveBackend()
   if (count === 1) log(`[auth] ${s.name ?? s.id} (${s.placement}, ${backend}) cannot authenticate: ${detail}`)
   authFailureWatch.report({ sessionId: s.id, name: s.name ?? s.id, placement: s.placement, backend, detail, at: Date.now() })
+  // The box's login for this account stopped working (expired, revoked, logged
+  // out). Stop offering it and respawn this fork: forgeSpawnPlan then falls back
+  // to Bedrock, so one dead login costs one turn instead of every fork's work.
+  if (s.placement === 'forge' && s.remoteBackend === 'first_party' && count === 1) {
+    const name = activeLoginName()
+    markForgeMaxLoginUnusable(name)
+    log(`[forge] Max login '${name}' failed on the box — forge forks use Bedrock for 30 min, then it is retried`)
+    s.restartForModelChange()
+  }
 }
 agentCtx.onAuthRecovered = (s) => {
   log(`[auth] ${s.name ?? s.id} is answering again`)

@@ -37,8 +37,9 @@ import { mentionsAmar, extractAttentionSnippet } from './attention.js'
 import { parseHandoff } from './handoff.js'
 import { looksLikeModelError } from './model-config.js'
 import { taggedModelId } from './bedrock-profiles.js'
-import { remoteBedrockEnv } from './forge/agent-env.js'
-import { activeLoginDir, canonicalDir } from './max-logins.js'
+import { remoteBedrockEnv, forgeSpawnPlan, forgeMaxLoginDir } from './forge/agent-env.js'
+import { activeLoginDir, activeLoginName, canonicalDir } from './max-logins.js'
+import { detectActiveBackend } from './auth-backend.js'
 import { isTransientApiError, isUpstreamOutageError, isUsageLimitError, usageLimitTypeOf, upstreamOutages, RESUME_BACKOFF_MS, MAX_AUTO_RESUMES_PER_HOUR } from './transient-errors.js'
 import { readTodos, watchTodos, todosUpdatedAt, isStaleTodoList, type TodoItem } from './agents/todo-store.js'
 import { resolveCacheTtl, cacheTtlHooks, type CacheTtl, type CacheTtlReason } from './agents/cache-ttl.js'
@@ -592,15 +593,26 @@ export class Session extends EventEmitter {
         // on the box, read as a pruned transcript, and respawn with no context
         // (9 Oct 2026, 15 forks). Same path string as before multi-login.
         //
-        // And forge is Bedrock-ONLY: no Max login exists there and none may be
-        // copied over. So the Bedrock env and a Bedrock `--model` are set HERE,
-        // per spawn, not inherited from the fleet backend. They used to arrive
-        // only via the mirrored settings.json, i.e. only while the fleet itself
-        // was on Bedrock; the night it moved to a second Max login every forge
-        // fork was started with `--model claude-opus-5-5` and no AWS env, and
-        // answered "Not logged in" (9 Oct 2026, 21 forks, ~40 min).
-        const remoteEnv = { ...sessionEnv, CLAUDE_CONFIG_DIR: canonicalDir(), ...remoteBedrockEnv() }
-        const remoteArgs = args.map((a, i) => (args[i - 1] === '--model' ? taggedModelId(model, { forceBedrock: true }) : a))
+        // The identity is decided HERE, per spawn, never inherited from whatever
+        // the mirrored settings.json happens to carry. The night the fleet moved
+        // to a second Max login every forge fork was started with `--model
+        // claude-opus-5-5` and no AWS env on a box with no login, and answered
+        // "Not logged in" (9 Oct 2026, 21 forks, ~40 min).
+        //
+        // Two identities exist on the box (forge/agent-env.ts forgeSpawnPlan):
+        //  - the subscription, when the fleet is on it AND Yousef has logged the
+        //    SAME account in on forge. Its dir shares `projects` with the box's
+        //    `~/.claude` by symlink, so `--resume` finds the same transcript;
+        //  - Bedrock through the instance role, for everything else. That needs
+        //    its env and a Bedrock `--model` set explicitly.
+        const plan = forgeSpawnPlan(detectActiveBackend(), forgeMaxLoginDir(activeLoginName()))
+        this.remoteBackend = plan.backend
+        const remoteEnv = plan.backend === 'first_party'
+          ? { ...sessionEnv, CLAUDE_CONFIG_DIR: plan.configDir }
+          : { ...sessionEnv, CLAUDE_CONFIG_DIR: canonicalDir(), ...remoteBedrockEnv() }
+        const remoteArgs = plan.backend === 'first_party'
+          ? args
+          : args.map((a, i) => (args[i - 1] === '--model' ? taggedModelId(model, { forceBedrock: true }) : a))
         // dieWithConnection: every kill() below signals `proc`, which here is
         // only the ssh client. Without it the remote claude outlives each one
         // of them as a twin still working its turn (forge/ssh.ts, watchdog).
@@ -1168,6 +1180,11 @@ export class Session extends EventEmitter {
   /** ssh host alias the current process actually runs on, when remote — shown
    *  in the session status bar so "where did this run?" is never a guess. */
   remoteHost: string | null = null
+  /** Which identity this REMOTE process was spawned with (forgeSpawnPlan). The
+   *  fleet backend does not answer that for a forge fork: it runs on Bedrock
+   *  while the fleet is on Max unless the box has a login for the same account.
+   *  null for a local session, whose backend is the fleet's. */
+  remoteBackend: 'first_party' | 'bedrock' | null = null
   /** The spawn options held back by SessionOptions.deferSpawn, until
    *  startDeferred() decides where this session runs. */
   private deferredSpawn: SessionOptions | null = null

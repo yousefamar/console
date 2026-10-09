@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { boardRemote, resolvePlacement, forgeConfig, type ForgeConfig } from '../forge/config.js'
 import { decidePlacement } from '../forge/index.js'
 import { remoteCommandArgv } from '../forge/ssh.js'
-import { remoteSettings, remoteBedrockEnv, credentialRsyncArgv } from '../forge/agent-env.js'
+import { remoteSettings, remoteBedrockEnv, credentialRsyncArgv, forgeSpawnPlan, forgeMaxLoginScript, remoteMaxSettings } from '../forge/agent-env.js'
 import { encodeProjectDir, transcriptPath } from '../forge/transcripts.js'
 import { memoryDirFor } from '../forge/mounts.js'
 import { parseWorktreeList, decidePrimaryCheckout, githubHttpsUrl, baseRemoteFor } from '../forge/repo.js'
@@ -171,6 +171,54 @@ describe('remoteSettings', () => {
   it('adds the Bedrock wiring to a file that had no env block at all', () => {
     const out = JSON.parse(remoteSettings('{}', { CLAUDE_CODE_USE_BEDROCK: '1' })) as { env: Record<string, string> }
     expect(out.env).toEqual({ CLAUDE_CODE_USE_BEDROCK: '1' })
+  })
+})
+
+describe('forgeSpawnPlan — which identity a forge fork gets', () => {
+  it('follows the fleet onto the subscription only with a login for that account on the box', () => {
+    expect(forgeSpawnPlan('first_party', '/home/amar/.claude-max')).toEqual({ backend: 'first_party', configDir: '/home/amar/.claude-max' })
+  })
+  it('is Bedrock when the fleet is on Max but the box has no usable login (the 9 Oct outage)', () => {
+    expect(forgeSpawnPlan('first_party', null)).toEqual({ backend: 'bedrock' })
+  })
+  it('is Bedrock whenever the fleet is on Bedrock, login or not — a spent window moves forge too', () => {
+    expect(forgeSpawnPlan('bedrock', '/home/amar/.claude-max')).toEqual({ backend: 'bedrock' })
+    expect(forgeSpawnPlan('bedrock', null)).toEqual({ backend: 'bedrock' })
+  })
+})
+
+describe('forgeMaxLoginScript — sharing the box\'s ~/.claude with an account dir', () => {
+  const script = forgeMaxLoginScript({ second: '/home/amar/.claude-max' }, ['projects', 'skills'])
+  it('touches a dir only when it holds credentials, and never reads, copies or moves them', () => {
+    expect(script).toContain('if [ -f /home/amar/.claude-max/.credentials.json ]; then')
+    // The credentials file appears in that one existence test and nowhere else.
+    expect(script.match(/\.credentials\.json/g)).toHaveLength(1)
+  })
+  it('moves a real dir the CLI created aside instead of deleting it, then links', () => {
+    expect(script).toContain('[ -e "$l" ] && mv "$l" "$l.pre-link.$(date +%s)"')
+    expect(script).toContain('ln -s "$src" "$l"')
+    expect(script).not.toMatch(/\brm\b/)
+  })
+  it('reports a login only once its projects dir resolves to the canonical one', () => {
+    // 15 forks lost their context on 9 Oct because a config dir did not share `projects`.
+    expect(script).toContain('[ "$(readlink /home/amar/.claude-max/projects)" = /home/amar/.claude/projects ] && echo "LOGIN second"')
+  })
+  it('ignores a name or path that is not plainly safe to put in a shell line', () => {
+    const s = forgeMaxLoginScript({ 'x; rm -rf ~': '/home/amar/.claude-max', ok: '/tmp/$(id)' }, ['projects'])
+    expect(s).not.toContain('rm -rf')
+    expect(s).not.toContain('$(id)')
+    expect(s).not.toContain('LOGIN')
+  })
+})
+
+describe('remoteMaxSettings', () => {
+  it('carries no backend key and no desktop credential, whatever the desktop file is on', () => {
+    const out = JSON.parse(remoteMaxSettings(JSON.stringify({
+      env: { CLAUDE_CODE_USE_BEDROCK: '1', AWS_PROFILE: 'bedrock-amar', AWS_REGION: 'us-east-1', ANTHROPIC_MODEL: 'arn:…', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' },
+      theme: 'auto',
+    }))) as { env: Record<string, string>; theme: string }
+    expect(out.env).toEqual({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' })
+    expect(out.theme).toBe('auto')
   })
 })
 

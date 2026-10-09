@@ -320,6 +320,12 @@ export function activeLoginDir(): string {
   return current?.activeDir() ?? canonicalDir()
 }
 
+/** NAME of the login the fleet is on. A dir is a path on THIS machine; the name
+ *  is what another box (forge) can map to its own copy of that account. */
+export function activeLoginName(): string {
+  return current?.getState().active ?? CANONICAL_NAME
+}
+
 /** Every config dir whose settings.json must track the active backend. */
 export function loginDirs(): string[] {
   return current?.dirs() ?? [canonicalDir()]

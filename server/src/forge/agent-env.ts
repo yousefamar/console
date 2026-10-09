@@ -20,12 +20,13 @@
 
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { readFileSync, writeFileSync, existsSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdtempSync, renameSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import type { ForgeConfig } from './config.js'
 import { forgeExec } from './ssh.js'
 import { presetEnv } from '../auth-backend.js'
+import { MANAGED_ENV_KEYS, SHARED_DIRS } from '../max-logins.js'
 
 const execFileP = promisify(execFile)
 
@@ -73,6 +74,157 @@ export function remoteSettings(json: string, bedrockEnv?: Record<string, string>
   return JSON.stringify(parsed, null, 2)
 }
 
+// ── Claude Max logins ON the box ─────────────────────────────────────────────
+//
+// forge can run on a Max subscription only through a login made ON forge, by
+// Yousef, interactively (`CLAUDE_CONFIG_DIR=<dir> claude auth login`). Never a
+// copied credentials file: a refresh in a copy rotates the shared token and
+// revokes the original (7 Oct 2026). Each account gets its own dir on the box,
+// holding that account's `.credentials.json` and nothing else of its own —
+// transcripts, skills and plugins are SYMLINKED back to the box's `~/.claude`,
+// so a fork's `--resume` finds the same file whichever account it runs under.
+// Skipping that link is exactly how 15 forks lost their context on 9 Oct.
+
+/** Fleet login name (max-logins.ts) → that account's config dir on forge. */
+export const FORGE_MAX_LOGIN_DIRS: Record<string, string> = {
+  second: '/home/amar/.claude-max',
+  default: '/home/amar/.claude-max-default',
+}
+
+const FORGE_CANONICAL = '/home/amar/.claude'
+
+function forgeLoginsFile(): string {
+  return join(homedir(), '.config', 'console', 'forge-max-logins.json')
+}
+
+interface ForgeLoginsState {
+  checkedAt: number
+  /** login name → dir, ONLY for dirs that have credentials AND a linked `projects`. */
+  present: Record<string, string>
+  /** login name → epoch ms until which it must not be used (auth failed on the box). */
+  unusable: Record<string, number>
+}
+
+function readForgeLogins(): ForgeLoginsState {
+  try {
+    const raw = JSON.parse(readFileSync(forgeLoginsFile(), 'utf8')) as Partial<ForgeLoginsState>
+    return { checkedAt: raw.checkedAt ?? 0, present: raw.present ?? {}, unusable: raw.unusable ?? {} }
+  } catch {
+    return { checkedAt: 0, present: {}, unusable: {} }
+  }
+}
+
+function writeForgeLogins(state: ForgeLoginsState): void {
+  const path = forgeLoginsFile()
+  const tmp = `${path}.tmp`
+  writeFileSync(tmp, `${JSON.stringify(state, null, 2)}\n`)
+  renameSync(tmp, path)
+}
+
+/** Pure: the shell that makes each logged-in account dir share the box's
+ *  `~/.claude`, and reports the ones that are safe to spawn under.
+ *
+ *  A dir is reported (`LOGIN <name>`) only if it has credentials AND its
+ *  `projects` resolves to the canonical one. A real directory the CLI created
+ *  at login is moved aside, never deleted. */
+export function forgeMaxLoginScript(dirs: Record<string, string>, shared: readonly string[]): string {
+  const lines = ['set -u', `mkdir -p ${FORGE_CANONICAL}/projects`]
+  for (const [name, dir] of Object.entries(dirs)) {
+    if (!/^[a-z0-9][a-z0-9-]{0,31}$/i.test(name) || !/^\/[A-Za-z0-9._/-]+$/.test(dir)) continue
+    lines.push(
+      `if [ -f ${dir}/.credentials.json ]; then`,
+      `  for s in ${shared.join(' ')}; do`,
+      `    src=${FORGE_CANONICAL}/$s; l=${dir}/$s`,
+      '    [ -e "$src" ] || continue',
+      '    [ -L "$l" ] && continue',
+      '    [ -e "$l" ] && mv "$l" "$l.pre-link.$(date +%s)"',
+      '    ln -s "$src" "$l"',
+      '  done',
+      `  [ "$(readlink ${dir}/projects)" = ${FORGE_CANONICAL}/projects ] && echo "LOGIN ${name}"`,
+      'fi',
+    )
+  }
+  lines.push('true')
+  return lines.join('\n')
+}
+
+/** Pure: the desktop's settings.json for a Max login dir on the box — static
+ *  credentials out, and every backend key out too, so the CLI talks to the
+ *  subscription whatever the desktop file happens to carry. */
+export function remoteMaxSettings(json: string): string {
+  const parsed = JSON.parse(remoteSettings(json)) as { env?: Record<string, string> } & Record<string, unknown>
+  if (parsed.env) for (const k of MANAGED_ENV_KEYS) delete parsed.env[k]
+  return JSON.stringify(parsed, null, 2)
+}
+
+/** Link every logged-in account dir on the box, give it first-party settings,
+ *  and record which accounts forge forks may spawn under. Never fatal: with no
+ *  usable login a forge fork simply runs on Bedrock, as before. */
+export async function syncForgeMaxLogins(cfg: ForgeConfig, log: (m: string) => void = () => {}): Promise<string[]> {
+  const res = await forgeExec(cfg, forgeMaxLoginScript(FORGE_MAX_LOGIN_DIRS, SHARED_DIRS), { timeoutMs: 60_000 })
+  if (res.code !== 0) {
+    log(`[forge] Max login check failed (${res.stderr.trim().slice(0, 200)}) — keeping the previous record`)
+    return Object.keys(readForgeLogins().present)
+  }
+  const present: Record<string, string> = {}
+  for (const line of res.stdout.split('\n')) {
+    const m = /^LOGIN (\S+)$/.exec(line.trim())
+    if (m && FORGE_MAX_LOGIN_DIRS[m[1]]) present[m[1]] = FORGE_MAX_LOGIN_DIRS[m[1]]
+  }
+  const settingsPath = join(homedir(), '.claude', 'settings.json')
+  if (existsSync(settingsPath)) {
+    try {
+      const tmp = join(mkdtempSync(join(tmpdir(), 'forge-max-settings-')), 'settings.json')
+      writeFileSync(tmp, remoteMaxSettings(readFileSync(settingsPath, 'utf8')), { mode: 0o600 })
+      for (const [name, dir] of Object.entries(present)) {
+        // A dir whose settings did not land could carry a stale Bedrock env and
+        // silently bill per token while recorded as "on Max": drop it instead.
+        if (!(await rsyncUp(cfg, tmp, `${dir}/settings.json`))) {
+          log(`[forge] could not write settings for Max login '${name}' — not using it`)
+          delete present[name]
+        }
+      }
+    } catch (err) {
+      log(`[forge] Max login settings failed (${(err as Error).message}) — not using any`)
+      for (const name of Object.keys(present)) delete present[name]
+    }
+  }
+  const prev = readForgeLogins()
+  writeForgeLogins({ checkedAt: Date.now(), present, unusable: prev.unusable })
+  log(`[forge] Max logins on the box: ${Object.keys(present).join(', ') || 'none'}`)
+  return Object.keys(present)
+}
+
+/** The box-side config dir for a fleet login, or null when a forge fork must
+ *  not use it (never logged in there, not linked, or recently failed auth). */
+export function forgeMaxLoginDir(name: string, now = Date.now()): string | null {
+  const s = readForgeLogins()
+  const dir = s.present[name]
+  if (!dir) return null
+  if ((s.unusable[name] ?? 0) > now) return null
+  return dir
+}
+
+/** A fork answered "Not logged in" under this account on the box: stop using
+ *  it for a while so the next spawn falls back to Bedrock instead of repeating. */
+export function markForgeMaxLoginUnusable(name: string, ttlMs = 30 * 60_000, now = Date.now()): void {
+  const s = readForgeLogins()
+  s.unusable[name] = now + ttlMs
+  writeForgeLogins(s)
+}
+
+export type ForgeSpawnPlan = { backend: 'first_party'; configDir: string } | { backend: 'bedrock' }
+
+/** Pure: which identity a forge fork spawns with.
+ *
+ *  It follows the fleet onto the subscription only when the fleet is on it AND
+ *  the box has a usable login for the SAME account, so forge and the desktop
+ *  draw on one weekly window and a spent window moves both. Everything else is
+ *  Bedrock through the instance role, which needs nothing on the box. */
+export function forgeSpawnPlan(fleetBackend: string, loginDir: string | null): ForgeSpawnPlan {
+  return fleetBackend === 'first_party' && loginDir ? { backend: 'first_party', configDir: loginDir } : { backend: 'bedrock' }
+}
+
 export interface AgentEnvResult { ok: boolean; reason: string }
 
 /** Mirror the agent-side config onto forge. Incremental (rsync), so after the
@@ -113,6 +265,10 @@ export async function syncAgentEnv(cfg: ForgeConfig, log: (m: string) => void = 
     const ok = await rsyncUp(cfg, tmp, '/home/amar/.claude/settings.json')
     if (!ok) return { ok: false, reason: 'rsync settings.json failed' }
   }
+
+  // After skills/plugins exist in the canonical dir, so the account dirs can link
+  // to them. Not fatal: no usable login just means Bedrock.
+  await syncForgeMaxLogins(cfg, log)
 
   // ~/exec is referenced by $HOME-relative path from settings.json hooks, so an
   // EMPTY one on forge is not a missing convenience — it makes every Bash call

@@ -605,11 +605,13 @@ export function createSession(ctx: AgentContext, options: SessionOptions): Sessi
       broadcast(ctx.clients, { type: 'sessions_list', sessions: Array.from(ctx.sessions.values()).map((s) => s.getInfo()) })
       return
     }
-    // A forge fork runs on Bedrock whatever the fleet is on (session.ts), but
-    // its `spawnedModel` is the FLEET's bare id. While the fleet is on Max, a
-    // Bedrock-side failure on the box says nothing about the subscription's
-    // model, so it must not walk the Max chain down for every local session.
-    if (session.placement === 'forge' && detectActiveBackend() !== 'bedrock') {
+    // A forge fork can be on Bedrock while the fleet is on Max (no login for
+    // that account on the box, session.ts), yet its `spawnedModel` is the
+    // FLEET's bare id. A Bedrock-side failure there says nothing about the
+    // subscription's model, so it must not walk the Max chain down for every
+    // local session. A forge fork that IS on the subscription fails like a
+    // local one and falls through.
+    if (session.placement === 'forge' && session.remoteBackend === 'bedrock' && detectActiveBackend() !== 'bedrock') {
       ctx.log(`[model] forge session ${session.id} failed on Bedrock '${failedModel}' (${reason}) — fleet is on first_party, leaving its chain alone`)
       broadcast(ctx.clients, { type: 'error', sessionId: session.id, message: `This forge fork's Bedrock model failed (${reason}). The fleet is on the Max subscription, so its model chain was left alone. Check forge's Bedrock access.` })
       return

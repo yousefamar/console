@@ -681,8 +681,8 @@ local SSD was tried first and did not help.
   `claude` CLI gates on its own bundled catalog first**, so probe with the real
   CLI, with the Bedrock environment set EXPLICITLY, `</dev/null` on stdin, and
   a control model beside it — and probe BOTH CLIs, because forge runs its own,
-  usually older `claude` and every forge fork takes the Bedrock aliases whatever
-  the fleet is on. Haiku 5.5 on 9 Oct: served and profiled
+  usually older `claude` and a forge fork takes the Bedrock aliases whenever it
+  is not on a Max login of its own (see `forgeSpawnPlan` below). Haiku 5.5 on 9 Oct: served and profiled
   (`amar-cc-haiku-5-5`), hangs on desktop 2.1.295, `unrecognized_model` on
   forge 2.1.288 — not adopted. The daily guard
   (`~/exec/console-bedrock-model-guard.sh`, cron `ahHcHQs`) scrapes
@@ -736,13 +736,32 @@ local SSD was tried first and did not help.
   `CONSOLE_HUB_PID` (`tr '\0' '\n' </proc/<pid>/environ`) with the hub's node
   pid — and bracket the first letter of any pattern you count over ssh, or the
   counting shell counts itself.
-- **forge runs on Bedrock whatever the fleet is on, and a restart is what
-  proves it.** The box has no Max login and must never be given a copied one;
-  its identity is the instance role. Until 9 Oct 2026 its Bedrock wiring only
-  existed as a MIRROR of the desktop's `settings.json`, so when the fleet moved
-  to Max and the next restart re-mirrored, all 21 forge forks answered "Not
-  logged in" for 43 minutes. Since 30bb8700 a forge spawn sets the Bedrock env
-  and a Bedrock `--model` itself. Two things that incident taught about ANY
+- **A forge fork's identity is decided per spawn (`forgeSpawnPlan`), and a
+  restart is what proves it.** Two identities exist on the box. (1) **The
+  subscription**, when the fleet is on `first_party` AND the box has a login
+  for the SAME account the fleet is on: `FORGE_MAX_LOGIN_DIRS` maps the fleet's
+  login name to a dir on forge (`second` → `~/.claude-max`, `default` →
+  `~/.claude-max-default`). Those logins were made by Yousef ON the box
+  (`CLAUDE_CONFIG_DIR=<dir> claude auth login`, 9 Oct 2026); a login is never
+  copied there. Forge and the desktop then draw on ONE weekly window, so a
+  spent window spills or rotates both. (2) **Bedrock through the instance
+  role**, for everything else: fleet on Bedrock, no login for that account, or
+  a login that just answered "Not logged in" (marked unusable for 30 min, the
+  fork respawned). `syncForgeMaxLogins` runs in every prepare: it symlinks each
+  account dir's `projects`, `skills`, `plugins`… to the box's `~/.claude`
+  (a real dir the CLI made is moved aside as `*.pre-link.<ts>`), writes
+  first-party settings, and records the usable ones in
+  `~/.config/console/forge-max-logins.json`. **A dir is only ever used once
+  its `projects` resolves to the canonical one** — that link is what keeps
+  `--resume` working, and its absence is how 15 forks lost their context.
+  `session.remoteBackend` says which identity a forge process actually got;
+  never infer it from the fleet backend. Forge's `claude` is older than the
+  desktop's (2.1.288 vs 2.1.295 on 9 Oct): a first-party id the desktop knows
+  is not automatically known on the box. History: until 9 Oct the box's Bedrock
+  wiring only existed as a MIRROR of the desktop's `settings.json`, so when the
+  fleet moved to Max and the next restart re-mirrored, all 21 forge forks
+  answered "Not logged in" for 43 minutes (fixed 30bb8700, which made every
+  forge spawn Bedrock; the logins above came later that day). Two things that incident taught about ANY
   restart: it re-runs every prepare and respawns every session on the CURRENT
   backend, so it surfaces whatever changed since the last one — never only your
   own diff; and its check is a liveness probe (a forge fork and a local one
