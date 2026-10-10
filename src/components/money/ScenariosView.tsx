@@ -14,6 +14,7 @@ import {
   type MonthlyPoint,
 } from '@/store/finance'
 import { hubFetch } from '@/hub'
+import { withPatchAmount } from '@/utils/scenario-patch'
 import { showConfirm } from '@/dialog'
 import { MoneyScrollPane } from './MoneyScrollPane'
 
@@ -239,7 +240,7 @@ function DeltaRow({ delta, streams, categories, onChange, onRemove }: {
             <span className="text-text-tertiary">→ amount £</span>
             <input type="number"
               value={delta.patch.amountPence != null ? (delta.patch.amountPence / 100).toString() : ''}
-              onChange={(e) => onChange({ patch: { ...delta.patch, amountPence: Math.round(parseFloat(e.target.value) * 100) || 0 } } as Partial<Delta>)}
+              onChange={(e) => onChange({ patch: withPatchAmount(delta.patch, e.target.value) } as Partial<Delta>)}
               placeholder="(blank = unchanged)"
               className="w-28 px-1 py-0.5 bg-surface-2 border border-border rounded-sm" />
             <input type="date"
