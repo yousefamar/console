@@ -1081,7 +1081,7 @@ private fun CardChip(
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 8.dp),
     ) {
-        val tagSplit = remember(card.text) { io.amar.console.data.spaces.CardContent.splitTrailingTags(card.text) }
+        val tagSplit = remember(card.text, card.meta) { io.amar.console.data.spaces.CardContent.display(card.text, card.meta) }
         val media = remember(card.detail) { io.amar.console.data.spaces.CardContent.mediaPaths(card.detail) }
         val images = remember(card.detail) { io.amar.console.data.spaces.CardContent.imagePaths(card.detail) }
         val textDetail = remember(card.detail) { io.amar.console.data.spaces.CardContent.textDetail(card.detail) }
@@ -1146,6 +1146,17 @@ private fun CardChip(
                     }
                 }
             }
+        }
+        // Key-value metadata reads as prose: "Created by: UI · Requested by: essam".
+        if (tagSplit.meta.isNotEmpty()) {
+            Text(
+                tagSplit.meta.joinToString(" · ") { "${it.key}: ${it.value}" },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 3.dp),
+            )
         }
         val hasMeta = card.blocked || card.agentKey != null || card.blockId != null || card.nofork || card.inherit || card.model != null || card.effort != null || card.remote != null
         if (hasMeta) {
@@ -1215,7 +1226,7 @@ fun CardSheet(
         // The whole sheet scrolls — a long card detail (agent report notes)
         // must never push Move/Assign/Open-agent out of reach.
         Column(Modifier.padding(horizontal = 20.dp).verticalScroll(rememberScrollState())) {
-            val sheetTags = remember(card.text) { io.amar.console.data.spaces.CardContent.splitTrailingTags(card.text) }
+            val sheetTags = remember(card.text, card.meta) { io.amar.console.data.spaces.CardContent.display(card.text, card.meta) }
             val sheetMedia = remember(card.detail) { io.amar.console.data.spaces.CardContent.mediaPaths(card.detail) }
             val sheetTextDetail = remember(card.detail) { io.amar.console.data.spaces.CardContent.textDetail(card.detail) }
             val sheetUrls = remember(card.text, card.detail) { io.amar.console.data.spaces.CardContent.cardUrls(card.text, card.detail) }
@@ -1227,6 +1238,12 @@ fun CardSheet(
                             Text(tag, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp))
                         }
                     }
+                }
+            }
+            for (pair in sheetTags.meta) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(top = 2.dp)) {
+                    Text("${pair.key}:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(pair.value, style = MaterialTheme.typography.labelMedium)
                 }
             }
             if (sheetTextDetail.isNotEmpty()) {

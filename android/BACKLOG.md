@@ -53,7 +53,10 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
-_(nothing — v113 was cut 2026-10-10)_
+- **Board cards show who made them and who asked** (^busy-koi): a card's
+  key-value tags read as a line on the tile and in the card sheet — "Created
+  by: UI · Requested by: essam". Cards added on the phone are stamped
+  "Created by: Android".
 
 ## Shipped
 

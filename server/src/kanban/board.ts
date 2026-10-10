@@ -49,6 +49,11 @@ export interface BoardCard {
    *  spawns pinned to this `--effort` instead of the policy's `fork` level
    *  (high). `#effort:<level>` is accepted on read, written back as `/`. */
   effort: string | null
+  /** Key-value metadata: trailing `#key/value` tags (`#created-by/ui`,
+   *  `#requested-by/essam`), in line order. `#key:value` is accepted on read
+   *  and written back as `/`. Every card the hub creates carries `created-by`
+   *  (addCard refuses without one); any other key is optional and free-form. */
+  meta: Record<string, string>
   /** Original lines, verbatim — first line + any indented continuations. */
   lines: string[]
 }
@@ -152,8 +157,65 @@ const MODEL_ALIAS_RE = new RegExp(`^(.*?)\\s+#(${MODEL_ALIASES.join('|')})$`)
 export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const EFFORT_RE = new RegExp(`^(.*?)\\s+#effort[/:](${EFFORT_LEVELS.join('|')})$`)
 
-/** Strip trailing `@key` / `^blockid` / `#blocked` tokens off card text. Order-agnostic. */
-export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean; inherit: boolean; remote: 'forge' | 'local' | null; model: string | null; effort: string | null } {
+/** The one metadata key every created card must carry. */
+export const CREATED_BY = 'created-by'
+
+/** Keys the dispatch grammar already owns — never metadata. */
+const RESERVED_META_KEYS = ['model', 'effort']
+const META_RE = /^(.*?)\s+#([a-z][a-z0-9-]*)[/:]([A-Za-z0-9][\w.-]*)$/
+const META_TAG_RE = /^([a-z][a-z0-9-]*)[/:]([A-Za-z0-9][\w.-]*)$/
+
+/** A bare tag (`created-by/ui`, no `#`) as a metadata pair, or null when it is
+ *  an ordinary tag. */
+export function tagAsMeta(tag: string): { key: string; value: string } | null {
+  const m = tag.match(META_TAG_RE)
+  return m && !RESERVED_META_KEYS.includes(m[1]!) ? { key: m[1]!, value: m[2]! } : null
+}
+
+/** Normalise a metadata key as typed (`Requested By` → `requested-by`); throws
+ *  on one the tag grammar cannot carry. */
+export function metaKey(raw: string): string {
+  const key = raw.trim().toLowerCase().replace(/[\s_]+/g, '-')
+  if (!/^[a-z][a-z0-9-]*$/.test(key)) throw new Error(`"${raw}" is not a usable tag key (letters, digits and dashes, starting with a letter)`)
+  if (RESERVED_META_KEYS.includes(key)) throw new Error(`"${key}" is a dispatch tag, not metadata`)
+  return key
+}
+
+/** Normalise a metadata value into one tag-safe word (`Essam K.` → `Essam-K.`);
+ *  throws when nothing usable is left. */
+export function metaValue(raw: string): string {
+  const value = raw.trim().replace(/\s+/g, '-').replace(/[^\w.-]/g, '').replace(/^[^A-Za-z0-9]+/, '')
+  if (!value) throw new Error(`"${raw}" is not a usable tag value`)
+  return value
+}
+
+/** Peel a trailing run of metadata tags off text someone typed. */
+export function splitTrailingMeta(text: string): { text: string; meta: Record<string, string> } {
+  const pairs: Array<[string, string]> = []
+  let t = text.trimEnd()
+  for (;;) {
+    const m = t.match(META_RE)
+    if (!m || RESERVED_META_KEYS.includes(m[2]!) || pairs.some(([k]) => k === m[2])) break
+    t = m[1]!.trimEnd()
+    pairs.push([m[2]!, m[3]!])
+  }
+  return { text: pairs.length ? t : text, meta: Object.fromEntries(pairs.reverse()) }
+}
+
+/** Display values for the creators the hub itself stamps. */
+const CREATOR_LABELS: Record<string, string> = { ui: 'UI', cli: 'CLI', ring: 'Ring', android: 'Android', listener: 'Listener', property: 'Property' }
+
+/** `created-by` → "Created by"; `ui` → "UI". Any other value reads as written. */
+export function metaLabel(key: string, value: string): { key: string; value: string } {
+  const words = key.replace(/-/g, ' ')
+  return {
+    key: words.charAt(0).toUpperCase() + words.slice(1),
+    value: key === CREATED_BY ? CREATOR_LABELS[value] ?? value : value,
+  }
+}
+
+/** Strip trailing `@key` / `^blockid` / `#blocked` / `#key/value` tokens off card text. Order-agnostic. */
+export function parseCardTokens(rawText: string): { text: string; agentKey: string | null; blockId: string | null; blocked: boolean; nofork: boolean; inherit: boolean; remote: 'forge' | 'local' | null; model: string | null; effort: string | null; meta: Record<string, string> } {
   let text = rawText.trimEnd()
   let agentKey: string | null = null
   let blockId: string | null = null
@@ -163,8 +225,10 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
   let remote: 'forge' | 'local' | null = null
   let model: string | null = null
   let effort: string | null = null
-  // Up to one of each, trailing, any order.
-  for (let i = 0; i < 8; i++) {
+  // Read right to left, so collected in reverse line order.
+  const pairs: Array<[string, string]> = []
+  // Up to one of each (and one per metadata key), trailing, any order.
+  for (let i = 0; i < 32; i++) {
     const block = text.match(/^(.*?)\s+\^([A-Za-z0-9-]+)$/)
     if (block && blockId === null) {
       text = block[1]!.trimEnd()
@@ -213,9 +277,16 @@ export function parseCardTokens(rawText: string): { text: string; agentKey: stri
       effort = eff[2]!
       continue
     }
+    const kv = text.match(META_RE)
+    if (kv && !RESERVED_META_KEYS.includes(kv[2]!) && !pairs.some(([k]) => k === kv[2])) {
+      text = kv[1]!.trimEnd()
+      pairs.push([kv[2]!, kv[3]!])
+      continue
+    }
     break
   }
-  return { text, agentKey, blockId, blocked, nofork, inherit, remote, model, effort }
+  const meta = Object.fromEntries(pairs.reverse())
+  return { text, agentKey, blockId, blocked, nofork, inherit, remote, model, effort, meta }
 }
 
 /** Serialized form of a model pin: aliases ride as the bare shorthand the user
@@ -278,8 +349,8 @@ export function parseBoard(content: string): KanbanBoard {
     if (!col) { header.push(line); continue }
     const card = line.match(CARD_RE)
     if (card) {
-      const { text, agentKey, blockId, blocked, nofork, inherit, remote, model, effort } = parseCardTokens(card[2]!)
-      col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, blocked, nofork, inherit, remote, model, effort, lines: [line] })
+      const { text, agentKey, blockId, blocked, nofork, inherit, remote, model, effort, meta } = parseCardTokens(card[2]!)
+      col.cards.push({ text, checked: card[1] !== ' ', agentKey, blockId, blocked, nofork, inherit, remote, model, effort, meta, lines: [line] })
       inCard = true
       continue
     }
@@ -337,8 +408,13 @@ export function sanitizeCardText(text: string): string {
 }
 
 function cardFirstLine(card: BoardCard): string {
-  card.text = sanitizeCardText(card.text)
+  // Metadata tags typed at the end of the text (an edit, a quick-add) join the
+  // card's metadata; the creator is never overwritten that way.
+  const typed = splitTrailingMeta(card.text)
+  for (const [k, v] of Object.entries(typed.meta)) if (!(k === CREATED_BY && card.meta[k])) card.meta[k] = v
+  card.text = sanitizeCardText(typed.text)
   const tokens = [card.text]
+  for (const [k, v] of Object.entries(card.meta)) tokens.push(`#${k}/${v}`)
   if (card.model) tokens.push(modelToken(card.model))
   if (card.effort) tokens.push(`#effort/${card.effort}`)
   if (card.remote) tokens.push(`#${card.remote}`)
@@ -461,24 +537,36 @@ export function moveCard(board: KanbanBoard, ref: CardRef, toColumn: string): bo
   return true
 }
 
-export function addCard(board: KanbanBoard, columnTitle: string, text: string, opts?: { agentKey?: string; blockId?: string; position?: 'top' | 'bottom' }): BoardCard | null {
+/** Add a card. `createdBy` is mandatory — who or what made it (`ui`, `ring`,
+ *  an agent key); a card cannot be created unattributed. `meta` carries any
+ *  further `key → value` tags. Metadata tags typed at the end of `text` are
+ *  taken as metadata too. */
+export function addCard(board: KanbanBoard, columnTitle: string, text: string, opts: { createdBy: string; meta?: Record<string, string>; agentKey?: string; blockId?: string; position?: 'top' | 'bottom' }): BoardCard | null {
+  if (!opts?.createdBy?.trim()) throw new Error('a card needs a creator (created-by)')
   const col = board.columns.find((c) => c.title === columnTitle)
   if (!col) return null
+  const typed = splitTrailingMeta(text)
+  const meta: Record<string, string> = { [CREATED_BY]: metaValue(opts.createdBy) }
+  for (const [k, v] of [...Object.entries(typed.meta), ...Object.entries(opts.meta ?? {})]) {
+    const key = metaKey(k)
+    if (key !== CREATED_BY) meta[key] = metaValue(v)
+  }
   const card: BoardCard = {
-    text,
+    text: typed.text,
     checked: false,
-    agentKey: opts?.agentKey ?? null,
-    blockId: opts?.blockId ?? null,
+    agentKey: opts.agentKey ?? null,
+    blockId: opts.blockId ?? null,
     remote: null,
     blocked: false,
     nofork: false,
     inherit: false,
     model: null,
     effort: null,
+    meta,
     lines: [''],
   }
   refreshCardLine(card)
-  if (opts?.position === 'top') {
+  if (opts.position === 'top') {
     col.cards.unshift(card)
     // Interstitials are keyed by the card index they follow — everything
     // shifts down one, EXCEPT pre-first-card lines (-1): those are the

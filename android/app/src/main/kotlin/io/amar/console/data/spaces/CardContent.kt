@@ -8,6 +8,8 @@ package io.amar.console.data.spaces
 object CardContent {
     data class UrlChip(val url: String, val label: String)
     data class TagSplit(val text: String, val tags: List<String>)
+    data class MetaPair(val key: String, val value: String)
+    data class Display(val text: String, val tags: List<String>, val meta: List<MetaPair>)
     data class HeadAndDetail(val head: String, val detail: List<String>)
 
     /** Composer text → card text + detail lines (hub `splitHeadAndDetail`
@@ -92,5 +94,32 @@ object CardContent {
             tags.addFirst(m.groupValues[2])
         }
         return TagSplit(t, tags.toList())
+    }
+
+    private val META_TAG = Regex("^([a-z][a-z0-9-]*)[/:]([A-Za-z0-9][\\w.-]*)$")
+    private val RESERVED_META_KEYS = setOf("model", "effort")
+    private val CREATOR_LABELS = mapOf("ui" to "UI", "cli" to "CLI", "ring" to "Ring", "android" to "Android", "listener" to "Listener", "property" to "Property")
+
+    /** `created-by` → "Created by"; `ui` → "UI". Any other value reads as
+     *  written (src/kanban/board.ts metaLabel). */
+    fun metaLabel(key: String, value: String): MetaPair = MetaPair(
+        key.replace('-', ' ').replaceFirstChar { it.uppercase() },
+        if (key == "created-by") CREATOR_LABELS[value] ?: value else value,
+    )
+
+    /** What a card shows (src/kanban/board.ts cardDisplay): prose, plain tag
+     *  badges, labelled metadata. The hub strips metadata tags into
+     *  [SpacesRepository.CardView.meta]; one stranded left of a plain tag
+     *  (`#created-by/ui #bi`) still arrives in the text and is rescued here. */
+    fun display(text: String, meta: Map<String, String>): Display {
+        val split = splitTrailingTags(text)
+        val pairs = LinkedHashMap(meta)
+        val tags = mutableListOf<String>()
+        for (tag in split.tags) {
+            val m = META_TAG.find(tag)
+            if (m != null && m.groupValues[1] !in RESERVED_META_KEYS) pairs.putIfAbsent(m.groupValues[1], m.groupValues[2])
+            else tags.add(tag)
+        }
+        return Display(split.text, tags, pairs.map { (k, v) -> metaLabel(k, v) })
     }
 }

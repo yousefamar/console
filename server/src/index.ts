@@ -1150,7 +1150,7 @@ const listenerEngine = new ListenerEngine({
   broadcast: (msg) => broadcast(msg),
   notify: (msg) => pushServer.broadcast(msg),
   addCard: async (project, text, opts) => {
-    const card = await boardOps.add(project, text, { column: opts.column, agentKey: opts.agentKey, top: true })
+    const card = await boardOps.add(project, text, { createdBy: 'listener', column: opts.column, agentKey: opts.agentKey, top: true })
     return `"${card.text}" → ${card.column}`
   },
   spawnFork: (source, l, model) => forkSessionForWake(agentCtx, source, 'Listener', l.id, model),
@@ -1405,7 +1405,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
     const wake = () => wakeWorker(target, forked, buildBoardEnvelope({
       boardAbsPath: join(noteStore.vaultPath, boardPath),
       assetsAbsPath: noteStore.assetsPath,
-      card: { text: card.text, blockId: card.blockId!, lines: card.lines },
+      card: { text: card.text, blockId: card.blockId!, lines: card.lines, meta: card.meta },
       column,
       project,
       deployGate,
@@ -1675,7 +1675,7 @@ const boardWatcher = new BoardWatcher(noteStore, {
     const reopenWake = () => wakeWorker(reopenTarget, forked, buildBoardEnvelope({
       boardAbsPath,
       assetsAbsPath: noteStore.assetsPath,
-      card: { text: t.text, blockId: t.blockId, lines: t.lines },
+      card: { text: t.text, blockId: t.blockId, lines: t.lines, meta: t.meta },
       column: t.column,
       project: projectForBoardPath(t.boardPath),
       deployGate: t.deployGate,
@@ -2008,7 +2008,7 @@ const ringCtx: RingCtx = {
     write: (p, content) => noteStore.write(p, content),
   },
   addCard: async (project, text, column) => {
-    const card = await boardOps.add(project, text, { column, top: false })
+    const card = await boardOps.add(project, text, { createdBy: 'ring', column, top: false })
     return `"${card.text}" → ${card.column}`
   },
   // A failed delivery becomes a `Ring miss:` card on the console board — one
@@ -2021,7 +2021,7 @@ const ringCtx: RingCtx = {
       const needle = `ring miss: "${miss.transcription.toLowerCase()}"`
       const open = board.columns.some((col) => !DONE_COLUMN_RE.test(col.title) && col.cards.some((c) => !c.checked && c.text.toLowerCase().startsWith(needle)))
       if (open) return 'exists'
-      await boardOps.add('console', text, { column, detail, top: true })
+      await boardOps.add('console', text, { createdBy: 'ring', column, detail, top: true })
       return 'filed'
     } catch (e) {
       log(`[ring] miss card failed: ${(e as Error).message}`)

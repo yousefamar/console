@@ -108,6 +108,9 @@ class SpacesRepository(
          *  board's `remote:` frontmatter ([BoardView.remote]). */
         val remote: String? = null,
         val detail: List<String>,
+        /** `#key/value` metadata tags in line order — `created-by` on every
+         *  card the hub created, plus optional extras (`requested-by`, …). */
+        val meta: Map<String, String> = emptyMap(),
     )
 
 
@@ -250,6 +253,7 @@ class SpacesRepository(
             effort = o["effort"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
             remote = remoteFrom(o["remote"]),
             detail = (o["detail"] as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
+            meta = (o["meta"] as? JsonObject)?.mapNotNull { (k, v) -> runCatching { k to v.jsonPrimitive.content }.getOrNull() }?.toMap() ?: emptyMap(),
         )
     }
 
@@ -367,6 +371,8 @@ class SpacesRepository(
     suspend fun addCard(project: String, text: String, column: String?, detail: List<String> = emptyList()): Boolean {
         val body = buildJsonObject {
             put("text", text)
+            // Every card names its creator; the hub refuses one that does not.
+            put("createdBy", "android")
             column?.let { put("column", it) }
             if (detail.isNotEmpty()) putJsonArray("detail") { detail.forEach { add(it) } }
         }

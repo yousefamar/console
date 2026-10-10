@@ -15,7 +15,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs'
 import type { NoteStore } from '../notes.js'
 import { BoardFiles, type JournalEntry } from './board-files.js'
 import { boardDefaultOwner, setBoardDefaultOwner,
-  isKanbanBoard, parseBoard, serializeBoard, moveCard, addCard, refreshCardLine,
+  isKanbanBoard, parseBoard, serializeBoard, moveCard, addCard, refreshCardLine, metaKey, metaValue, CREATED_BY,
   type KanbanBoard, type BoardCard, type CardRef,
 } from './board.js'
 import { boardRemote } from '../forge/config.js'
@@ -140,7 +140,7 @@ export interface ActorRecord {
   actor: string
   ts: number
   /** Which /board/* verb wrote this (absent on records from before ^shy-boar). */
-  op?: 'move' | 'assign' | 'block' | 'model' | 'effort' | 'nofork' | 'inherit' | 'remote' | 'note'
+  op?: 'move' | 'assign' | 'block' | 'model' | 'effort' | 'nofork' | 'inherit' | 'remote' | 'note' | 'tag'
   /** Target column of a `move`. */
   column?: string
   /** How many detail lines the last `note` appended — what `note --undo`
@@ -166,6 +166,9 @@ export interface CardView {
   /** `#forge` / `#local` — where this card's ticket-fork runs. null = the
    *  board's `remote:` frontmatter decides, and its absence means local. */
   remote: 'forge' | 'local' | null
+  /** `#key/value` metadata tags — `created-by` on every card the hub created,
+   *  plus whatever else was tagged (`requested-by`, …). */
+  meta: Record<string, string>
   detail: string[]
   /** Something the write got away with but the caller should see: a move into
    *  Under Review with no `- ` summary bullets, or a card addressed by text
@@ -177,7 +180,7 @@ export interface CardView {
 function cardView(card: BoardCard, column: string): CardView {
   return {
     text: card.text, column, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked,
-    nofork: card.nofork, inherit: card.inherit, model: card.model, effort: card.effort, remote: card.remote,
+    nofork: card.nofork, inherit: card.inherit, model: card.model, effort: card.effort, remote: card.remote, meta: card.meta,
     detail: card.lines.slice(1).map((l) => l.trim()).filter(Boolean),
   }
 }
@@ -192,11 +195,7 @@ function view(board: KanbanBoard): { defaultOwner: string | null; remote: 'forge
     remote: boardRemote(board.header.join('\n')),
     columns: board.columns.map((col) => ({
       title: col.title,
-      cards: col.cards.map((c) => ({
-        text: c.text, column: col.title, agentKey: c.agentKey, blockId: c.blockId,
-        blocked: c.blocked, checked: c.checked, nofork: c.nofork, inherit: c.inherit, model: c.model, effort: c.effort, remote: c.remote,
-        detail: c.lines.slice(1).map((l) => l.trim()).filter(Boolean),
-      })),
+      cards: col.cards.map((c) => cardView(c, col.title)),
     })),
   }
 }
@@ -301,12 +300,17 @@ export class BoardOps {
     return { path, blockId: hit.card.blockId, text: hit.card.text }
   }
 
-  add(project: string, text: string, opts: { column?: string; agentKey?: string; detail?: string[]; top?: boolean }): Promise<CardView> {
-    return this.mutate(project, (board, path) => {
+  /** `createdBy` is mandatory: who or what made the card (`ui`, `ring`, an
+   *  agent key). Nothing reaches a board through the hub unattributed. */
+  add(project: string, text: string, opts: { createdBy: string; meta?: Record<string, string>; column?: string; agentKey?: string; detail?: string[]; top?: boolean }): Promise<CardView> {
+    if (!opts.createdBy?.trim()) return Promise.reject(new Error('a card needs a creator: pass createdBy (CLI: --by <your name>)'))
+    return this.mutate(project, (board) => {
       const column = opts.column ?? board.columns[0]?.title
       if (!column) throw new Error('board has no columns')
       const { head, detail: tail } = splitHeadAndDetail(text)
       const card = addCard(board, column, head, {
+        createdBy: opts.createdBy,
+        ...(opts.meta ? { meta: opts.meta } : {}),
         ...(opts.agentKey ? { agentKey: opts.agentKey } : {}),
         position: opts.top === false ? 'bottom' : 'top',
       })
@@ -329,7 +333,7 @@ export class BoardOps {
       this.recordActor(path, card.blockId, actor, { op: 'move', column: target.title })
       const detail = card.lines.slice(1).map((l) => l.trim()).filter(Boolean)
       const warning = REVIEW_COLUMN_RE.test(target.title) && !hasSummaryBullets(detail) ? handbackWarning(project, card.blockId) : undefined
-      return { text: card.text, column: target.title, agentKey: card.agentKey, blockId: card.blockId, blocked: card.blocked, checked: card.checked, nofork: card.nofork, inherit: card.inherit, model: card.model, effort: card.effort, remote: card.remote, detail, ...(warning ? { warning } : {}) }
+      return { ...cardView(card, target.title), ...(warning ? { warning } : {}) }
     })
   }
 
@@ -401,6 +405,24 @@ export class BoardOps {
       refreshCardLine(hit.card)
       this.recordActor(path, hit.card.blockId, actor, { op: 'remote' })
       return cardView(hit.card, hit.ref.column)
+    })
+  }
+
+  /** Set (`value`) or clear (`null`) one `#key/value` metadata tag. `created-by`
+   *  is written once: it can be filled in on a card that has none (one made
+   *  before the tag existed, or by a hand edit) and never changed or removed. */
+  setMeta(project: string, query: string, rawKey: string, value: string | null, actor?: string): Promise<CardView> {
+    return this.mutate(project, (board, path) => {
+      const hit = findCardByQuery(board, query)
+      if ('error' in hit) throw new Error(hit.error)
+      const key = metaKey(rawKey)
+      if (key === CREATED_BY && hit.card.meta[key]) throw new Error(`${CREATED_BY} is set when the card is made and cannot be changed (it says "${hit.card.meta[key]}")`)
+      if (value === null) delete hit.card.meta[key]
+      else hit.card.meta[key] = metaValue(value)
+      refreshCardLine(hit.card)
+      this.recordActor(path, hit.card.blockId, actor, { op: 'tag' })
+      const warning = hit.matched === 'text' ? textMatchWarning(hit.card) : undefined
+      return { ...cardView(hit.card, hit.ref.column), ...(warning ? { warning } : {}) }
     })
   }
 

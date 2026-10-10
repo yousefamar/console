@@ -36,7 +36,7 @@ import { NewNoteModal } from './NewNoteModal'
 import { NotesQuickSwitcher } from './NotesQuickSwitcher'
 import { NotesLinkPicker } from './NotesLinkPicker'
 import { NotesCommandPalette } from './NotesCommandPalette'
-import { splitTrailingTags, cardUrls, boardRemote, EFFORT_LEVELS, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
+import { cardDisplay, cardUrls, boardRemote, EFFORT_LEVELS, DISPATCH_COLUMN_RE, DONE_COLUMN_RE } from '@/kanban/board'
 import type { BoardCard, CardRef } from '@/kanban/board'
 import { isImageLine, imagePathOf, imageLineFor, uploadCardImage, imagesFromPaste, assetBlobUrl, isVideoAsset, prepareCardMedia } from '@/kanban/card-images'
 import { VAULT_SLUG, UNASSIGNED_SLUG, VAULT_SPACE, UNASSIGNED_SPACE, CURATOR_AGENT_KEY, spaceScopePrefixes } from '@/spaces/scope'
@@ -1576,6 +1576,7 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
   const [nofork, setNofork] = useState(card.nofork)
   const [inherit, setInherit] = useState(card.inherit)
   const [model, setModel] = useState(card.model)
+  const display = cardDisplay(card)
   const [effort, setEffort] = useState(card.effort)
   const [remote, setRemote] = useState(card.remote)
   const [column, setColumn] = useState(currentColumn)
@@ -1744,7 +1745,7 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
             onPick={(v) => { const r = v as 'forge' | 'local' | null; setRemote(r); onSetRemote(r) }}
             title={remote ? 'Where the ticket-fork runs — pinned on this card' : 'Where the ticket-fork runs — board default'}
           />
-          {splitTrailingTags(card.text).tags.map((t) => (
+          {display.tags.map((t) => (
             <span key={t} className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-400">{t}</span>
           ))}
           {card.blockId && (
@@ -1766,6 +1767,17 @@ export function CardDetailModal({ card, columnTitles, currentColumn, assignable,
             </button>
           </div>
         </div>
+
+        {display.meta.length > 0 && (
+          <dl className="flex flex-wrap gap-x-4 gap-y-0.5 px-5 pt-2 text-[11px]">
+            {display.meta.map((m) => (
+              <div key={m.key} className="flex gap-1">
+                <dt className="text-text-tertiary">{m.key}:</dt>
+                <dd className="text-text-secondary">{m.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
 
         {/* One buffer, git-commit style: bold first line = title, rest = detail. */}
         <div className="flex min-h-0 flex-1 flex-col px-5 pb-3 pt-2">
@@ -2100,7 +2112,7 @@ function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpe
   const detail = allDetail.filter((l) => !isImageLine(l))
   // Trailing #tags render as badges (like #blocked, which keeps its own
   // amber treatment); they're display-split only — the board line is untouched.
-  const { text: tileText, tags } = splitTrailingTags(card.text)
+  const { text: tileText, tags, meta } = cardDisplay(card)
   const urls = cardUrls(card)
   // Linear model: the tile is a clean summary — click opens the issue view,
   // DRAG moves it between columns (no dropdown). Assignee chip stays as the
@@ -2168,6 +2180,13 @@ function CardTile({ card, assigneeLabel, assigneeState = 'idle', onAssign, onOpe
         ))}
         {card.blockId && <span className="text-[9px] text-text-tertiary" title="Dispatched">^{card.blockId}</span>}
       </div>
+      {meta.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-px text-[10px] leading-snug text-text-tertiary">
+          {meta.map((m) => (
+            <span key={m.key} className="max-w-full truncate">{m.key}: <span className="text-text-secondary">{m.value}</span></span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

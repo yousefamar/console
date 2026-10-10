@@ -326,9 +326,9 @@ export const useSpacesStore = create<SpacesState>((set, get) => ({
     const { board } = get()
     if (!board) return
     // UI-added cards land on TOP — newest-first is how the backlog reads.
-    if (!addCard(board, column, text, { ...(agentKey ? { agentKey } : {}), position: 'top' })) return
+    if (!addCard(board, column, text, { createdBy: 'ui', ...(agentKey ? { agentKey } : {}), position: 'top' })) return
     set({ board: { ...board } })
-    const body = { text, column, ...(agentKey ? { assign: agentKey } : {}) }
+    const body = { text, column, createdBy: 'ui', ...(agentKey ? { assign: agentKey } : {}) }
     if (await get().boardApi('cards', body)) return
     // A failed ADD just rolled back the optimistic row — which was the ONLY
     // copy of what the user typed (a transient 502 ate a dictated card,

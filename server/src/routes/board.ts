@@ -3,7 +3,8 @@
 // lock in BoardOps), so concurrent agents serialize instead of clobbering.
 //
 //   GET  /board/:project                    → columns + cards
-//   POST /board/:project/cards              {text, column?, assign?, detail?, bottom?}
+//   POST /board/:project/cards              {text, createdBy?, meta?, column?, assign?, detail?, bottom?}   a creator is REQUIRED: createdBy, else the X-Console-Agent header, else the app's User-Agent
+//   POST /board/:project/tag                {card, key, value|null}   set/clear one #key/value metadata tag
 //   POST /board/:project/move               {card, to}         card = "^id" | text (unique substring); an id always wins
 //   POST /board/:project/assign             {card, agent|null}
 //   POST /board/:project/block              {card, blocked, note?}
@@ -26,6 +27,31 @@ export interface BoardRedispatch {
   /** Resolve the card and re-fire dispatch for it (BoardWatcher.redispatch).
    *  boardPath is vault-relative. */
   (boardPath: string, blockId: string): Promise<{ ok: boolean; error?: string }>
+}
+
+/** Who is creating this card: what the caller says, else the agent the CLI
+ *  names in its header, else the client the request plainly comes from (an
+ *  app or CLI build from before it sent `createdBy` itself). No answer = no card. */
+export function cardCreator(body: Record<string, unknown>, actor: string | undefined, userAgent: string | undefined): string {
+  if (typeof body.createdBy === 'string' && body.createdBy.trim()) return body.createdBy.trim()
+  if (actor) return actor
+  if (/^okhttp\//i.test(userAgent ?? '')) return 'android'
+  if (/^Mozilla\//.test(userAgent ?? '')) return 'ui'
+  // A `con` from before it sent createdBy, run by a script with no agent key.
+  if (/^(node|undici)\b/i.test(userAgent ?? '')) return 'cli'
+  throw new Error('a card needs a creator: send {createdBy: "<who>"} (CLI: --by <your name>)')
+}
+
+/** `{meta: {"requested-by": "essam"}}` off a request body — strings only. */
+function metaOf(body: Record<string, unknown>): Record<string, string> | undefined {
+  if (body.meta === undefined || body.meta === null) return undefined
+  if (typeof body.meta !== 'object' || Array.isArray(body.meta)) throw new Error('meta must be an object of key → value strings')
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(body.meta as Record<string, unknown>)) {
+    if (typeof v !== 'string' && typeof v !== 'number') throw new Error(`meta.${k} must be a string`)
+    out[k] = String(v)
+  }
+  return out
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -77,6 +103,8 @@ export function handleBoardRoutes(
   switch (verb) {
     case 'cards':
       run((b) => ops.add(project, String(b.text ?? ''), {
+        createdBy: cardCreator(b, actor, req.headers['user-agent']),
+        meta: metaOf(b),
         column: b.column as string | undefined,
         agentKey: b.assign as string | undefined,
         detail: b.detail as string[] | undefined,
@@ -106,6 +134,13 @@ export function handleBoardRoutes(
     case 'local':
       // `remote: null` clears the tag and defers to the board's frontmatter.
       run((b) => ops.setRemote(project, String(b.card ?? ''), b.remote === null ? null : (verb as 'forge' | 'local'), actor))
+      return true
+    case 'tag':
+      run((b) => {
+        if (typeof b.key !== 'string' || !b.key.trim()) throw new Error('tag needs {key}')
+        const value = b.value === null || b.value === undefined || b.value === '' ? null : String(b.value)
+        return ops.setMeta(project, String(b.card ?? ''), b.key, value, actor)
+      })
       return true
     case 'nofork':
       run((b) => ops.setNofork(project, String(b.card ?? ''), b.nofork !== false, actor))

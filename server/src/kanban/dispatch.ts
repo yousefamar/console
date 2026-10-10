@@ -12,7 +12,7 @@
 // detected by diffing, not reported via any RPC.
 
 import { join } from 'node:path'
-import { isVideoAsset, type KanbanBoard, type BoardCard } from './board.js'
+import { isVideoAsset, metaLabel, type KanbanBoard, type BoardCard } from './board.js'
 import { skillHintLines, type SkillHint } from './skill-hints.js'
 
 /** Columns whose cards get dispatched when assigned. Deliberately narrow —
@@ -79,6 +79,9 @@ export interface InFlightCard {
   /** `#forge`/`#local` — carried for the same reason as model/effort: a reopen
    *  re-dispatch must put the fresh fork where the original one ran. */
   remote: 'forge' | 'local' | null
+  /** `#key/value` metadata tags — a reopen envelope names the creator and
+   *  requester like the first one did. */
+  meta: Record<string, string>
   /** Original card lines (text + indented notes) — a reopen re-dispatch sends
    *  the full envelope, and the accumulated notes ARE the handover. */
   lines: string[]
@@ -107,6 +110,7 @@ export function inFlightCards(board: KanbanBoard, opts: { boardInherit?: boolean
         model: card.model,
         effort: card.effort,
         remote: card.remote,
+        meta: card.meta,
         lines: card.lines,
       })
     }
@@ -248,7 +252,7 @@ export function buildReviewReminder(cards: ReviewCardRef[]): string {
  *  the board FILE is the reporting surface, no RPC to learn. */
 export function buildBoardEnvelope(opts: {
   boardAbsPath: string
-  card: { text: string; blockId: string; lines: string[] }
+  card: { text: string; blockId: string; lines: string[]; meta?: Record<string, string> }
   column: string
   project?: string | null
   /** Board frontmatter `deploy_gate: review` — merging to main IS deploying
@@ -313,6 +317,7 @@ export function buildBoardEnvelope(opts: {
     if (!media) { detail.push(l); continue }
     if (isVideoAsset(media[1]!)) detail.push(`(video clip, not viewable by you: ${assetsAbsPath ? join(assetsAbsPath, media[1]!) : media[1]!})`)
   }
+  const metaLine = Object.entries(card.meta ?? {}).map(([k, v]) => { const l = metaLabel(k, v); return `${l.key}: ${l.value}` }).join(' · ')
   return [
     '[BOARD TASK — action required]',
     ...(forkIdentity ? [
@@ -338,6 +343,7 @@ export function buildBoardEnvelope(opts: {
     '',
     card.text,
     ...(detail.length ? ['', ...detail] : []),
+    ...(metaLine ? ['', metaLine] : []),
     '',
     ...skillHintLines(skills ?? []),
     'This card was assigned to you on the kanban board above. Do the work, then',

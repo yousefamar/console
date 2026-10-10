@@ -100,9 +100,9 @@ describe('BoardOps mutations', () => {
   })
 
   it('add prepends by default with assignee + detail', async () => {
-    await ops.add('demo', 'New card', { column: 'Backlog', agentKey: 'al', detail: ['a', 'b'] })
+    await ops.add('demo', 'New card', { createdBy: 'test', column: 'Backlog', agentKey: 'al', detail: ['a', 'b'] })
     const disk = onDisk()
-    expect(disk).toContain('- [ ] New card @al')
+    expect(disk).toContain('- [ ] New card #created-by/test @al')
     expect(disk.indexOf('New card')).toBeLessThan(disk.indexOf('First idea'))
     expect(disk).toContain('  a')
   })
@@ -137,7 +137,7 @@ describe('BoardOps mutations', () => {
 
   it('serializes concurrent mutations — no lost updates', async () => {
     // Fire 10 adds without awaiting; all must land.
-    await Promise.all(Array.from({ length: 10 }, (_, i) => ops.add('demo', `Card ${i}`, { column: 'Backlog' })))
+    await Promise.all(Array.from({ length: 10 }, (_, i) => ops.add('demo', `Card ${i}`, { createdBy: 'test', column: 'Backlog' })))
     const board = parseBoard(onDisk())
     const texts = board.columns[0]!.cards.map((c) => c.text)
     for (let i = 0; i < 10; i++) expect(texts).toContain(`Card ${i}`)
@@ -145,7 +145,7 @@ describe('BoardOps mutations', () => {
 
   it('a failed mutation does not wedge the lock', async () => {
     await expect(ops.move('demo', '^nope99', 'Done')).rejects.toThrow(/no card/)
-    await ops.add('demo', 'After failure', {})
+    await ops.add('demo', 'After failure', { createdBy: 'test' })
     expect(onDisk()).toContain('After failure')
   })
 })
@@ -250,11 +250,11 @@ describe('hand-back (^shy-boar)', () => {
   })
 
   it('add/edit split a newline-bearing text into card + detail lines — a dictated 2nd paragraph is never a bare orphan line (^loud-pony)', async () => {
-    const r = await ops.add('demo', 'First paragraph\n\nSecond paragraph\nThird line', { column: 'Backlog', detail: ['extra'] })
+    const r = await ops.add('demo', 'First paragraph\n\nSecond paragraph\nThird line', { createdBy: 'test', column: 'Backlog', detail: ['extra'] })
     expect(r.text).toBe('First paragraph')
     expect(r.detail).toEqual(['Second paragraph', 'Third line', 'extra'])
     let disk = onDisk()
-    expect(disk).toContain('- [ ] First paragraph\n  Second paragraph\n  Third line\n  extra\n- [ ] First idea')
+    expect(disk).toContain('- [ ] First paragraph #created-by/test\n  Second paragraph\n  Third line\n  extra\n- [ ] First idea')
     expect(parseBoard(disk).columns[0]!.cards.map((c) => c.text)).toEqual(['First paragraph', 'First idea', 'Second idea'])
 
     // edit with a multi-line text and no detail: head replaces the text, tail appends to the existing detail.

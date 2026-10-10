@@ -295,7 +295,7 @@ describe('BoardOps + BoardWatcher share one lock (FIX 2)', () => {
   it('restore overwrites from the journal, journaling the current file first', async () => {
     const { ops } = setup('')
     const before = readFileSync(join(dir, boardPath), 'utf-8')
-    await ops.add('demo', 'New card', { column: 'Backlog' })
+    await ops.add('demo', 'New card', { createdBy: 'test', column: 'Backlog' })
     const hist = await ops.history('demo')
     expect(hist.entries).toHaveLength(1)
     const r = await ops.restore('demo', hist.entries[0]!.ts)

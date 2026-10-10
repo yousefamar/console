@@ -581,7 +581,9 @@ con spaces — Spaces pane (project-first UI)
 
 Board (kanban) commands — 'con board' is an alias for 'con spaces board':
   board <project>                       Show the board (columns, cards, ^ids, assignees)
-  board <project> add "text"            Add a card [--to|--column <column>] [--assign <key>] [--detail "a|b"] [--bottom]
+  board <project> add "text"            Add a card [--by <your name>] [--requested-by <name>] [--tag k=v,k2=v2] [--to|--column <column>] [--assign <key>] [--detail "a|b"] [--bottom]
+  board <project> tag "<card>" k=v …    Set metadata tags on a card (requested-by=essam area=billing)
+  board <project> untag "<card>" k …    Remove metadata tags (created-by cannot be removed or changed)
   board <project> move "<card>" <col>   Move a card to a column
   board <project> assign "<card>" <key|none>
   board <project> owner <agentKey|none>          Board default owner (unassigned → In Progress auto-assigns to it)
@@ -617,6 +619,12 @@ Notes:
   union, a shell pipeline): pass the lines separated by real newlines instead,
   then every pipe is literal; or write \\| for one literal pipe. The hub is the
   single writer with a per-board lock, so concurrent agents serialize cleanly.
+  Metadata: a card carries key-value tags, written #key/value on its line and
+  shown on the card as "Created by: UI", "Requested by: essam". created-by is
+  REQUIRED and set once at creation: --by <name>, else your own agent key
+  (CONSOLE_AGENT_KEY), else "cli". Everything else is optional and free-form:
+  --requested-by <name> for whoever asked for the work, --tag k=v for any other
+  key. Values are one word (spaces become dashes).
   Hand-back: before moving a card to Under Review, "note" a concise "- " bulleted
   summary of exactly what you did and "attach" screenshots where a visual check
   helps (always when you worked in a worktree). A move into Under Review with no
@@ -625,6 +633,8 @@ Notes:
 Examples:
   con board console
   con board console add "Fix the tree" --to Backlog --assign console-general
+  con board astera add "Export orders as CSV" --requested-by essam --tag area=orders
+  con board astera tag "^ab12cd" requested-by=callum
   con spaces board console move "^ab12cd" "Under Review"
   con spaces board console block "^ab12cd" --note "needs API key"
 `.trim(),

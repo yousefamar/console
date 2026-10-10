@@ -5,7 +5,8 @@
 // writer with a per-board lock, so concurrent agents serialize cleanly.
 //
 //   con spaces board <project>                                # show
-//   con spaces board <project> add "text" [--to Backlog] [--assign key] [--detail "a|b"] [--bottom]
+//   con spaces board <project> add "text" [--by <name>] [--requested-by <name>] [--tag k=v,k2=v2] [--to Backlog] [--assign key] [--detail "a|b"] [--bottom]
+//   con spaces board <project> tag "<card>" key=value [key2=value2 …] / untag "<card>" key [key2 …]
 //   con spaces board <project> move "<card>" <column>         # card = ^id or unique text; an ^id always wins
 //   con spaces board <project> assign "<card>" <agentKey|none>
 //   con spaces board <project> block "<card>" [--note "why"] / unblock "<card>"
@@ -32,20 +33,32 @@ interface CardView {
   blockId: string | null
   blocked: boolean
   checked: boolean
+  meta?: Record<string, string>
   detail: string[]
+}
+
+/** `k=v,k2=v2` (also `k:v`) → pairs; throws on a part with no value. */
+function parsePairs(parts: string[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const part of parts.flatMap((p) => p.split(',')).map((p) => p.trim()).filter(Boolean)) {
+    const m = part.match(/^([^=:]+)[=:](.+)$/)
+    if (!m) throw new Error(`"${part}" is not key=value`)
+    out[m[1]!.trim()] = m[2]!.trim()
+  }
+  return out
 }
 
 /** Flags each board verb accepts. `column` is an alias of `to` on add — it is
  *  the hub body's field name and the one people reach for. */
 const BOARD_FLAGS: Record<string, readonly string[]> = {
-  show: [], add: ['to', 'column', 'assign', 'detail', 'bottom'], move: [], assign: [], owner: [], model: [],
+  show: [], add: ['to', 'column', 'assign', 'detail', 'bottom', 'by', 'requested-by', 'tag'], tag: [], untag: [], move: [], assign: [], owner: [], model: [],
   nofork: [], forkok: [], inherit: [], fresh: [], forge: [], local: [], here: [], block: ['note'], unblock: ['note'], note: ['undo', 'remove-last'], attach: ['caption'],
   edit: ['text', 'detail'], remove: [], redispatch: [], history: [], restore: ['confirm'],
 }
 
 export async function spaces(verb: string | undefined, args: string[], flags: GlobalFlags): Promise<void> {
   if (verb !== 'board') {
-    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|move|assign|owner|model|effort|nofork|forkok|inherit|fresh|forge|local|here|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
+    exitWithError('USAGE', 'Usage: con spaces board <project> [show|add|tag|untag|move|assign|owner|model|effort|nofork|forkok|inherit|fresh|forge|local|here|block|unblock|note|attach|edit|remove] … — see `con help spaces` (alias: `con board`)', flags)
     return
   }
   const project = args[0]
@@ -76,6 +89,7 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
         console.log(`\n## ${col.title} (${col.cards.length})`)
         for (const c of col.cards) {
           const bits = [c.checked ? '[x]' : '[ ]', c.text]
+          for (const [k, v] of Object.entries(c.meta ?? {})) bits.push(`#${k}/${v}`)
           if (c.blocked) bits.push('#blocked')
           if (c.agentKey) bits.push(`@${c.agentKey}`)
           if (c.blockId) bits.push(`^${c.blockId}`)
@@ -86,9 +100,15 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
     }
     case 'add': {
       const text = pos[0]
-      if (!text) { exitWithError('USAGE', 'Usage: con spaces board <project> add "text" [--to|--column <column>] [--assign <key>] [--detail "a|b"] [--bottom]', flags); return }
+      if (!text) { exitWithError('USAGE', 'Usage: con spaces board <project> add "text" [--by <your name>] [--requested-by <name>] [--tag k=v,k2=v2] [--to|--column <column>] [--assign <key>] [--detail "a|b"] [--bottom]', flags); return }
+      // Every card names its creator: --by, else the calling agent's own key,
+      // else `cli` (a script or a terminal with no agent identity).
+      const createdBy = (opts.by && opts.by !== 'true' ? opts.by : '') || process.env.CONSOLE_AGENT_KEY || 'cli'
+      let meta: Record<string, string>
+      try { meta = parsePairs(opts.tag && opts.tag !== 'true' ? [opts.tag] : []) } catch (e) { exitWithError('USAGE', `--tag: ${(e as Error).message} (e.g. --tag requested-by=essam,area=billing)`, flags); return }
+      if (opts['requested-by'] && opts['requested-by'] !== 'true') meta['requested-by'] = opts['requested-by']
       output(await hubFetch(`/board/${enc}/cards`, { method: 'POST', body: {
-        text, column: opts.to, assign: opts.assign, detail: detail(opts.detail), ...(opts.bottom === 'true' ? { bottom: true } : {}),
+        text, createdBy, ...(Object.keys(meta).length ? { meta } : {}), column: opts.to, assign: opts.assign, detail: detail(opts.detail), ...(opts.bottom === 'true' ? { bottom: true } : {}),
       } }), flags)
       return
     }
@@ -129,6 +149,20 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       if (!card) { exitWithError('USAGE', `Usage: con spaces board <project> ${action} "<card>"   (forge = run this card's fork on the remote box, local = keep it on this machine, here = clear the tag and follow the board)`, flags); return }
       // `here` clears the tag; forge/local pin it.
       output(await hubFetch(`/board/${enc}/${action === 'here' ? 'local' : action}`, { method: 'POST', body: { card, ...(action === 'here' ? { remote: null } : {}) } }), flags)
+      return
+    }
+    case 'tag':
+    case 'untag': {
+      const [card, ...parts] = pos
+      const usage = action === 'tag'
+        ? 'Usage: con spaces board <project> tag "<card>" key=value [key2=value2 …]   (metadata shown on the card, e.g. requested-by=essam)'
+        : 'Usage: con spaces board <project> untag "<card>" key [key2 …]'
+      if (!card || !parts.length) { exitWithError('USAGE', usage, flags); return }
+      let pairs: Array<[string, string | null]>
+      try { pairs = action === 'tag' ? Object.entries(parsePairs(parts)) : parts.map((k) => [k, null]) } catch (e) { exitWithError('USAGE', `${(e as Error).message} — ${usage}`, flags); return }
+      let last: unknown
+      for (const [key, value] of pairs) last = await hubFetch(`/board/${enc}/tag`, { method: 'POST', body: { card, key, value } })
+      output(last, flags)
       return
     }
     case 'nofork':
@@ -215,6 +249,6 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
       return
     }
     default:
-      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, move, assign, owner, model, nofork, forkok, inherit, fresh, forge, local, here, block, unblock, note, edit, remove, redispatch, history, restore — see \`con help spaces\`.`, flags)
+      exitWithError('USAGE', `Unknown board action: ${action}. Try: show, add, tag, untag, move, assign, owner, model, nofork, forkok, inherit, fresh, forge, local, here, block, unblock, note, edit, remove, redispatch, history, restore — see \`con help spaces\`.`, flags)
   }
 }

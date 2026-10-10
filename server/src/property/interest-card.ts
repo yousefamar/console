@@ -48,7 +48,7 @@ export function findInterestCard<C extends { text: string; detail: string[]; blo
 /** The slice of BoardOps this needs — keeps the module testable against the real class or a stub. */
 export interface InterestBoard {
   show(project: string): Promise<{ columns: Array<{ title: string; cards: Array<{ text: string; detail: string[]; blockId: string | null }> }> }>
-  add(project: string, text: string, opts: { column?: string; agentKey?: string; detail?: string[]; top?: boolean }): Promise<{ column: string; blockId: string | null }>
+  add(project: string, text: string, opts: { createdBy: string; column?: string; agentKey?: string; detail?: string[]; top?: boolean }): Promise<{ column: string; blockId: string | null }>
 }
 
 export interface InterestCardTarget {
@@ -69,7 +69,7 @@ export async function fileInterestCard(board: InterestBoard, l: Listing, s: Prop
   const existing = findInterestCard(columns, l.url)
   if (existing) return { filed: false, column: existing.column, blockId: existing.card.blockId }
   const { text, detail } = buildInterestCard(l, s)
-  const card = await board.add(target.project, text, { column: target.column, agentKey: target.owner, detail, top: true })
+  const card = await board.add(target.project, text, { createdBy: 'property', column: target.column, agentKey: target.owner, detail, top: true })
   return { filed: true, column: card.column, blockId: card.blockId }
 }
 
@@ -123,7 +123,7 @@ export async function fileDroppedInterestCard(board: InterestBoard, l: Listing, 
   const re = new RegExp(`^Lesson from (?:dismissing|clearing) .*${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![a-z0-9_-])`, 'i')
   for (const col of columns) for (const card of col.cards) if (re.test(card.text)) return { filed: false, column: col.title, blockId: card.blockId }
   const { text, detail } = buildDroppedInterestCard(l, s, state)
-  const card = await board.add(target.project, text, { column: target.column, agentKey: target.owner, detail, top: true })
+  const card = await board.add(target.project, text, { createdBy: 'property', column: target.column, agentKey: target.owner, detail, top: true })
   return { filed: true, column: card.column, blockId: card.blockId }
 }
 

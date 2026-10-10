@@ -101,4 +101,20 @@ class CardContentTest {
         assertEquals("Try it", u.text)
         assertEquals(listOf("model/haiku"), u.tags)
     }
+
+    @Test
+    fun `display labels metadata, keeps plain tags, rescues a stranded pair`() {
+        val d = CardContent.display("Export orders #bi", linkedMapOf("created-by" to "ui", "requested-by" to "essam"))
+        assertEquals("Export orders", d.text)
+        assertEquals(listOf("bi"), d.tags)
+        assertEquals(listOf(CardContent.MetaPair("Created by", "UI"), CardContent.MetaPair("Requested by", "essam")), d.meta)
+        // Metadata left of a plain tag reaches the app inside the text.
+        val s = CardContent.display("Stranded #created-by/ring #bi", emptyMap())
+        assertEquals("Stranded", s.text)
+        assertEquals(listOf("bi"), s.tags)
+        assertEquals(listOf(CardContent.MetaPair("Created by", "Ring")), s.meta)
+        // Dispatch-shaped tags stay plain tags; an agent's key reads as written.
+        assertEquals(listOf("model/haiku"), CardContent.display("Try it #model/haiku", emptyMap()).tags)
+        assertEquals(CardContent.MetaPair("Created by", "cosy-boar"), CardContent.metaLabel("created-by", "cosy-boar"))
+    }
 }
