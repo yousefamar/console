@@ -23,6 +23,7 @@ import { extname, basename } from 'node:path'
 import { hubFetch } from '../client.js'
 import { output, exitWithError, type GlobalFlags } from '../output.js'
 import { parseFlags, unknownFlags } from './util.js'
+import { detailLines } from '../detail-lines.js'
 
 interface CardView {
   text: string
@@ -63,7 +64,7 @@ export async function spaces(verb: string | undefined, args: string[], flags: Gl
   }
   if (action === 'add' && opts.column && !opts.to) opts.to = opts.column
   const enc = encodeURIComponent(project)
-  const detail = (v: string | undefined) => v ? v.split('|').map((s) => s.trim()).filter(Boolean) : undefined
+  const detail = detailLines
 
   switch (action) {
     case undefined:
