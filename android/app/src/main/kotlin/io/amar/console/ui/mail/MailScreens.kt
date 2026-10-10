@@ -591,17 +591,7 @@ private fun MessageCard(
 private fun MailBodyWebView(html: String, dark: Boolean) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val safe = remember(html) { io.amar.console.data.mail.MailFormat.sanitizeHtml(html) }
-    val doc = remember(safe, dark) {
-        val darkCss = if (dark) io.amar.console.data.mail.MailFormat.darkModeCss() else ""
-        """
-        <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
-        <style>
-          body { background:#fff; color:#111; font-family:sans-serif; font-size:14px; margin:8px; word-break:break-word; }
-          ${io.amar.console.data.mail.MailFormat.fitCss()}
-          $darkCss
-        </style></head><body>$safe</body></html>
-        """.trimIndent()
-    }
+    val doc = remember(safe, dark) { io.amar.console.data.mail.MailFormat.bodyDocument(safe, dark) }
     io.amar.console.ui.components.SelfSizingWebView(
         html = doc,
         fitWidth = true,

@@ -304,6 +304,14 @@ while the app is foregrounded (plus short background borrows), so a remote
 - `AnnotatedString.fromHtml` only links real `<a>`; bridges send bare-URL
   `formatted_body` → run a linkify post-pass. Coil has no data-URI fetcher
   (decode base64 yourself) and needs an animated decoder registered for GIF/WebP.
+- A WebView's overview mode (`useWideViewPort` + `loadWithOverviewMode`) zooms
+  a wide page out to fit ONLY when no viewport meta in the document sets an
+  initial scale, and a meta inside the body overrides the one in the head. The
+  mail body therefore declares `width=device-width` alone and strips the
+  email's own `<meta>` (`MailFormat.bodyDocument` / `sanitizeHtml`); with
+  `initial-scale=1` a wide mail loads 1:1 and is cut off. There is no emulator,
+  but blink's viewport rules can be measured: Playwright Chromium with
+  `isMobile: true`, read `visualViewport.scale` (10 Oct 2026, v113 reconcile).
 - Overlays (sync chip, toasts) live in the shell `Box` after the NavHost so
   they never reflow content; the toast is ONE shared pill (`UndoHost`).
 - Kotlin block comments NEST — `/*` inside a KDoc (e.g. `#model/*`) opens an

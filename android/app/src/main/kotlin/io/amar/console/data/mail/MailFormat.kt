@@ -185,6 +185,10 @@ object MailFormat {
         }
         // Void/self-closing inputs.
         out = out.replace(Regex("(?is)<input\\b[^>]*/?>"), "")
+        // The email's own <meta>: a viewport meta in the body overrides the one
+        // bodyDocument() declares (most templates carry initial-scale=1, which
+        // stops the zoom-to-fit), and http-equiv=refresh navigates on open.
+        out = out.replace(Regex("(?is)<meta\\b[^>]*>"), "")
         return out
     }
 
@@ -206,6 +210,26 @@ object MailFormat {
     fun fitCss(): String = """
         pre { white-space: pre-wrap !important; word-break: break-word; }
     """.trimIndent()
+
+    /**
+     * The document a mail body is loaded as. The viewport names the width and NO
+     * initial scale: overview mode zooms a wide page out to fit only when the
+     * page leaves the initial scale to the browser. Measured in Chromium's mobile
+     * emulation, a 600 px table on a 360 px screen: 0.59 without it, 1.0 and cut
+     * off on the right with `initial-scale=1`. [safeHtml] must come from
+     * [sanitizeHtml], which removes the email's own viewport meta (it would win).
+     */
+    fun bodyDocument(safeHtml: String, dark: Boolean): String {
+        val darkCss = if (dark) darkModeCss() else ""
+        return """
+            <!doctype html><html><head><meta name="viewport" content="width=device-width">
+            <style>
+              body { background:#fff; color:#111; font-family:sans-serif; font-size:14px; margin:8px; word-break:break-word; }
+              ${fitCss()}
+              $darkCss
+            </style></head><body>$safeHtml</body></html>
+        """.trimIndent()
+    }
 
     /**
      * Height in dp of a WebView document [contentHeightCss] CSS px tall drawn at

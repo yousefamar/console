@@ -142,13 +142,22 @@ view-mode hub-sync (Room meta is fine on one device).
   fitting: `SelfSizingWebView(fitWidth = true)` turns on `useWideViewPort` +
   `loadWithOverviewMode`, so a document wider than the screen is zoomed out
   until it fits, and pinch-zoom is enabled (no on-screen zoom buttons).
-  JavaScript stays off. `contentHeight` is CSS px, so the self-sized height now
+  Two things the fit depends on, found at the release reconcile by measuring
+  in Chromium's mobile emulation (600 px table, 360 px screen): the document's
+  viewport meta must carry NO `initial-scale` (0.59 without it; 1.0 and cut off
+  on the right with `initial-scale=1`, which the template had), and the email's
+  own `<meta name="viewport">` must be gone, because one inside the body
+  overrides ours and nearly every template ships `initial-scale=1`. So
+  `MailFormat.bodyDocument()` (pure, now the one place the document is built)
+  declares `width=device-width` only and `sanitizeHtml` strips every `<meta>`,
+  which also removes `http-equiv=refresh` (it would have opened the browser on
+  viewing a mail). JavaScript stays off. `contentHeight` is CSS px, so the self-sized height now
   follows the scale (`MailFormat.displayHeightDp`, re-synced from
   `onScaleChanged`): a zoomed-out mail is not followed by a blank gap and a
   pinched-in one grows rather than scrolling inside a fixed box. A mail no
   wider than the screen has scale == density and renders exactly as before.
   Feed articles and agent `render` blocks do not pass `fitWidth` and are
-  unchanged; the dark-mode invert is untouched. `MailFormatTest` +4.
+  unchanged; the dark-mode invert is untouched. `MailFormatTest` +6.
   Not verifiable here (no emulator): check on the phone a fixed-width marketing
   mail (fits, rows intact), a plain narrow one (not shrunk), pinch-zoom, and
   that no gap follows a zoomed-out body.

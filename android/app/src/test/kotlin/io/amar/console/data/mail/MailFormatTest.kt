@@ -181,6 +181,34 @@ class MailFormatTest {
     }
 
     @Test
+    fun `sanitizeHtml strips the email's own meta tags`() {
+        val dirty = """
+            <html><head><META name="viewport" content="width=device-width, initial-scale=1.0" />
+            <meta http-equiv="refresh" content="0;url=https://example.com"><meta charset="utf-8">
+            </head><body><p>metadata is a word, not a tag</p></body></html>
+        """.trimIndent()
+        val clean = MailFormat.sanitizeHtml(dirty)
+        assertFalse(clean.contains("<meta", ignoreCase = true))
+        assertFalse(clean.contains("initial-scale"))
+        assertFalse(clean.contains("refresh"))
+        assertTrue(clean.contains("<p>metadata is a word, not a tag</p>"))
+    }
+
+    @Test
+    fun `bodyDocument declares one viewport and no initial scale`() {
+        // An explicit initial scale, ours or the email's, stops the zoom-to-fit.
+        val mail = """<meta name="viewport" content="width=device-width, initial-scale=1"><table width="600"><tr><td>a</td></tr></table>"""
+        for (dark in listOf(false, true)) {
+            val doc = MailFormat.bodyDocument(MailFormat.sanitizeHtml(mail), dark)
+            assertEquals(1, Regex("<meta\\b").findAll(doc).count())
+            assertTrue(doc.contains("""<meta name="viewport" content="width=device-width">"""))
+            assertFalse(doc.contains("initial-scale"))
+            assertTrue(doc.contains("""<table width="600">"""))
+            assertEquals(dark, doc.contains("invert(1)"))
+        }
+    }
+
+    @Test
     fun `displayHeightDp is the css height at the default zoom`() {
         // A narrow / plain-text mail is not zoomed: scale == density.
         assertEquals(500, MailFormat.displayHeightDp(500, 2.75f, 2.75f))
