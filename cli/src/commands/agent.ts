@@ -122,7 +122,7 @@ async function agentForkCost(args: string[], flags: GlobalFlags): Promise<void> 
 //   from the list so it can't be resumed on restart). Or just stop calling.
 // --------------------------------------------------------------------------
 
-interface HealthSession { id: string; claudeSessionId?: string; name?: string; agentKey?: string; cwd?: string; status: string }
+interface HealthSession { id: string; claudeSessionId?: string; name?: string; agentKey?: string; cwd?: string; status: string; messageLogLength?: number }
 
 async function resolveByName(name: string): Promise<HealthSession> {
   const health = await hubFetch<{ sessions: HealthSession[] }>('/health')
@@ -188,7 +188,7 @@ async function agentChat(args: string[], flags: GlobalFlags): Promise<void> {
     const message = lead.join(' ').trim()
     if (!message) { exitWithError('USAGE', 'Usage: con agent chat --id <conv-id> "<message>"', flags); return }
     const target = await resolveByClaudeId(opts.id)
-    const reply = await injectAndCapture({ sessionId: target.id, message, timeoutMs })
+    const reply = await injectAndCapture({ sessionId: target.id, message, timeoutMs, fromIndex: target.messageLogLength ?? 0 })
     printConv(opts.id, reply, flags)
     return
   }

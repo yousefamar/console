@@ -2,6 +2,7 @@
 
 import WebSocket from 'ws'
 import { getHubUrl, getHubToken } from './client.js'
+import { ReplyCapture, type StreamMsg } from './reply-capture.js'
 
 function getWsUrl(): string {
   const httpUrl = getHubUrl()
@@ -80,16 +81,15 @@ export async function streamWithSends(opts: {
 /**
  * Inject a message into an existing session and return its reply text.
  *
- * Critical subtlety: on connect the hub REPLAYS each session's recent message
- * log (including the previous turn's `text` + `result`). If we sent immediately
- * and watched for `result`, we'd capture the OLD turn's reply. So we first wait
- * for the replay burst to go quiet (no message for `settleMs`), THEN send, THEN
- * capture only the live turn. Live assistant text arrives as `text_delta`
- * (deltas are never logged/replayed), which also helps distinguish live output.
+ * On connect the hub REPLAYS each session's recent message log, including the
+ * previous turn's `text` + `result`. We wait for the burst to go quiet before
+ * sending, but quiet is not proof it is over, so the capture also drops every
+ * message logged before the send (`fromIndex` = the session's log length).
  */
 export async function injectAndCapture(opts: {
   sessionId: string
   message: string
+  fromIndex: number
   timeoutMs?: number
   settleMs?: number
 }): Promise<string> {
@@ -97,25 +97,24 @@ export async function injectAndCapture(opts: {
   const settleMs = opts.settleMs ?? 500
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(getWsUrl(), buildWsOptions())
-    const deltas: string[] = []
-    const texts: string[] = []
-    let sent = false
+    let seenUpTo = -1
+    let capture: ReplyCapture | null = null
     let settleTimer: ReturnType<typeof setTimeout> | null = null
     const hardTimer = setTimeout(() => finish(), timeoutMs)
+    const reply = () => capture?.reply ?? ''
 
     const finish = () => {
       clearTimeout(hardTimer)
       if (settleTimer) clearTimeout(settleTimer)
       try { ws.close() } catch { /* noop */ }
-      resolve(texts.join('\n').trim() || deltas.join('').trim())
+      resolve(reply())
     }
 
     const armSettle = () => {
-      if (sent) return
+      if (capture) return
       if (settleTimer) clearTimeout(settleTimer)
       settleTimer = setTimeout(() => {
-        // Replay has gone quiet — now it's safe to drive a fresh turn.
-        sent = true
+        capture = new ReplyCapture(opts.sessionId, Math.max(opts.fromIndex, seenUpTo + 1))
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'send_message', sessionId: opts.sessionId, content: opts.message }))
         }
@@ -124,15 +123,16 @@ export async function injectAndCapture(opts: {
 
     ws.on('open', armSettle)
     ws.on('message', (data) => {
-      let msg: any
+      let msg: StreamMsg
       try { msg = JSON.parse(data.toString()) } catch { return }
-      if (!sent) { armSettle(); return } // still draining replay
-      if (msg.sessionId !== opts.sessionId) return
-      if (msg.type === 'text_delta') deltas.push(msg.content || '')
-      else if (msg.type === 'text') texts.push(msg.content || '')
-      else if (msg.type === 'result' || msg.type === 'session_ended') finish()
+      if (!capture) {
+        if (msg.sessionId === opts.sessionId && typeof msg.absIndex === 'number') seenUpTo = Math.max(seenUpTo, msg.absIndex)
+        armSettle()
+        return
+      }
+      if (capture.take(msg)) finish()
     })
-    ws.on('close', () => { clearTimeout(hardTimer); if (settleTimer) clearTimeout(settleTimer); resolve(texts.join('\n').trim() || deltas.join('').trim()) })
+    ws.on('close', () => { clearTimeout(hardTimer); if (settleTimer) clearTimeout(settleTimer); resolve(reply()) })
     ws.on('error', (err) => { clearTimeout(hardTimer); reject(err) })
   })
 }
