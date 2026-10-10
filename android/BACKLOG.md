@@ -10,13 +10,17 @@ in "Built, awaiting release" until a version ships, then moves under that releas
 Each entry = the gap + the phone equivalent. Filed by the nightly parity sweep
 (`android/CLAUDE.md` → "nightly parity sweep") or by SPA forks as they ship.
 
-- Money: editing parity — the read-only pane shipped (^quick-gull), the
-  per-transaction override landed (^warm-wren), the manual-account balance
-  ledger landed (^loud-frog), Budgets landed (^busy-vole), Categories + rules
-  CRUD landed (^busy-goat), account CRUD landed (^brisk-deer) and the monthly
-  spend chart landed (^soft-boar); still SPA-only: Scenarios
-  (`/finance/scenarios`, comparison chart), shared-tab panel. Plan: scenarios
-  last.
+- Money: recurring streams + projection settings. The editing-parity plan is
+  finished (Scenarios + shared tabs landed, ^cosy-boar), but writing that card
+  showed three Cashflow pieces the plan never listed and the phone still lacks
+  (SPA `CashflowView.tsx`): the recurring **streams** list with create / edit /
+  delete (`/finance/streams`; the phone only reads names so a scenario delta can
+  point at one), the **"Detected recurring"** suggestions that turn into a
+  stream (`/finance/recurring/candidates`), and the **emergency-fund + horizon**
+  settings (`PATCH /finance/settings`). Phone equivalent: a foldable Streams
+  section (income / expense, sheet editor on the `money:account` pattern, the
+  hub honours a client id there too), suggestions as rows with an Add button,
+  and the two settings in a small sheet off the Runway card.
 - Project webhooks (`/hook/<slug>` inbound; `/webhooks*` management, ^jade-finch):
   agent-facing — deliveries wake the project's owner session and are read via
   `con webhook status/list/show`. No SPA surface either; an APK twin would be a
@@ -49,6 +53,58 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+- **Money: what-if Scenarios and Shared tabs on the phone** (^cosy-boar, the
+  last step of Open "Money: editing parity"; SPA `ScenariosView.tsx` +
+  `SharedTabPanel.tsx`). Before: scenarios could only be made, edited or
+  compared on the laptop, and who owes what on shared spend was not on the
+  phone at all. Now Money has two more sections:
+  - **Shared tabs** (under Monthly spend, read-only, `GET /finance/shared-tab`):
+    one row per counterparty ("owes you £75.00" / "you owe" / "settled"); tap
+    for their share, their reimbursements, the net, the activity range and the
+    recent shared expenses + reimbursements.
+  - **Scenarios** (foldable, with +): the comparison chart of liquid balance per
+    month, baseline + every scenario in the SPA's colours, emergency floor
+    dashed; tap the chart to pick a month and the legend reads each line's
+    value there (the phone's stand-in for hover + brush). Below it one row per
+    scenario (delta count, description, end-of-horizon balance); tap for the
+    editor sheet: name, description, the ordered deltas (one-off, modify
+    stream, end stream, new stream, category multiplier, investment growth,
+    same six add buttons as the SPA), Clone, Delete, Save. Nothing is written
+    until Save, so a cancelled new scenario leaves nothing behind (the SPA
+    creates "New scenario" on the click).
+  - Wire: new outbox type `money:scenario`. The hub's `upsertScenario` honours a
+    client id, so the phone mints `scn_<8hex>` and every write is a POST of
+    `{id, name, description, deltas}` (the POST is an upsert, so a queued
+    create + queued edit land in any order; a PATCH would 404). An emptied
+    description goes as `null` on an edit (the `editBody` rule); `horizonMonths`
+    and timestamps are never sent. DELETE treats 404 as done; deleting a
+    never-synced scenario drops its queued create. `:onFailed` heals (old
+    record back in place, failed create dropped); reconcile lays queued edits
+    back over the hub's list and excludes the row that just settled.
+  - A delta is held as its RAW JSON object and edited key by key
+    (`ScenarioDelta`), because the hub's `Delta` carries fields the phone never
+    shows (any `Stream` key in a `modifyStream` patch, `from`/`until` on a
+    category multiplier, a whole stream in `addStream`): a desktop-made scenario
+    survives a rename here byte for byte, unknown delta kinds included. One
+    deliberate difference: a blank "new amount" on Modify stream REMOVES
+    `patch.amountPence` (= unchanged, what the SPA's placeholder says); the SPA
+    writes 0 there.
+  - Lines: `/finance/projection?scenario=<id>` per scenario, cached in meta with
+    the baseline's trajectory (parsed off the `/finance/projection` body the
+    runway already fetches), so the chart opens offline. One body is ~135 KB
+    and money reconciles on every sync pass (7 scenarios live today = ~1 MB), so
+    a line is fetched only when it is missing, when its deltas changed, or when
+    the baseline / streams moved (`money:scenarioOverlayBasis`). A scenario
+    whose own write is still queued is never fetched: the hub answers an
+    unknown id with the BASELINE, which would draw a confident wrong line.
+  - Files: `data/money/MoneyScenarios.kt` (pure: codecs, delta edits, request
+    body, in-flight overlay, heal, comparison), `MoneyRepository` (state +
+    `storeProjection`, replacing three inline copies), `ui/money/
+    MoneyScenariosUi.kt`, two sections + one sheet in `MoneyScreen.kt`. Tests:
+    `MoneyScenariosTest` (17), `MoneyRepositoryScenarioTest` (17, hub scripted
+    BY PATH). Parsers checked against the live hub's shapes (7 scenarios, 22
+    streams, 60-month trajectory, 1 shared tab). Not seen on a device: no
+    emulator on the build box.
 - **What's new: see the changelog before and after every update** (Yousef,
   9 Oct: "whenever I install a new version (or even a button in the banner), I
   can see a changelog"). Before: the banner said "Update available (0.2.N)"

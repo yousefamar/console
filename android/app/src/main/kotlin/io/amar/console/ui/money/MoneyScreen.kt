@@ -83,6 +83,8 @@ import io.amar.console.data.money.MoneyBudgets
 import io.amar.console.data.money.MoneyCategories
 import io.amar.console.data.money.MoneyCategory
 import io.amar.console.data.money.MoneyRule
+import io.amar.console.data.money.MoneyScenarios
+import io.amar.console.data.money.Scenario
 import io.amar.console.data.money.MoneyLedger
 import io.amar.console.data.money.MoneyFormat
 import io.amar.console.data.money.MoneyRepository
@@ -110,8 +112,8 @@ private val INVEST_VIOLET = Color(0xFFA78BFA)
  * Transactions views: RunwayCard (5 tiles), per-category Budgets for the
  * current month, 12-month net-worth chart, recent transactions grouped by day.
  * Tap a transaction or a budget for its sheet; the manual-account ledger lives
- * under Net worth; Categories + Rules fold below Budgets (see MoneyTaxonomy.kt).
- * Scenarios and account CRUD stay SPA-only (BACKLOG Open).
+ * under Net worth; Categories + Rules fold below Budgets (see MoneyTaxonomy.kt);
+ * shared tabs and the foldable what-if Scenarios live in MoneyScenariosUi.kt.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -141,6 +143,9 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
     // Account editor: keyed by id, so a reconcile under an open sheet re-renders it.
     var accountSheet by remember { mutableStateOf<AccountSheet?>(null) }
     var confirmDeleteAccount by remember { mutableStateOf<Account?>(null) }
+    var scenariosOpen by rememberSaveable { mutableStateOf(false) }
+    var scenarioSheet by remember { mutableStateOf<ScenarioSheet?>(null) }
+    var confirmDeleteScenario by remember { mutableStateOf<Scenario?>(null) }
 
     // Hydrate the cached blobs synchronously-ish, then refresh from the hub.
     LaunchedEffect(Unit) {
@@ -218,6 +223,15 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                 BudgetsSection(rows) { row -> budgetSheet = BudgetSheet.Edit(row.budget.categoryId) }
             }
             item(key = "monthly") { MonthlySpendSection(state.monthly, cats) }
+            item(key = "shared") { SharedTabsSection(state.sharedTabs) }
+            item(key = "scenarios") {
+                FoldableTitle(
+                    "Scenarios", trailing = "${state.scenarios.size}",
+                    expanded = scenariosOpen, onToggle = { scenariosOpen = !scenariosOpen },
+                    onAdd = { scenarioSheet = ScenarioSheet.New },
+                )
+                if (scenariosOpen) ScenariosSection(state) { s -> scenarioSheet = ScenarioSheet.Edit(s.id) }
+            }
             item(key = "categories") {
                 val live = state.liveCategories.size
                 FoldableTitle(
@@ -397,6 +411,53 @@ fun MoneyScreen(repo: MoneyRepository, onGrid: () -> Unit = {}) {
                 }
             }
         }
+    }
+
+    scenarioSheet?.let { sheet ->
+        ModalBottomSheet(onDismissRequest = { scenarioSheet = null }) {
+            // The screen's scope, not the sheet's: the write must outlive the dismiss.
+            when (sheet) {
+                ScenarioSheet.New -> ScenarioEditorSheet(
+                    scenario = null,
+                    streams = state.streams,
+                    categories = state.liveCategories,
+                    onSave = { s -> scope.launch { runCatching { repo.upsertScenario(s) } }; scenarioSheet = null; scenariosOpen = true },
+                    onClone = null,
+                    onDelete = null,
+                    onCancel = { scenarioSheet = null },
+                )
+                is ScenarioSheet.Edit -> {
+                    val sc = state.scenarioFor(sheet)
+                    if (sc == null) {
+                        Hint("That scenario is gone.")
+                        LaunchedEffect(sheet) { scenarioSheet = null }
+                    } else ScenarioEditorSheet(
+                        scenario = sc,
+                        streams = state.streams,
+                        categories = state.liveCategories,
+                        onSave = { edited -> scope.launch { runCatching { repo.upsertScenario(edited) } }; scenarioSheet = null },
+                        onClone = { scope.launch { runCatching { repo.upsertScenario(MoneyScenarios.cloneOf(sc)) } }; scenarioSheet = null },
+                        onDelete = { confirmDeleteScenario = sc; scenarioSheet = null },
+                        onCancel = { scenarioSheet = null },
+                    )
+                }
+            }
+        }
+    }
+
+    confirmDeleteScenario?.let { sc ->
+        AlertDialog(
+            onDismissRequest = { confirmDeleteScenario = null },
+            title = { Text("Delete ${sc.name}?") },
+            text = { Text(MoneyScenarios.deltaCount(sc)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { runCatching { repo.deleteScenario(sc) } }
+                    confirmDeleteScenario = null
+                }) { Text("Delete", color = RED) }
+            },
+            dismissButton = { TextButton(onClick = { confirmDeleteScenario = null }) { Text("Cancel") } },
+        )
     }
 
     confirmDeleteAccount?.let { acc ->

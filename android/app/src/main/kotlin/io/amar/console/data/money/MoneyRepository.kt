@@ -41,8 +41,11 @@ import kotlinx.coroutines.flow.StateFlow
  * rules ride `money:category` / `money:rule` (POST = upsert with a
  * phone-minted id, DELETE — see [MoneyCategories]), and the accounts
  * themselves ride `money:account` the same way (see [MoneyAccounts]), so a new
- * ISA or a rename no longer needs the laptop. Scenarios are still SPA-only
- * (BACKLOG Open follow-up).
+ * ISA or a rename no longer needs the laptop. What-if scenarios ride
+ * `money:scenario` (see [MoneyScenarios]); each one's projected liquid line
+ * comes from `/finance/projection?scenario=<id>` and is cached beside the
+ * baseline's so the comparison chart opens offline. `/finance/shared-tab` is
+ * read-only.
  */
 class MoneyRepository(
     private val db: ConsoleDb,
@@ -57,6 +60,13 @@ class MoneyRepository(
         const val TYPE_CATEGORY = "money:category"
         const val TYPE_RULE = "money:rule"
         const val TYPE_ACCOUNT = "money:account"
+        const val TYPE_SCENARIO = "money:scenario"
+        private const val META_SCENARIOS = "money:scenarios"
+        private const val META_STREAMS = "money:streams"
+        private const val META_TRAJECTORY = "money:trajectory"
+        private const val META_OVERLAYS = "money:scenarioOverlays"
+        private const val META_OVERLAY_BASIS = "money:scenarioOverlayBasis"
+        private const val META_SHARED_TABS = "money:sharedTabs"
         private const val META_OVERRIDES = "money:overrides"
         private const val META_RULES = "money:rules"
         private const val META_ACCOUNTS = "money:accounts"
@@ -94,6 +104,16 @@ class MoneyRepository(
         val budgetMonth: String? = null,
         /** `/finance/monthly` → per-category spend per month, ascending (cached for offline). */
         val monthly: List<MonthlySpend> = emptyList(),
+        /** `/finance/all` → scenarios (optimistic on edit). */
+        val scenarios: List<Scenario> = emptyList(),
+        /** `/finance/all` → streams, as much as a scenario delta needs to name one. */
+        val streams: List<StreamRef> = emptyList(),
+        /** The baseline's liquid line (`/finance/projection` → trajectory). */
+        val trajectory: List<TrajectoryPoint> = emptyList(),
+        /** Each scenario's liquid line, by scenario id (absent until fetched once). */
+        val scenarioOverlays: Map<String, List<TrajectoryPoint>> = emptyMap(),
+        /** `/finance/shared-tab` → what each counterparty owes on shared spend. */
+        val sharedTabs: List<SharedTabBalance> = emptyList(),
         val status: MoneyStatus? = null,
         /** Epoch ms of the last successful reconcile (persisted). */
         val lastReconcileAt: Long? = null,
@@ -109,6 +129,11 @@ class MoneyRepository(
         val liveCategories: List<MoneyCategory> get() = categories.filterNot { it.archived }
 
         val budgetRows: List<MoneyBudgets.Row> get() = MoneyBudgets.rows(budgets, budgetStatus, categoriesById)
+
+        val comparison: MoneyScenarios.Comparison get() = MoneyScenarios.comparison(
+            trajectory, scenarioOverlays, scenarios,
+            projection?.emergencyFundPence ?: 0L,
+        )
 
         /** Live accounts in display order, grouped the way the SPA's Net worth view does. */
         fun accountsByLiquidity(liquidity: String): List<Account> = accounts
@@ -147,7 +172,17 @@ class MoneyRepository(
         val budStatus = meta.get(META_BUDGET_STATUS)?.let { MoneyJson.parseBudgetStatus(it) }
         val rules = meta.get(META_RULES)?.let { MoneyJson.decodeRules(it) }
         val monthly = meta.get(META_MONTHLY)?.let { MoneyMonthly.parse(it) } ?: emptyList()
+        val scenarios = meta.get(META_SCENARIOS)?.let { MoneyScenarios.parseScenarios(it) }
+        val streams = meta.get(META_STREAMS)?.let { MoneyScenarios.decodeStreams(it) }
+        val trajectory = meta.get(META_TRAJECTORY)?.let { MoneyScenarios.decodeTrajectory(it) }
+        val overlays = meta.get(META_OVERLAYS)?.let { MoneyScenarios.decodeOverlays(it) }
+        val sharedTabs = meta.get(META_SHARED_TABS)?.let { MoneyScenarios.parseSharedTabs(it) }
         _state.value = _state.value.copy(
+            scenarios = scenarios ?: _state.value.scenarios,
+            streams = streams ?: _state.value.streams,
+            trajectory = trajectory ?: _state.value.trajectory,
+            scenarioOverlays = overlays ?: _state.value.scenarioOverlays,
+            sharedTabs = sharedTabs ?: _state.value.sharedTabs,
             rules = rules ?: _state.value.rules,
             overrides = ovs ?: _state.value.overrides,
             accounts = if (accs.isNotEmpty()) accs else _state.value.accounts,
@@ -190,6 +225,7 @@ class MoneyRepository(
             val month = MoneyBudgets.currentMonth()
             val bsD = async { runCatching { hub.get("/finance/budget-status?month=$month") } }
             val monthlyD = async { runCatching { hub.get("/finance/monthly") } }
+            val sharedD = async { runCatching { hub.get("/finance/shared-tab") } }
 
             val txBody = txD.await().onFailure(::noteError).getOrNull()
             val classes = clsD.await().onFailure(::noteError).getOrNull()
@@ -208,12 +244,7 @@ class MoneyRepository(
             }
 
             val meta = db.meta()
-            projD.await().onFailure(::noteError).getOrNull()?.let { body ->
-                MoneyJson.parseProjection(body)?.let { p ->
-                    meta.put(MetaRow(META_RUNWAY, MoneyJson.encodeRunway(p)))
-                    _state.value = _state.value.copy(projection = p)
-                }
-            }
+            projD.await().onFailure(::noteError).getOrNull()?.let { body -> storeProjection(body) }
             nwD.await().onFailure(::noteError).getOrNull()?.let { body ->
                 val pts = MoneyJson.parseNetWorthHistory(body)
                 if (pts.isNotEmpty()) {
@@ -233,6 +264,17 @@ class MoneyRepository(
                 val obj = root as? kotlinx.serialization.json.JsonObject
                 obj?.get("budgets")?.let { storeBudgets(withInFlightBudgets(MoneyJson.parseBudgetArray(it))) }
                 obj?.get("rules")?.let { storeRules(withInFlightRules(MoneyJson.parseRuleArray(it))) }
+                obj?.get("streams")?.let { storeStreams(MoneyScenarios.parseStreams(it)) }
+                obj?.get("scenarios")?.let {
+                    adoptScenarios(overlayScenarios(MoneyScenarios.parseScenarioArray(it)))
+                    refreshOverlays()
+                }
+            }
+            sharedD.await().getOrNull()?.let { body ->
+                MoneyScenarios.parseSharedTabs(body)?.let { tabs ->
+                    meta.put(MetaRow(META_SHARED_TABS, body))
+                    _state.value = _state.value.copy(sharedTabs = tabs)
+                }
             }
             balD.await().getOrNull()?.let { body ->
                 val bals = MoneyJson.parseNetWorthBalances(body)
@@ -333,6 +375,8 @@ class MoneyRepository(
         ob.register("$TYPE_RULE:onFailed") { row, _ -> healRule(row) }
         ob.register(TYPE_ACCOUNT) { row, _ -> handleAccount(row) }
         ob.register("$TYPE_ACCOUNT:onFailed") { row, _ -> healAccount(row) }
+        ob.register(TYPE_SCENARIO) { row, _ -> handleScenario(row) }
+        ob.register("$TYPE_SCENARIO:onFailed") { row, _ -> healScenario(row) }
     }
 
     // ---------------------------------------------------------------- //
@@ -513,6 +557,171 @@ class MoneyRepository(
     }
 
     // ---------------------------------------------------------------- //
+    // Scenarios
+
+    /** The runway tiles and the baseline's liquid line come off one `/finance/projection` body. */
+    private suspend fun storeProjection(body: String) {
+        MoneyJson.parseProjection(body)?.let { p ->
+            db.meta().put(MetaRow(META_RUNWAY, MoneyJson.encodeRunway(p)))
+            _state.value = _state.value.copy(projection = p)
+        }
+        val t = MoneyScenarios.parseTrajectory(body)
+        if (t.isNotEmpty()) {
+            db.meta().put(MetaRow(META_TRAJECTORY, MoneyScenarios.encodeTrajectory(t)))
+            _state.value = _state.value.copy(trajectory = t)
+        }
+    }
+
+    private suspend fun inFlightScenarios(): Set<String> =
+        if (outbox == null) emptySet() else db.outbox().inFlightEntityIds(TYPE_SCENARIO).toSet()
+
+    /** Another write for [scenarioId] still waiting (the in-flight one is `processing`). */
+    private suspend fun hasQueuedScenarioEdit(scenarioId: String): Boolean =
+        db.outbox().pending().any { it.type == TYPE_SCENARIO && it.entityId == scenarioId }
+
+    /** Scenario ids whose hub copy is not ours yet; [settled] = the write that just landed. */
+    private suspend fun unsettledScenarios(settled: String? = null): Set<String> {
+        val inFlight = inFlightScenarios()
+        return if (settled != null && settled in inFlight && !hasQueuedScenarioEdit(settled)) inFlight - settled else inFlight
+    }
+
+    private suspend fun overlayScenarios(hubList: List<Scenario>, settled: String? = null): List<Scenario> =
+        MoneyScenarios.withInFlight(hubList, _state.value.scenarios, unsettledScenarios(settled))
+
+    private suspend fun storeScenarios(list: List<Scenario>) {
+        db.meta().put(MetaRow(META_SCENARIOS, MoneyScenarios.encodeScenarios(list)))
+        _state.value = _state.value.copy(scenarios = list)
+    }
+
+    private suspend fun storeStreams(list: List<StreamRef>) {
+        db.meta().put(MetaRow(META_STREAMS, MoneyScenarios.encodeStreams(list)))
+        _state.value = _state.value.copy(streams = list)
+    }
+
+    private suspend fun storeOverlays(map: Map<String, List<TrajectoryPoint>>) {
+        db.meta().put(MetaRow(META_OVERLAYS, MoneyScenarios.encodeOverlays(map)))
+        _state.value = _state.value.copy(scenarioOverlays = map)
+    }
+
+    /**
+     * Scenarios from the hub. A scenario whose deltas are not the ones we held
+     * (edited on the desktop) loses its cached line: it was drawn from the old
+     * ones, and [refreshOverlays] fetches whatever is missing.
+     */
+    private suspend fun adoptScenarios(list: List<Scenario>) {
+        val held = _state.value.scenarios.associateBy { it.id }
+        val changed = list.filter { s -> held[s.id]?.let { it.deltas != s.deltas } == true }.map { it.id }
+        storeScenarios(list)
+        if (changed.isNotEmpty()) storeOverlays(_state.value.scenarioOverlays - changed.toSet())
+    }
+
+    /** What every scenario line is computed FROM besides its own deltas: the baseline and the streams. */
+    private fun overlayBasis(): String =
+        (MoneyScenarios.encodeTrajectory(_state.value.trajectory) + MoneyScenarios.encodeStreams(_state.value.streams)).hashCode().toString()
+
+    /**
+     * Each scenario's projected line. One `/finance/projection` body is ~135 KB
+     * and this runs on every sync pass, so a line is fetched only when it is
+     * missing or when the baseline or the streams moved since the lines were
+     * drawn (then all of them are redrawn).
+     *
+     * A scenario whose own write is still queued is skipped: the hub answers an
+     * id it does not know with the BASELINE (and a queued edit with the
+     * pre-edit deltas), which would draw a confident wrong line — the cached
+     * one, or none, is the honest state. A failed fetch keeps the cached line;
+     * lines of scenarios that no longer exist are dropped.
+     */
+    private suspend fun refreshOverlays(settled: String? = null) {
+        val scenarios = _state.value.scenarios
+        val skip = unsettledScenarios(settled)
+        val basis = overlayBasis()
+        val moved = db.meta().get(META_OVERLAY_BASIS) != basis
+        val held = _state.value.scenarioOverlays
+        val wanted = scenarios.filter { it.id !in skip && (moved || it.id !in held) }
+        val fetched = coroutineScope {
+            wanted.map { s ->
+                async { s.id to runCatching { MoneyScenarios.parseTrajectory(hub.get(MoneyScenarios.projectionPath(s.id))) }.getOrNull() }
+            }.map { it.await() }
+        }
+        val live = scenarios.mapTo(HashSet()) { it.id }
+        val out = _state.value.scenarioOverlays.filterKeys { it in live }.toMutableMap()
+        for ((id, t) in fetched) if (!t.isNullOrEmpty()) out[id] = t
+        if (out != held) storeOverlays(out)
+        // Only once every line is on the new basis; a failure leaves it stale so the next pass retries.
+        if (moved && fetched.all { !it.second.isNullOrEmpty() }) db.meta().put(MetaRow(META_OVERLAY_BASIS, basis))
+    }
+
+    /**
+     * Create or edit a scenario. A create arrives with a phone-minted id
+     * ([MoneyScenarios.mintScenarioId]), so its identity is final from the
+     * optimistic write on. An edit drops the cached line: it was drawn from the
+     * old deltas, and the new one arrives when the write lands.
+     */
+    suspend fun upsertScenario(scenario: Scenario) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        val before = _state.value.scenarios.firstOrNull { it.id == scenario.id }
+        storeScenarios(MoneyScenarios.upsertInto(_state.value.scenarios, scenario))
+        if (before != null && before.deltas != scenario.deltas) storeOverlays(_state.value.scenarioOverlays - scenario.id)
+        ob.enqueue(
+            TYPE_SCENARIO,
+            MoneyScenarios.encodeAction(
+                MoneyScenarios.Action(scenario.id, MoneyScenarios.scenarioBody(scenario, isEdit = before != null), before)
+            ),
+            entityId = scenario.id,
+        )
+    }
+
+    /**
+     * Delete a scenario. Any queued write for the same id is dropped first (a
+     * create the hub never saw, an edit that is now moot); the DELETE still
+     * goes, and a 404 for an id the hub never had counts as done.
+     */
+    suspend fun deleteScenario(scenario: Scenario) {
+        val ob = outbox ?: error("MoneyRepository has no outbox")
+        storeScenarios(_state.value.scenarios.filterNot { it.id == scenario.id })
+        storeOverlays(_state.value.scenarioOverlays - scenario.id)
+        ob.cancel(scenario.id, TYPE_SCENARIO)
+        ob.enqueue(
+            TYPE_SCENARIO,
+            MoneyScenarios.encodeAction(MoneyScenarios.Action(scenario.id, null, scenario)),
+            entityId = scenario.id,
+        )
+    }
+
+    private suspend fun handleScenario(row: OutboxRow): Outbox.Result {
+        val a = MoneyScenarios.decodeAction(row.payloadJson) ?: return Outbox.Result.Fail("bad payload")
+        return try {
+            if (a.body != null) hub.post("/finance/scenarios", a.body)
+            else try {
+                hub.delete(MoneyScenarios.path(a.scenarioId))
+            } catch (e: HubClient.HttpException) {
+                if (e.code != 404) throw e else "" // already gone = the delete we wanted
+            }
+            runCatching { refreshAfterScenario(a.scenarioId) }
+            Outbox.Result.Done
+        } catch (e: HubClient.HttpException) {
+            if (e.code in 400..499) Outbox.Result.Fail("HTTP ${e.code}") else Outbox.Result.Retry("HTTP ${e.code}")
+        } catch (e: Exception) {
+            Outbox.retryOrNotReady(e, "network")
+        }
+    }
+
+    /** Terminal failure: put back the record this write replaced, or drop a failed create. */
+    private suspend fun healScenario(row: OutboxRow): Outbox.Result {
+        val a = MoneyScenarios.decodeAction(row.payloadJson) ?: return Outbox.Result.Done
+        storeScenarios(MoneyScenarios.healed(_state.value.scenarios, a))
+        return Outbox.Result.Done
+    }
+
+    /** The hub's list (its timestamps, anything edited elsewhere) and the lines drawn from it. */
+    private suspend fun refreshAfterScenario(settled: String) {
+        runCatching {
+            adoptScenarios(overlayScenarios(MoneyScenarios.parseScenarios(hub.get("/finance/scenarios")), settled))
+        }
+        runCatching { refreshOverlays(settled) }
+    }
+
+    // ---------------------------------------------------------------- //
     // Manual-account balance ledger
 
     private suspend fun inFlightLedgers(): Set<String> =
@@ -668,10 +877,7 @@ class MoneyRepository(
         runCatching {
             storeAccounts(overlayAccounts(MoneyJson.decodeAccounts(hub.get("/finance/accounts")), settledAccount = settled))
         }
-        runCatching { MoneyJson.parseProjection(hub.get("/finance/projection"))?.let { p ->
-            db.meta().put(MetaRow(META_RUNWAY, MoneyJson.encodeRunway(p)))
-            _state.value = _state.value.copy(projection = p)
-        } }
+        runCatching { storeProjection(hub.get("/finance/projection")) }
         runCatching {
             val bals = MoneyJson.parseNetWorthBalances(hub.get("/finance/networth"))
             if (bals.isNotEmpty()) {
@@ -749,12 +955,7 @@ class MoneyRepository(
                 _state.value = _state.value.copy(balances = bals)
             }
         }
-        runCatching {
-            MoneyJson.parseProjection(hub.get("/finance/projection"))?.let { p ->
-                db.meta().put(MetaRow(META_RUNWAY, MoneyJson.encodeRunway(p)))
-                _state.value = _state.value.copy(projection = p)
-            }
-        }
+        runCatching { storeProjection(hub.get("/finance/projection")) }
     }
 
     private suspend fun handleOverride(row: OutboxRow): Outbox.Result {
@@ -903,11 +1104,6 @@ class MoneyRepository(
             }
         }
         runCatching { storeOverrides(withInFlight(MoneyOverrides.parseOverrides(hub.get("/finance/overrides")))) }
-        runCatching {
-            MoneyJson.parseProjection(hub.get("/finance/projection"))?.let { p ->
-                db.meta().put(MetaRow(META_RUNWAY, MoneyJson.encodeRunway(p)))
-                _state.value = _state.value.copy(projection = p)
-            }
-        }
+        runCatching { storeProjection(hub.get("/finance/projection")) }
     }
 }
