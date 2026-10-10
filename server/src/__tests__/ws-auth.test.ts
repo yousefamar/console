@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { IncomingMessage } from 'node:http'
 import { decideWsUpgrade } from '../auth-middleware.js'
 import type { AuthStore, HubToken, HubSession } from '../auth-store.js'
@@ -41,6 +41,13 @@ function fakeReq(opts: {
 const originAllowed = (o: string | undefined) => o === 'https://con.amar.io'
 
 describe('decideWsUpgrade', () => {
+  // Enforcement is an env switch (authEnforcementActive). A desktop agent
+  // inherits CONSOLE_AUTH_ENABLED=1 from the hub; a forge agent does not, and
+  // the five "rejects" cases failed there as log-only allows (10 Oct 2026).
+  beforeEach(() => {
+    vi.stubEnv('CONSOLE_AUTH_ENABLED', '1')
+    vi.stubEnv('CONSOLE_AUTH_DISABLED', '')
+  })
   afterEach(() => vi.unstubAllEnvs())
 
   it('rejects an upgrade with no credentials from off-host', () => {

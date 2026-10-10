@@ -649,6 +649,13 @@ local SSD was tried first and did not help.
   your worktree (`npm install` in root, `server/`, `cli/`) before trusting a
   full run: without it 8-9 server tests fail on import or spawn, identically on
   unchanged main, and read as pre-existing breakage (^keen-eel, 9 Oct 2026).
+- **A test must set every env switch it depends on.** A desktop agent inherits
+  the hub's environment (`CONSOLE_AUTH_ENABLED=1` among it); a forge agent does
+  not. `ws-auth.test.ts` leaned on that variable, so its five "rejects" cases
+  failed on forge as log-only allows and ^busy-koi handed back "5 ws-auth
+  failures, same on untouched main on this box" (10 Oct 2026; the test now
+  stubs it). "Fails the same on main here" is a finding to chase, not a pass:
+  reproduce on the desktop with `env -u <VAR>` and fix the test.
 - **Readiness is prepared AHEAD of dispatch** (`prewarmCwd`), because the board
   watcher stamps the card before the *synchronous* dispatch callback runs. A
   cold box used to mean "runs locally this once" — which was EVERY time (five
