@@ -582,7 +582,8 @@ private fun MessageCard(
 }
 
 /**
- * Strict per-message HTML render: JS off, sanitized + linearized, links → browser.
+ * Strict per-message HTML render: JS off, sanitized, layout untouched and zoomed
+ * out to the screen width when wider (pinch to zoom in), links → browser.
  * [dark] toggles the SPA's invert+hue-rotate dark mode (re-inverts media so photos
  * stay natural) over a white base; Original renders the email's own light styling.
  */
@@ -596,13 +597,14 @@ private fun MailBodyWebView(html: String, dark: Boolean) {
         <!doctype html><html><head><meta name="viewport" content="width=device-width, initial-scale=1">
         <style>
           body { background:#fff; color:#111; font-family:sans-serif; font-size:14px; margin:8px; word-break:break-word; }
-          ${io.amar.console.data.mail.MailFormat.linearizeCss()}
+          ${io.amar.console.data.mail.MailFormat.fitCss()}
           $darkCss
         </style></head><body>$safe</body></html>
         """.trimIndent()
     }
     io.amar.console.ui.components.SelfSizingWebView(
         html = doc,
+        fitWidth = true,
         onOpenUrl = { url ->
             runCatching {
                 ctx.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)))

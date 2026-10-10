@@ -2539,8 +2539,8 @@ Total: 1321 features across 15 areas.
 43. `DEGRADED` — Always-dark template baked in; no per-email Dark/Original toggle (MailBodyWebView) **Email dark mode toggled by DOM style injection without iframe reload**
    - Applied only when emailDarkMode AND global darkMode are both on; injects/removes a style element (buildDarkModeEmailCss)
    - src: `src/components/EmailFrame.tsx:97`
-44. `DEGRADED` — Only table{max-width:100%} + img max-width — no full display:block linearization of fixed-width marketing tables **Fixed-width marketing emails force-linearized to fit viewport width**
-   - Injected style makes all table elements display:block width:100%, word-break, images height:auto, pre wraps — text wraps instead of clipping
+44. `DONE` — WebView overview mode zooms wide mail out to the screen, pinch to zoom in (v-next, ^trim-stag) **Wide emails are scaled down to fit, layout untouched**
+   - SPA scales body by iframeW/contentW when wider (e74221c3); no table/image CSS rewrite, only pre wraps
    - src: `src/components/EmailFrame.tsx:152`
 45. `PRESENT` — Native WebView in AndroidView self-sizes; no measurement hack needed **Email iframe auto-measures its height (body height +16px) and re-measures on resize/orientation via ResizeObserver**
    - Height cached per messageId in email-cache; unmeasured emails default to 80vh; measurement double-rAF'd on becoming visible

@@ -166,4 +166,39 @@ class MailFormatTest {
         assertFalse(clean.contains("<form"))
         assertFalse(clean.contains("<input"))
     }
+
+    // ---------------------------------------------------------------- //
+    // Zoom-to-fit (SPA EmailFrame fitBodyToWidth)
+
+    @Test
+    fun `fitCss leaves the email's tables and images alone`() {
+        val css = MailFormat.fitCss()
+        assertFalse(css.contains("table"))
+        assertFalse(css.contains("td"))
+        assertFalse(css.contains("img"))
+        assertFalse(css.contains("display"))
+        assertTrue(css.contains("pre { white-space: pre-wrap"))
+    }
+
+    @Test
+    fun `displayHeightDp is the css height at the default zoom`() {
+        // A narrow / plain-text mail is not zoomed: scale == density.
+        assertEquals(500, MailFormat.displayHeightDp(500, 2.75f, 2.75f))
+        assertEquals(500, MailFormat.displayHeightDp(500, 3f, 3f))
+    }
+
+    @Test
+    fun `displayHeightDp shrinks with a mail zoomed out to fit and grows on pinch`() {
+        // 600 css px wide mail on a 360 dp screen: zoom 0.6.
+        assertEquals(600, MailFormat.displayHeightDp(1000, 0.6f * 3f, 3f))
+        assertEquals(2000, MailFormat.displayHeightDp(1000, 2f * 3f, 3f))
+        assertEquals(334, MailFormat.displayHeightDp(1000, 1f, 3f)) // rounds up, never clips
+    }
+
+    @Test
+    fun `displayHeightDp tolerates an unmeasured view`() {
+        assertEquals(0, MailFormat.displayHeightDp(0, 3f, 3f))
+        assertEquals(500, MailFormat.displayHeightDp(500, 0f, 3f))
+        assertEquals(500, MailFormat.displayHeightDp(500, 3f, 0f))
+    }
 }

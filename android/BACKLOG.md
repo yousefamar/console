@@ -75,6 +75,28 @@ view-mode hub-sync (Room meta is fine on one device).
   Not verifiable here (no emulator): banner fit, the sheet, and the first-launch
   pop need the phone.
 
+- **Wide emails shrink to fit the screen instead of being pulled apart**
+  (^trim-stag; SPA e74221c3, ^odd-crow "Emails render poorly"). Before: the
+  mail body injected `MailFormat.linearizeCss()`, which forced every
+  `table/tbody/tr/td/th` to `display:block; width:100%` and every image to
+  `height:auto` — the same rule the SPA dropped, with the same damage: a
+  label/value row became two stacked lines and an image whose own size was
+  overridden stretched. Now the email's layout is left alone
+  (`MailFormat.fitCss()` keeps only the `<pre>` wrap) and the WebView does the
+  fitting: `SelfSizingWebView(fitWidth = true)` turns on `useWideViewPort` +
+  `loadWithOverviewMode`, so a document wider than the screen is zoomed out
+  until it fits, and pinch-zoom is enabled (no on-screen zoom buttons).
+  JavaScript stays off. `contentHeight` is CSS px, so the self-sized height now
+  follows the scale (`MailFormat.displayHeightDp`, re-synced from
+  `onScaleChanged`): a zoomed-out mail is not followed by a blank gap and a
+  pinched-in one grows rather than scrolling inside a fixed box. A mail no
+  wider than the screen has scale == density and renders exactly as before.
+  Feed articles and agent `render` blocks do not pass `fitWidth` and are
+  unchanged; the dark-mode invert is untouched. `MailFormatTest` +4.
+  Not verifiable here (no emulator): check on the phone a fixed-width marketing
+  mail (fits, rows intact), a plain narrow one (not shrunk), pinch-zoom, and
+  that no gap follows a zoomed-out body.
+
 ## Shipped
 
 ### v112 (2026-10-09)

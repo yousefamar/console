@@ -24,6 +24,10 @@ import androidx.compose.ui.viewinterop.AndroidView
  * Late-loading images grow the document after progress hits 100% — hence the
  * delayed re-polls.
  *
+ * [fitWidth] (mail): a document wider than the view is zoomed out until it fits
+ * (overview mode) instead of having its layout rewritten, and pinch-zoom is on.
+ * `contentHeight` stays in CSS px, so the height follows the current scale.
+ *
  * All link taps go to [onOpenUrl] (default: nothing renders navigations
  * in-place; callers pass an external-browser opener).
  */
@@ -33,6 +37,7 @@ fun SelfSizingWebView(
     html: String,
     modifier: Modifier = Modifier,
     onOpenUrl: (String) -> Unit = {},
+    fitWidth: Boolean = false,
     configure: (WebView) -> Unit = {},
 ) {
     var contentHeightDp by remember { mutableStateOf(120) }
@@ -42,8 +47,19 @@ fun SelfSizingWebView(
             WebView(ctx).apply {
                 settings.javaScriptEnabled = false
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                if (fitWidth) {
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                    settings.setSupportZoom(true)
+                    settings.builtInZoomControls = true
+                    settings.displayZoomControls = false
+                }
+                val density = resources.displayMetrics.density
                 val syncHeight = Runnable {
-                    val h = contentHeight
+                    @Suppress("DEPRECATION")
+                    val h = if (fitWidth) {
+                        io.amar.console.data.mail.MailFormat.displayHeightDp(contentHeight, scale, density)
+                    } else contentHeight
                     if (h > 0) contentHeightDp = (h + 16).coerceIn(40, 20000)
                 }
                 webChromeClient = object : android.webkit.WebChromeClient() {
@@ -62,6 +78,10 @@ fun SelfSizingWebView(
                     ): Boolean {
                         onOpenUrl(request.url.toString())
                         return true
+                    }
+
+                    override fun onScaleChanged(view: WebView, oldScale: Float, newScale: Float) {
+                        if (fitWidth) view.post(syncHeight)
                     }
                 }
                 configure(this)

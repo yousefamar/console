@@ -199,11 +199,23 @@ object MailFormat {
         img, video, [style*="background-image"], svg { filter: invert(1) hue-rotate(180deg); }
     """.trimIndent()
 
-    // Force fixed-width marketing tables to linearize to the viewport.
-    fun linearizeCss(): String = """
-        table, tbody, tr, td, th { display: block !important; width: 100% !important; box-sizing: border-box; }
-        td, th { word-break: break-word; }
-        img { max-width: 100% !important; height: auto !important; }
+    // Wide mail is scaled down to the screen by the WebView (zoom-to-fit, see
+    // SelfSizingWebView fitWidth), so the email's own table/image CSS is left
+    // alone: forcing cells to display:block split label/value rows and stretched
+    // images (SPA EmailFrame fitBodyToWidth, e74221c3). Only <pre> is wrapped.
+    fun fitCss(): String = """
         pre { white-space: pre-wrap !important; word-break: break-word; }
     """.trimIndent()
+
+    /**
+     * Height in dp of a WebView document [contentHeightCss] CSS px tall drawn at
+     * [scale] (WebView.getScale: device px per CSS px) on a screen of [density].
+     * At the default zoom scale == density, so this is the CSS height; a mail
+     * zoomed out to fit its width is proportionally shorter.
+     */
+    fun displayHeightDp(contentHeightCss: Int, scale: Float, density: Float): Int {
+        if (contentHeightCss <= 0) return 0
+        val zoom = if (scale > 0f && density > 0f) scale / density else 1f
+        return Math.ceil((contentHeightCss * zoom).toDouble()).toInt()
+    }
 }
