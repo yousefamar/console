@@ -89,7 +89,7 @@ The debug agent:
 - Captures from page load (imported first in `main.tsx`)
 - Survives navigation (WebSocket auto-reconnects)
 - Works across all tabs/devices (all stream to same hub)
-- Logs to `~/.config/console/debug.log` (NDJSON, auto-rotated at 5K lines)
+- Logs to `~/.config/console/debug.log` (NDJSON, auto-rotated at 5K lines; the newest 200 `cat:error` lines survive a rotation — read them with `/debug/log?cat=error`, a crash is one line among thousands of `net` ones)
 - `window.__console` (dev-only) exposes Zustand stores + Dexie db for browser console access
 - **Eval-probe trap**: `import('/src/store/x.ts')` from `/debug/eval` can resolve a DIFFERENT module instance than the app's after HMR churn (empty-looking stores that aren't). Probe via `window.__console.stores` or the DOM, never a fresh dynamic import
 - **Isolated SPA verification from a worktree (never Yousef's live tab)**: `npx vite --config vite.verify.config.ts --port 5174` + Playwright against the live hub. The full recipe and every known gotcha (auth-probe shim, setState injection, lazy panes, recurring writers, headless dictation, screenshots) is the **`verify-spa` skill** (`/verify-spa`, user-invocable) — load it before live-verifying UI.

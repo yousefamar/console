@@ -94,7 +94,7 @@ had was root-caused from live device SQL, not from reading code:
 TOKEN=$(jq -r .cli ~/.config/console/local-tokens.json)
 curl -sk -H "Authorization: Bearer $TOKEN" -X POST "https://localhost:9877/debug/eval?target=apk" \
   -H 'Content-Type: application/json' -d '{"code":"sql SELECT … FROM chat_messages …"}'   # SELECT/PRAGMA only
-#  other commands: state | route | nav <route> | back | reconcile | drain | help
+#  other commands: state | route | nav <route> | back | reconcile | drain | exits | crashes | help
 curl -sk -H "Authorization: Bearer $TOKEN" -X POST "https://localhost:9877/debug/screenshot?target=apk" -d '{}'
 #  → {"path": …png}; fails "no backing surface" when the screen is off
 ```
@@ -331,6 +331,15 @@ while the app is foregrounded (plus short background borrows), so a remote
   head, ANR + trace head, LMK). The in-app uncaught hook also persists the
   exception synchronously and replays it on the next connect. Use these before
   theorising — v96/v97 shipped two wrong "fixes" on a guess.
+  **`exits` says THAT a Java crash happened, never why** (`trace: null`; and
+  this phone's `PriScreenOffKiller` fills its 12 rows in about four hours).
+  The stack is in `crashes` (v114+: the last five, kept on the phone,
+  `core/CrashHistory.kt`), in the hub's `GET /debug/log?cat=error`, and in
+  `~/.cache/console-apk-crashes.ndjson`, which cron `eMtvTaM` on this session
+  fills and wakes on (`~/exec/console-apk-crash-guard.py`; if `con cron list`
+  no longer shows that guard, re-register it). A v113 crash on 10 Oct 2026 was
+  lost because none of those existed. After every release, read `exits` and
+  `crashes` on the device once it has updated.
 - `DateTimeFormatter.ofPattern("MMM", Locale.UK)` renders September as "Sept"
   (JDK 17+ CLDR en-GB); use `Locale.ENGLISH` for 3-letter months and keep
   day-before-month order in the pattern (`MoneyFormat.MONTH_LOCALE`).

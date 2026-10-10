@@ -7,6 +7,20 @@ import type { DebugEvent } from './debug-protocol.js'
 const MAX_LINES = 5000
 const KEEP_LINES = 3000
 const ROTATE_CHECK_INTERVAL = 100
+/** Errors outlive the rotation that drops everything else. A crash is one
+ *  line among thousands of `net` lines: on 10 Oct 2026 the phone's notes sync
+ *  rotated a v113 crash's stack out of this file within the hour. */
+const KEEP_ERRORS = 200
+const isErrorLine = (line: string): boolean => line.includes('"cat":"error"')
+
+/** What a rotation keeps of [lines]: the newest `keep`, plus the newest
+ *  `keepErrors` error lines from the part being dropped, in their old order. */
+export function rotatedLines(lines: string[], keep = KEEP_LINES, keepErrors = KEEP_ERRORS): string[] {
+  if (lines.length <= keep) return lines
+  const cut = lines.length - keep
+  const errors = lines.slice(0, cut).filter(isErrorLine)
+  return [...errors.slice(-keepErrors), ...lines.slice(cut)]
+}
 
 export class DebugLog {
   private lineCount = 0
@@ -54,11 +68,14 @@ export class DebugLog {
     }
   }
 
-  readTail(n: number): string[] {
+  /** The newest `n` lines; with `cat`, the newest `n` of that category from
+   *  the whole file (kept errors sit above the tail after a rotation). */
+  readTail(n: number, cat?: string): string[] {
     if (!existsSync(this.filePath)) return []
     try {
       const content = readFileSync(this.filePath, 'utf8')
-      const lines = content.split('\n').filter(Boolean)
+      let lines = content.split('\n').filter(Boolean)
+      if (cat) lines = lines.filter((l) => l.includes(`"cat":${JSON.stringify(cat)}`))
       return lines.slice(-n)
     } catch {
       return []
@@ -74,7 +91,7 @@ export class DebugLog {
     try {
       const content = readFileSync(this.filePath, 'utf8')
       const lines = content.split('\n').filter(Boolean)
-      const kept = lines.slice(-KEEP_LINES)
+      const kept = rotatedLines(lines)
       writeFileSync(this.filePath, kept.join('\n') + '\n')
       this.lineCount = kept.length
     } catch {

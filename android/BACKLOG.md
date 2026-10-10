@@ -57,6 +57,23 @@ view-mode hub-sync (Room meta is fine on one device).
   key-value tags read as a line on the tile and in the card sheet — "Created
   by: UI · Requested by: essam". Cards added on the phone are stamped
   "Created by: Android".
+- **A crash's details stay on the phone until they are read** (found
+  10 Oct 2026 checking v113 on the device: `exits` showed one Java CRASH at
+  17:36 and its stack was already nowhere, 70 minutes later). Three places
+  could have held it and none did: Android keeps a trace only for ANRs and
+  native crashes; the app's own stored copy was cleared the moment its replay
+  was queued; and the hub's debug log, shared with the web app, had rotated it
+  out under the notes sync's traffic (4,568 `net` lines in the hour). So that
+  crash is undiagnosed. Now the uncaught handler also writes the exception
+  into a ring of the last five (`core/CrashHistory.kt`, pure; version, route,
+  thread, message, 4,000 chars of stack) that the replay never clears, and the
+  debug agent answers `crashes` with it. Hub half, live after the next hub
+  restart: `debug.log` rotation keeps the newest 200 `cat:error` lines
+  (`rotatedLines`), and `GET /debug/log?cat=error` reads them. Until the phone
+  has this build, cron `eMtvTaM` (`~/exec/console-apk-crash-guard.py`, every
+  5 min) copies any app crash from the hub log into
+  `~/.cache/console-apk-crashes.ndjson` and wakes Console mobile once per
+  distinct stack per day. `CrashHistoryTest` (5), hub `debug-log.test.ts` (5).
 
 ## Shipped
 

@@ -55,6 +55,7 @@ import kotlin.coroutines.resume
 object DebugAgent {
     private const val BATCH_MS = 2000L
     private const val MAX_QUEUE = 500
+    private const val CRASH_HISTORY_KEY = "history"
 
     private lateinit var scope: CoroutineScope
     private var db: ConsoleDb? = null
@@ -101,14 +102,26 @@ object DebugAgent {
         val prior = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             val message = "${e.javaClass.simpleName}: ${e.message}"
-            val stack = e.stackTraceToString().take(4000)
+            val stack = e.stackTraceToString().take(CrashHistory.STACK_CAP)
             runCatching {
-                crashPrefs()?.edit()
-                    ?.putLong("ts", System.currentTimeMillis())
+                val now = System.currentTimeMillis()
+                val p = crashPrefs()
+                val entry = CrashHistory.Entry(
+                    ts = now,
+                    version = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                    thread = t.name,
+                    route = AppLifecycle.currentRoute,
+                    message = message,
+                    stack = stack,
+                )
+                p?.edit()
+                    ?.putLong("ts", now)
                     ?.putString("thread", t.name)
                     ?.putString("message", message)
                     ?.putString("stack", stack)
                     ?.putString("route", AppLifecycle.currentRoute)
+                    // The copy that stays: the replay below is cleared once queued.
+                    ?.putString(CRASH_HISTORY_KEY, CrashHistory.push(p.getString(CRASH_HISTORY_KEY, null), entry))
                     ?.commit()
             }
             log("error", message = message, stack = stack)
@@ -120,7 +133,11 @@ object DebugAgent {
     private fun crashPrefs(): android.content.SharedPreferences? =
         appContext?.getSharedPreferences("console.debug.crash", android.content.Context.MODE_PRIVATE)
 
-    /** Re-emit a crash persisted by the uncaught handler in a previous process, then clear it. */
+    /**
+     * Re-emit a crash persisted by the uncaught handler in a previous process,
+     * then clear the pending copy. The history ring is left alone: `crashes`
+     * reads it long after this replay has scrolled out of the hub's log.
+     */
     private fun replayStoredCrash() {
         val p = crashPrefs() ?: return
         val message = p.getString("message", null) ?: return
@@ -129,7 +146,7 @@ object DebugAgent {
             message = "[previous run, ${p.getString("route", "?")}, thread ${p.getString("thread", "?")}, at ${p.getLong("ts", 0)}] $message",
             stack = p.getString("stack", null),
         )
-        p.edit().clear().apply()
+        p.edit().remove("ts").remove("thread").remove("message").remove("stack").remove("route").apply()
     }
 
     /**
@@ -300,7 +317,8 @@ object DebugAgent {
             "reconcile" -> { reconcileTrigger?.invoke(); "reconcile triggered" }
             "drain" -> { drainTrigger?.invoke(); "outbox drain scheduled" }
             "exits" -> exitReasons()
-            "help" -> "route | nav <route> | back | sql <select…> | state | reconcile | drain | exits"
+            "crashes" -> CrashHistory.render(crashPrefs()?.getString(CRASH_HISTORY_KEY, null))
+            "help" -> "route | nav <route> | back | sql <select…> | state | reconcile | drain | exits | crashes"
             else -> throw IllegalArgumentException("unknown command '$cmd' — try help")
         }
     }

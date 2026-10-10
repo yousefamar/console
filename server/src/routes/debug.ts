@@ -152,7 +152,8 @@ export function handleDebugRoutes(
   // GET /debug/log — last N events
   if (path === '/debug/log' && req.method === 'GET') {
     const n = parseInt(url.searchParams.get('n') || '100')
-    const lines = debugLog.readTail(n)
+    // ?cat=error reaches errors a rotation kept above the tail.
+    const lines = debugLog.readTail(n, url.searchParams.get('cat') || undefined)
     const events = lines.map((line) => {
       try { return JSON.parse(line) } catch { return null }
     }).filter(Boolean)
