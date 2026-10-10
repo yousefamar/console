@@ -18,7 +18,7 @@ vi.mock('../auth-backend.js', () => ({
 
 const {
   taggedModelId, smallFastModel, aliasProfileEnv, parseOwnedProfiles,
-  knownProfiles, resetProfilesForTest, setBedrockProfileLogger, PROFILE_OWNER,
+  knownProfiles, resetProfilesForTest, setBedrockProfileLogger, refreshFromAws, PROFILE_OWNER,
 } = await import('../bedrock-profiles.js')
 
 const ARN_RE = /^arn:aws:bedrock:us-east-1:\d{12}:application-inference-profile\/[a-z0-9]+(\[1m\])?$/
@@ -321,5 +321,41 @@ describe('parseOwnedProfiles', () => {
     }], 'amar')
     expect(out['us.anthropic.claude-opus-5']).toBe(arn('p1'))
     expect(out['us.anthropic.claude-sonnet-5']).toBe(arn('p1'))
+  })
+})
+
+describe('refreshFromAws', () => {
+  const arn = (id: string) => `arn:aws:bedrock:us-east-1:637423377122:application-inference-profile/${id}`
+  const fm = (id: string) => `arn:aws:bedrock:us-east-1::foundation-model/${id}`
+  const haiku55 = [{
+    inferenceProfileName: 'amar-cc-haiku-5-5',
+    inferenceProfileArn: arn('h55'),
+    status: 'ACTIVE',
+    models: [{ modelArn: fm('anthropic.claude-haiku-5-5') }],
+  }]
+
+  it('tries again after a failed listing and merges what the retry finds', async () => {
+    // Every boot from 8 Sept to 10 Oct 2026 failed its one attempt (the hub was
+    // busy past the timeout) and the profiles were never discovered.
+    const log: string[] = []
+    setBedrockProfileLogger((m) => log.push(m))
+    let calls = 0
+    const list = async () => { if (++calls === 1) throw new Error('aws exited cleanly but its output was discarded'); return haiku55 }
+    expect(await refreshFromAws('amar', { list, retryMs: 0 })).toBe(3)
+    expect(calls).toBe(2)
+    expect(knownProfiles()['us.anthropic.claude-haiku-5-5']).toBe(arn('h55'))
+    expect(log[0]).toContain('try 1 of 3')
+    expect(log[0]).toContain('retrying')
+  })
+
+  it('gives up after its tries and keeps the built-in table', async () => {
+    const log: string[] = []
+    setBedrockProfileLogger((m) => log.push(m))
+    const before = { ...knownProfiles() }
+    let calls = 0
+    expect(await refreshFromAws('amar', { list: async () => { calls++; throw new Error('no network') }, tries: 2, retryMs: 0 })).toBe(0)
+    expect(calls).toBe(2)
+    expect(knownProfiles()).toEqual(before)
+    expect(log.at(-1)).toContain('using built-in table: no network')
   })
 })

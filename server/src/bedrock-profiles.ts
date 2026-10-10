@@ -233,31 +233,46 @@ export function parseOwnedProfiles(summaries: ProfileSummary[], owner: string): 
   return out
 }
 
+async function listFromAws(): Promise<ProfileSummary[]> {
+  const { stdout } = await execFileP('aws', [
+    'bedrock', 'list-inference-profiles',
+    '--type-equals', 'APPLICATION',
+    '--max-results', '100',
+    '--region', REGION,
+    '--profile', process.env.CONSOLE_AWS_PROFILE || 'default',
+    '--output', 'json',
+  ], { timeout: 20_000, maxBuffer: 8 * 1024 * 1024, env: process.env })
+  // execFile's timeout destroys the stdout pipe before killing. When the event
+  // loop was blocked past the timeout the command has long since exited 0, so
+  // no error is raised and the output it wrote is simply gone.
+  if (!stdout.trim()) throw new Error('aws exited cleanly but its output was discarded (hub busy past the 20 s timeout)')
+  return (JSON.parse(stdout) as { inferenceProfileSummaries?: ProfileSummary[] }).inferenceProfileSummaries ?? []
+}
+
 /** Merge AWS-discovered profiles over the static table. Best-effort: any
  *  failure (no creds, no network, CLI absent) leaves the verified static table
- *  in place, which is why translation never depends on this succeeding. */
-export async function refreshFromAws(owner = PROFILE_OWNER): Promise<number> {
-  try {
-    const { stdout } = await execFileP('aws', [
-      'bedrock', 'list-inference-profiles',
-      '--type-equals', 'APPLICATION',
-      '--max-results', '100',
-      '--region', REGION,
-      '--profile', process.env.CONSOLE_AWS_PROFILE || 'default',
-      '--output', 'json',
-    ], { timeout: 20_000, maxBuffer: 8 * 1024 * 1024, env: process.env })
-    const parsed = JSON.parse(stdout) as { inferenceProfileSummaries?: ProfileSummary[] }
-    const found = parseOwnedProfiles(parsed.inferenceProfileSummaries ?? [], owner)
-    const added = Object.keys(found).filter((k) => !profiles[k]).length
-    // Discovered wins: AWS is the live truth if a profile was recreated.
-    profiles = { ...profiles, ...found }
-    // A model that now HAS a profile should be re-warnable if it ever loses one.
-    for (const k of Object.keys(found)) warned.delete(k)
-    logFn(`[bedrock] ${Object.keys(found).length} owner-tagged profile(s) for '${owner}' (${added} new)`)
-    return added
-  } catch (e) {
-    logFn(`[bedrock] profile discovery failed, using built-in table: ${(e as Error).message}`)
-    return 0
+ *  in place, which is why translation never depends on this succeeding.
+ *  Retried, because the boot call is made while the hub blocks its own event
+ *  loop for longer than the timeout: every boot from 8 Sept to 10 Oct 2026 (65
+ *  of them) failed that way with "Unexpected end of JSON input". */
+export async function refreshFromAws(owner = PROFILE_OWNER, opts: { list?: () => Promise<ProfileSummary[]>; tries?: number; retryMs?: number } = {}): Promise<number> {
+  const { list = listFromAws, tries = 3, retryMs = 30_000 } = opts
+  for (let n = 1; ; n++) {
+    try {
+      const found = parseOwnedProfiles(await list(), owner)
+      const added = Object.keys(found).filter((k) => !profiles[k]).length
+      // Discovered wins: AWS is the live truth if a profile was recreated.
+      profiles = { ...profiles, ...found }
+      // A model that now HAS a profile should be re-warnable if it ever loses one.
+      for (const k of Object.keys(found)) warned.delete(k)
+      logFn(`[bedrock] ${Object.keys(found).length} owner-tagged profile(s) for '${owner}' (${added} new)`)
+      return added
+    } catch (e) {
+      const last = n >= tries
+      logFn(`[bedrock] profile discovery failed (try ${n} of ${tries}), ${last ? 'using built-in table' : `retrying in ${Math.round(retryMs / 1000)} s`}: ${(e as Error).message}`)
+      if (last) return 0
+      await new Promise((r) => setTimeout(r, retryMs))
+    }
   }
 }
 
