@@ -74,11 +74,18 @@ function literalContent(args: string[]): string | undefined {
   return i !== -1 && i + 1 < args.length ? args[i + 1] : undefined
 }
 
+/** A trailing `--content` with nothing after it (an empty unquoted `$VAR`)
+ *  parses as the boolean "true", which would replace the note with that word. */
+function refuseBareContent(args: string[], flags: GlobalFlags): void {
+  if (args.at(-1) === '--content') exitWithError('USAGE', '--content has no value (an empty or unquoted variable?) — nothing written', flags)
+}
+
 async function notesWrite(args: string[], flags: GlobalFlags): Promise<void> {
   const path = args[0]
   if (!path) exitWithError('USAGE', 'Usage: con notes write <path> --content <text> | --stdin', flags)
 
   const opts = parseFlags(args.slice(1))
+  if (!opts.stdin) refuseBareContent(args, flags)
   let content = literalContent(args) ?? opts.content
 
   if (opts.stdin) {
@@ -101,6 +108,7 @@ async function notesAppend(args: string[], flags: GlobalFlags): Promise<void> {
   if (!path) exitWithError('USAGE', 'Usage: con notes append <path> --content <text>', flags)
 
   const opts = parseFlags(args.slice(1))
+  refuseBareContent(args, flags)
   const literal = literalContent(args)
   if (literal !== undefined) opts.content = literal
   if (!opts.content) exitWithError('USAGE', 'Provide --content', flags)
