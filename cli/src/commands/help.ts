@@ -613,8 +613,10 @@ Notes:
   card id errors instead of falling back to text (another card's text quoting
   "^glad-wolf" is NOT that card). A write that resolved by text says so in a
   "warning" field — read it; note "<card>" --undo takes a misplaced note back.
-  --detail takes pipe-separated bullets. The hub is the single writer with a
-  per-board lock, so concurrent agents serialize cleanly.
+  --detail takes pipe-separated bullets. Text that CONTAINS a pipe (a type
+  union, a shell pipeline): pass the lines separated by real newlines instead,
+  then every pipe is literal; or write \\| for one literal pipe. The hub is the
+  single writer with a per-board lock, so concurrent agents serialize cleanly.
   Hand-back: before moving a card to Under Review, "note" a concise "- " bulleted
   summary of exactly what you did and "attach" screenshots where a visual check
   helps (always when you worked in a worktree). A move into Under Review with no
