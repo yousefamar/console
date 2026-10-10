@@ -66,12 +66,20 @@ async function notesRead(args: string[], flags: GlobalFlags): Promise<void> {
   }
 }
 
+/** `--content <text>` taken verbatim: parseFlags reads a value that starts with
+ *  `--` as the next flag, so a note opening with a `---` frontmatter fence was
+ *  written as the string "true". */
+function literalContent(args: string[]): string | undefined {
+  const i = args.indexOf('--content')
+  return i !== -1 && i + 1 < args.length ? args[i + 1] : undefined
+}
+
 async function notesWrite(args: string[], flags: GlobalFlags): Promise<void> {
   const path = args[0]
   if (!path) exitWithError('USAGE', 'Usage: con notes write <path> --content <text> | --stdin', flags)
 
   const opts = parseFlags(args.slice(1))
-  let content = opts.content
+  let content = literalContent(args) ?? opts.content
 
   if (opts.stdin) {
     content = readFileSync('/dev/stdin', 'utf8')
@@ -93,6 +101,8 @@ async function notesAppend(args: string[], flags: GlobalFlags): Promise<void> {
   if (!path) exitWithError('USAGE', 'Usage: con notes append <path> --content <text>', flags)
 
   const opts = parseFlags(args.slice(1))
+  const literal = literalContent(args)
+  if (literal !== undefined) opts.content = literal
   if (!opts.content) exitWithError('USAGE', 'Provide --content', flags)
 
   // Read current content, append, write back
