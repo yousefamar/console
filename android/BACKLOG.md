@@ -53,6 +53,12 @@ view-mode hub-sync (Room meta is fine on one device).
 
 ## Built, awaiting release
 
+_(nothing — v113 was cut 2026-10-10)_
+
+## Shipped
+
+### v113 (2026-10-10)
+
 - **Money: what-if Scenarios and Shared tabs on the phone** (^cosy-boar, the
   last step of Open "Money: editing parity"; SPA `ScenariosView.tsx` +
   `SharedTabPanel.tsx`). Before: scenarios could only be made, edited or
@@ -183,8 +189,6 @@ view-mode hub-sync (Room meta is fine on one device).
   frontmatter), `SpacesPlacementTest` (view parsing, verbs, null-clears),
   hub `board-ops.test.ts`. Not verifiable here (no emulator): the two new
   chip rows' look on the phone.
-
-## Shipped
 
 ### v112 (2026-10-09)
 
