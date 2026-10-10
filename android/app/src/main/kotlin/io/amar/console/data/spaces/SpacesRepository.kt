@@ -104,6 +104,9 @@ class SpacesRepository(
         val model: String? = null,
         /** `#effort/<level>` — the ticket-fork's `--effort` pin (`low|medium|high|xhigh|max`). */
         val effort: String? = null,
+        /** `#forge` / `#local` — where the ticket-fork runs; null = follow the
+         *  board's `remote:` frontmatter ([BoardView.remote]). */
+        val remote: String? = null,
         val detail: List<String>,
     )
 
@@ -115,6 +118,9 @@ class SpacesRepository(
         val columns: List<BoardColumnView>,
         /** Board frontmatter default_owner (agentKey), if any. */
         val defaultOwner: String? = null,
+        /** Board frontmatter `remote:` (`forge` | `local`) — what an untagged
+         *  card follows. Null when unset OR on a hub that predates the field. */
+        val remote: String? = null,
     )
 
     private val _spaces = MutableStateFlow<List<SpaceSummary>>(emptyList())
@@ -213,6 +219,7 @@ class SpacesRepository(
         return BoardView(
             project, resp["path"]?.jsonPrimitive?.content ?: "", cols,
             defaultOwner = resp["defaultOwner"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+            remote = remoteFrom(resp["remote"]),
         )
     }
 
@@ -241,9 +248,15 @@ class SpacesRepository(
             inherit = o["inherit"]?.jsonPrimitive?.content == "true",
             model = o["model"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
             effort = o["effort"]?.let { if (it is JsonNull) null else it.jsonPrimitive.content },
+            remote = remoteFrom(o["remote"]),
             detail = (o["detail"] as? JsonArray)?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() } ?: emptyList(),
         )
     }
+
+    /** Only the known placement targets survive — anything else reads as unset. */
+    private fun remoteFrom(el: kotlinx.serialization.json.JsonElement?): String? =
+        el?.takeIf { it !is JsonNull }?.let { runCatching { it.jsonPrimitive.content }.getOrNull() }
+            ?.takeIf { it in io.amar.console.data.spaces.KanbanCodec.REMOTE_TARGETS }
 
     /** Card address for BoardOps: `^id` when stamped, else the exact text
      *  (unique-substring resolution is the hub's). */
@@ -286,6 +299,18 @@ class SpacesRepository(
             put("card", cardAddress(card))
             if (model == null) put("model", "") else put("model", model)
         })
+
+    /** `#effort/<level>` — the ticket-fork's `--effort` pin; null clears it
+     *  (forks then run at the hub's policy effort). */
+    suspend fun setEffort(project: String, card: CardView, effort: String?): Boolean =
+        post(project, "effort", effortBody(cardAddress(card), effort))
+
+    /** Pin where the card's fork runs (`forge` | `local`); null clears the tag
+     *  so the card follows the board's `remote:` frontmatter. */
+    suspend fun setRemote(project: String, card: CardView, remote: String?): Boolean {
+        val (verb, body) = remoteRequest(cardAddress(card), remote)
+        return post(project, verb, body)
+    }
 
     /** Board-level frontmatter `default_owner:` — the agent unassigned cards
      *  dragged into In Progress auto-assign to. Null clears it. */
@@ -397,6 +422,21 @@ class SpacesRepository(
     }
 
     companion object {
+        /** `POST /board/:project/effort` body — `effort: null` clears the pin. */
+        fun effortBody(card: String, effort: String?): JsonObject = buildJsonObject {
+            put("card", card)
+            if (effort == null) put("effort", JsonNull) else put("effort", effort)
+        }
+
+        /** Placement is verb-addressed: `POST …/forge` or `…/local` pins the
+         *  tag; clearing rides on `local` with `remote: null` (SPA
+         *  `setCardRemote`, CLI `here`). Returns verb to body. */
+        fun remoteRequest(card: String, remote: String?): Pair<String, JsonObject> =
+            (remote ?: "local") to buildJsonObject {
+                put("card", card)
+                if (remote == null) put("remote", JsonNull)
+            }
+
         /** Byte-identical to the SPA's BOARD_TEMPLATE (store/spaces.ts). */
         val BOARD_TEMPLATE = listOf(
             "---", "", "kanban-plugin: board", "", "---", "",

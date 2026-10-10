@@ -96,6 +96,28 @@ view-mode hub-sync (Room meta is fine on one device).
   Not verifiable here (no emulator): check on the phone a fixed-width marketing
   mail (fits, rows intact), a plain narrow one (not shrunk), pinch-zoom, and
   that no gap follows a zoomed-out body.
+- **Card detail: pick the fork's effort and where it runs (forge or local)**
+  (^odd-newt, SPA d644f315; Yousef 9 Oct on the SPA gap: "It's not in the
+  UI… We have buttons for everything else I think"). Before: `#effort/<level>`
+  was parsed but had no control and no badge, and `#forge` / `#local` was not
+  parsed at all, so a typed placement tag stopped `KanbanCodec`'s
+  trailing-token loop and every token to its left stayed in the title. Now the
+  card sheet (Spaces and the Inbox-hosted one, same `CardSheet`) has an
+  **Effort** chip row (low → max, tap the selected one to clear) and a **Runs
+  on** row (local / forge, tap to clear; the label names the board default),
+  and tiles + the sheet's meta line badge `#effort/x` in amber and
+  `#forge`/`#local` in teal (new `accents.teal`). Wire:
+  `SpacesRepository.setEffort` → `POST /board/:p/effort {card, effort|null}`,
+  `setRemote` → `POST /board/:p/forge|local {card}`, clearing = `/local` with
+  `remote: null`; `CardView.remote` + `BoardView.remote` read from `GET
+  /board/:p`. Hub half (same commit, live after the next hub restart): the
+  board view now ships the frontmatter `remote:` so the label can say "board
+  default forge"; until then it reads "local". `KanbanCodec` gained
+  `remote`, `REMOTE_TARGETS`, `boardRemote` and the hub's token order (model,
+  effort, remote, nofork, …). Tests: `KanbanBoardTest` (placement +
+  frontmatter), `SpacesPlacementTest` (view parsing, verbs, null-clears),
+  hub `board-ops.test.ts`. Not verifiable here (no emulator): the two new
+  chip rows' look on the phone.
 
 ## Shipped
 

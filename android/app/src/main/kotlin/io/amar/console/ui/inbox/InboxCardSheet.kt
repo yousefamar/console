@@ -65,6 +65,7 @@ fun InboxCardSheet(
             columns = b.columns.map { it.title },
             onOpenSession = onOpenSession,
             onDismiss = onDismiss,
+            boardRemote = b.remote,
         )
     }
 }

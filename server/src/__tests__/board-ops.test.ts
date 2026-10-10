@@ -180,6 +180,12 @@ describe('a note is reversible, and says when it resolved by text', () => {
 })
 
 describe('default owner', () => {
+  it('show() carries the board remote: frontmatter (null when unset)', async () => {
+    expect((await ops.show('demo')).remote).toBeNull()
+    writeFileSync(join(dir, 'projects', 'demo', 'board.md'), BOARD.replace('kanban-plugin: board\n', 'kanban-plugin: board\nremote: forge\n'))
+    expect((await ops.show('demo')).remote).toBe('forge')
+  })
+
   it('setDefaultOwner writes/clears frontmatter and show() reflects it', async () => {
     expect((await ops.show('demo')).defaultOwner).toBeNull()
     expect(await ops.setDefaultOwner('demo', 'demo-general')).toMatchObject({ defaultOwner: 'demo-general' })

@@ -140,6 +140,44 @@ kanban-plugin: board
     }
 
     @Test
+    fun `placement tag parses, no longer hides the tokens to its left, and re-serializes after effort`() {
+        // SPA d644f315 (^odd-newt): `#forge` / `#local` — before this the tag
+        // stopped the trailing-token loop and everything left of it stayed text.
+        val t1 = KanbanCodec.parseCardTokens("Heavy build #sonnet #effort/high #forge #nofork @al ^abc")
+        assertEquals("Heavy build", t1.text)
+        assertEquals("forge", t1.remote); assertEquals("sonnet", t1.model); assertEquals("high", t1.effort)
+        assertTrue(t1.nofork); assertEquals("al", t1.agentKey); assertEquals("abc", t1.blockId)
+        val t2 = KanbanCodec.parseCardTokens("Keep it here #local")
+        assertEquals("Keep it here", t2.text); assertEquals("local", t2.remote)
+        // Only one placement per card; other hashtags and mid-text are text.
+        val t3 = KanbanCodec.parseCardTokens("Twice #forge #local")
+        assertEquals("Twice #forge", t3.text); assertEquals("local", t3.remote)
+        val t4 = KanbanCodec.parseCardTokens("Move #forge docs into the repo #cloud")
+        assertEquals("Move #forge docs into the repo #cloud", t4.text); assertNull(t4.remote)
+
+        val src = "## Now\n\n- [ ] Heavy build #sonnet #effort/high #forge #nofork @al ^abc"
+        val board = KanbanCodec.parse(src)
+        assertEquals(src, KanbanCodec.serialize(board))
+        val card = board.columns[0].cards[0]
+        assertEquals("forge", card.remote)
+        card.remote = "local"
+        KanbanCodec.refreshCardLine(card)
+        assertEquals("- [ ] Heavy build #sonnet #effort/high #local #nofork @al ^abc", card.lines[0])
+        card.remote = null
+        KanbanCodec.refreshCardLine(card)
+        assertEquals("- [ ] Heavy build #sonnet #effort/high #nofork @al ^abc", card.lines[0])
+    }
+
+    @Test
+    fun `board remote frontmatter reads only known targets inside the fence`() {
+        assertEquals("forge", KanbanCodec.boardRemote("---\n\nkanban-plugin: board\nremote: forge\n\n---\n\n## Now\n"))
+        assertEquals("local", KanbanCodec.boardRemote("---\nremote: local\n---\n"))
+        assertNull(KanbanCodec.boardRemote("---\nremote: mars\n---\n"))
+        assertNull(KanbanCodec.boardRemote("---\nkanban-plugin: board\n---\n\nremote: forge\n"))
+        assertNull(KanbanCodec.boardRemote("## Now\n"))
+    }
+
+    @Test
     fun `continuations attach to the previous card and survive round-trip`() {
         val board = KanbanCodec.parse(sample)
         val backlog = board.columns.first { it.title == "Backlog" }

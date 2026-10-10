@@ -9,7 +9,7 @@ package io.amar.console.data.spaces
 // cards, the trailing `%% kanban:settings` block, indented continuations.
 //
 // Card grammar (extensions are TRAILING tokens, any order, one each):
-//   - [ ] Card text #blocked #nofork #inherit #model/<id> @agentkey ^blockid
+//   - [ ] Card text #blocked #nofork #inherit #forge|#local #model/<id> @agentkey ^blockid
 // A bare `#haiku`/`#sonnet`/`#opus`/`#fable` is shorthand for `#model/<alias>`
 // (MODEL_ALIASES). `^blockid` is stamped ONLY by the hub at dispatch — never
 // client-side.
@@ -33,6 +33,9 @@ data class BoardCard(
     var model: String? = null,
     /** #effort/<level> — ticket-fork `--effort` pin (forks run `high` by policy). */
     var effort: String? = null,
+    /** #forge / #local — WHERE the card's fork runs; null = follow the board's
+     *  `remote:` frontmatter. */
+    var remote: String? = null,
 )
 
 data class Interstitial(var afterCard: Int, val line: String)
@@ -84,6 +87,19 @@ object KanbanCodec {
     private val BLOCKED_RE = Regex("""^(.*?)\s+#blocked$""")
     private val NOFORK_RE = Regex("""^(.*?)\s+#nofork$""")
     private val INHERIT_RE = Regex("""^(.*?)\s+#inherit$""")
+    /** Placement targets — keep in sync with server/src/kanban/board.ts +
+     *  src/kanban/board.ts. */
+    val REMOTE_TARGETS = listOf("forge", "local")
+    private val REMOTE_RE = Regex("""^(.*?)\s+#(forge|local)$""")
+    private val BOARD_FENCE_RE = Regex("""^---\n([\s\S]*?)\n---""")
+    private val BOARD_REMOTE_RE = Regex("""^remote:\s*(\S+)\s*$""", RegexOption.MULTILINE)
+
+    /** Board frontmatter `remote: forge` — what an untagged card follows.
+     *  Anything but a known target reads as unset (SPA `boardRemote`). */
+    fun boardRemote(content: String): String? {
+        val fence = BOARD_FENCE_RE.find(content)?.groupValues?.get(1) ?: return null
+        return BOARD_REMOTE_RE.find(fence)?.groupValues?.get(1)?.takeIf { it in REMOTE_TARGETS }
+    }
 
     /** Serialized model pin: aliases as the bare shorthand, ids behind
      *  `#model/` (SPA `modelToken`, the hub serializer's spelling). */
@@ -98,10 +114,11 @@ object KanbanCodec {
         val inherit: Boolean = false,
         val model: String? = null,
         val effort: String? = null,
+        val remote: String? = null,
     )
 
     /** Strip trailing `@key` / `^blockid` / `#blocked` / `#nofork` /
-     *  `#inherit` / `#model/x` (or bare alias) / `#effort/x` off card text.
+     *  `#inherit` / `#forge`|`#local` / `#model/x` (or bare alias) / `#effort/x` off card text.
      *  Order-agnostic, up to one of each — a verbatim port of the TS parseCardTokens. */
     fun parseCardTokens(rawText: String): CardTokens {
         var text = rawText.trimEnd()
@@ -112,7 +129,8 @@ object KanbanCodec {
         var inherit = false
         var model: String? = null
         var effort: String? = null
-        repeat(7) {
+        var remote: String? = null
+        repeat(8) {
             val block = BLOCK_RE.find(text)
             if (block != null && blockId == null) {
                 text = block.groupValues[1].trimEnd(); blockId = block.groupValues[2]; return@repeat
@@ -133,6 +151,10 @@ object KanbanCodec {
             if (inh != null && !inherit) {
                 text = inh.groupValues[1].trimEnd(); inherit = true; return@repeat
             }
+            val rem = REMOTE_RE.find(text)
+            if (rem != null && remote == null) {
+                text = rem.groupValues[1].trimEnd(); remote = rem.groupValues[2]; return@repeat
+            }
             val mdl = MODEL_RE.find(text) ?: MODEL_ALIAS_RE.find(text)
             if (mdl != null && model == null) {
                 text = mdl.groupValues[1].trimEnd(); model = mdl.groupValues[2]; return@repeat
@@ -141,9 +163,9 @@ object KanbanCodec {
             if (eff != null && effort == null) {
                 text = eff.groupValues[1].trimEnd(); effort = eff.groupValues[2]; return@repeat
             }
-            return CardTokens(text, agentKey, blockId, blocked, nofork, inherit, model, effort)
+            return CardTokens(text, agentKey, blockId, blocked, nofork, inherit, model, effort, remote)
         }
-        return CardTokens(text, agentKey, blockId, blocked, nofork, inherit, model, effort)
+        return CardTokens(text, agentKey, blockId, blocked, nofork, inherit, model, effort, remote)
     }
 
     fun parse(content: String): KanbanBoard {
@@ -176,7 +198,7 @@ object KanbanCodec {
                 val t = parseCardTokens(card.groupValues[2])
                 c.cards.add(BoardCard(
                     t.text, card.groupValues[1] != " ", t.agentKey, t.blockId, t.blocked, mutableListOf(line),
-                    nofork = t.nofork, inherit = t.inherit, model = t.model, effort = t.effort,
+                    nofork = t.nofork, inherit = t.inherit, model = t.model, effort = t.effort, remote = t.remote,
                 ))
                 inCard = true; i++; continue
             }
@@ -204,11 +226,12 @@ object KanbanCodec {
         return out.joinToString("\n")
     }
 
-    /** Token order mirrors the hub serializer: model, effort, nofork, inherit, blocked, @key, ^id. */
+    /** Token order mirrors the hub serializer: model, effort, remote, nofork, inherit, blocked, @key, ^id. */
     private fun cardFirstLine(card: BoardCard): String {
         val tokens = mutableListOf(card.text)
         card.model?.let { tokens.add(modelToken(it)) }
         card.effort?.let { tokens.add("#effort/$it") }
+        card.remote?.let { tokens.add("#$it") }
         if (card.nofork) tokens.add("#nofork")
         if (card.inherit) tokens.add("#inherit")
         if (card.blocked) tokens.add("#blocked")

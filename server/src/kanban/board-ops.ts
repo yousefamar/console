@@ -18,6 +18,7 @@ import { boardDefaultOwner, setBoardDefaultOwner,
   isKanbanBoard, parseBoard, serializeBoard, moveCard, addCard, refreshCardLine,
   type KanbanBoard, type BoardCard, type CardRef,
 } from './board.js'
+import { boardRemote } from '../forge/config.js'
 import { REVIEW_COLUMN_RE, hasSummaryBullets, handbackWarning } from './dispatch.js'
 
 /** Assets-relative dir for card attachments. Must stay OUT of the website's
@@ -181,11 +182,14 @@ function cardView(card: BoardCard, column: string): CardView {
   }
 }
 
-function view(board: KanbanBoard): { defaultOwner: string | null; columns: Array<{ title: string; cards: CardView[] }> } {
+function view(board: KanbanBoard): { defaultOwner: string | null; remote: 'forge' | 'local' | null; columns: Array<{ title: string; cards: CardView[] }> } {
   return {
     // Frontmatter default_owner — clients preselect this agent on open.
     // boardDefaultOwner takes raw content; the header holds the fence.
     defaultOwner: boardDefaultOwner(board.header.join('\n')),
+    // Frontmatter `remote:` — what an untagged card follows (the APK's
+    // placement pill labels its default from this).
+    remote: boardRemote(board.header.join('\n')),
     columns: board.columns.map((col) => ({
       title: col.title,
       cards: col.cards.map((c) => ({

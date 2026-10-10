@@ -98,6 +98,7 @@ import kotlinx.coroutines.launch
 private val VIOLET: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.violet
 private val AMBER: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.amber
 private val GREEN: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.green
+private val TEAL: Color @Composable @ReadOnlyComposable get() = MaterialTheme.accents.teal
 
 /** The single shared writing agent (SPA `CURATOR_AGENT_KEY`, src/spaces/scope.ts). */
 const val CURATOR_AGENT_KEY = "curator"
@@ -1046,6 +1047,7 @@ private fun BoardView(
             columns = board.columns.map { it.title },
             onOpenSession = onOpenSession,
             onDismiss = { sheetCard = null },
+            boardRemote = board.remote,
         )
     }
     addToColumn?.let { colTitle ->
@@ -1145,7 +1147,7 @@ private fun CardChip(
                 }
             }
         }
-        val hasMeta = card.blocked || card.agentKey != null || card.blockId != null || card.nofork || card.inherit || card.model != null
+        val hasMeta = card.blocked || card.agentKey != null || card.blockId != null || card.nofork || card.inherit || card.model != null || card.effort != null || card.remote != null
         if (hasMeta) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 3.dp)) {
                 if (card.blocked) {
@@ -1155,10 +1157,13 @@ private fun CardChip(
                     }
                 }
                 // Dispatch-shape badges (SPA tile parity): violet nofork, blue
-                // inherit, amber model pin spelled as the board file does.
+                // inherit, amber model + effort pins spelled as the board file
+                // does, teal placement.
                 if (card.nofork) Text("nofork", style = MaterialTheme.typography.labelSmall, color = VIOLET)
                 if (card.inherit) Text("inherit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                 card.model?.let { Text(io.amar.console.data.spaces.KanbanCodec.modelToken(it), style = MaterialTheme.typography.labelSmall, color = AMBER) }
+                card.effort?.let { Text("#effort/$it", style = MaterialTheme.typography.labelSmall, color = AMBER) }
+                card.remote?.let { Text("#$it", style = MaterialTheme.typography.labelSmall, color = TEAL) }
                 card.agentKey?.let { key ->
                     val label = io.amar.console.data.spaces.agentLabel(key, allSessions)
                     // Chip colour = the assignee session's state, the rail's
@@ -1201,6 +1206,8 @@ fun CardSheet(
     columns: List<String>,
     onOpenSession: (String) -> Unit,
     onDismiss: () -> Unit,
+    /** The board's `remote:` frontmatter — what an untagged card follows. */
+    boardRemote: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     fun run(block: suspend () -> Unit) { scope.launch { block(); onDismiss() } }
@@ -1364,6 +1371,8 @@ fun CardSheet(
                 if (card.nofork) Text("#nofork", style = MaterialTheme.typography.labelSmall, color = VIOLET)
                 if (card.inherit) Text("#inherit", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.accents.blue)
                 card.model?.let { Text(io.amar.console.data.spaces.KanbanCodec.modelToken(it), style = MaterialTheme.typography.labelSmall, color = AMBER) }
+                card.effort?.let { Text("#effort/$it", style = MaterialTheme.typography.labelSmall, color = AMBER) }
+                card.remote?.let { Text("#$it", style = MaterialTheme.typography.labelSmall, color = TEAL) }
             }
 
             // Dispatch controls: nofork (wake the role directly, no fork),
@@ -1415,6 +1424,38 @@ fun CardSheet(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                     ) {
                         Text("↻ redispatch", style = MaterialTheme.typography.labelMedium, color = GREEN, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+                    }
+                }
+            }
+
+            // Effort pin (ticket-fork --effort) and placement (#forge/#local;
+            // unpinned follows the board). Tap the selected chip to clear.
+            Text("Effort", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (level in io.amar.console.data.spaces.KanbanCodec.EFFORT_LEVELS) {
+                    val selected = card.effort == level
+                    Surface(
+                        onClick = { run { spacesRepo.setEffort(slug, card, if (selected) null else level) } },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(level, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
+                    }
+                }
+            }
+            Text(
+                "Runs on · board default ${boardRemote ?: "local"}",
+                style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp),
+            )
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (target in io.amar.console.data.spaces.KanbanCodec.REMOTE_TARGETS.reversed()) {
+                    val selected = card.remote == target
+                    Surface(
+                        onClick = { run { spacesRepo.setRemote(slug, card, if (selected) null else target) } },
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    ) {
+                        Text(target, style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp))
                     }
                 }
             }
